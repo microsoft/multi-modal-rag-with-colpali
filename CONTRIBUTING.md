@@ -11,3 +11,37 @@ provided by the bot. You will only need to do this once across all repos using o
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+
+## Development Setup
+
+### Pre-commit Hooks
+
+This project uses pre-commit hooks to ensure code quality and consistency. The hooks automatically run linting, formatting, and other checks before each commit.
+
+#### Install Pre-commit Hooks
+
+1. Install pre-commit:
+   ```bash
+   pip install pre-commit
+   ```
+
+2. Install the git hooks:
+   ```bash
+   pre-commit install
+   ```
+
+#### Run Hooks Manually
+
+To run all pre-commit hooks on all files:
+```bash
+pre-commit run --all-files
+```
+
+#### Configured Hooks
+
+- **Ruff**: Python linting and formatting
+- **Codespell**: Spell checking
+- **File quality checks**: End-of-file fixer, trailing whitespace removal
+- **JSON/TOML validation**: Format and validate configuration files
+
+All pull requests are automatically checked by GitHub Actions to ensure these standards are met.

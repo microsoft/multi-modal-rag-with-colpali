@@ -1,7 +1,7 @@
 fail_fast: true
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
+    rev: v6.0.0
     hooks:
       # Invalid file checks
       # - id: check-yaml
@@ -20,14 +20,14 @@ repos:
         args: [--autofix, --no-sort-keys]
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.1.0
+    rev: v2.4.1
     hooks:
       - id: codespell
-        args: [--skip, "uv.lock,*.json,*,jsonl"]
+        args: [--skip, "uv.lock,*.json,*.jsonl"]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.1.9
+    rev: v0.14.3
     hooks:
       # Run the linter.
       - id: ruff

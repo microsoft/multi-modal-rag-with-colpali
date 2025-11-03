@@ -1,5 +1,7 @@
 # ColPali on Azure
 
+[![CI](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/actions/workflows/ci.yml)
+
 Multi-modal RAG solution powered by ColPali for intelligent document understanding and retrieval. Deploy ColPali models on Azure with GPU-accelerated inference, serverless document processing, and vector search capabilities.
 
 ```mermaid
@@ -86,9 +88,18 @@ Once deployed, upload PDFs to the storage container and watch them get processed
 
 ## Contributing
 
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
+
+- Setting up pre-commit hooks for automatic code quality checks
+- Code standards and linting requirements
+- Submitting pull requests
+
+Quick start:
 1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+2. Install pre-commit hooks: `pip install pre-commit && pre-commit install`
+3. Create a feature branch
+4. Make your changes (hooks will run automatically on commit)
+5. Submit a pull request
 
 ## License
 
