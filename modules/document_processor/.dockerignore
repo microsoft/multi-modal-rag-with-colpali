@@ -1,0 +1,30 @@
+# Exclude virtual environment
+.venv/
+
+# Exclude development files
+.vscode/
+.git/
+.gitignore
+README.md
+test_*.py
+tests/
+
+# Exclude Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Exclude OS files
+.DS_Store
+Thumbs.db
+
+# Exclude logs
+*.log
+
+# Exclude temporary files
+*.tmp
+*.temp
+.cache/
