@@ -12,7 +12,6 @@ import base64
 import hashlib
 import logging
 import os
-import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -37,6 +36,7 @@ class SearchIndexer:
         """Initialize QDRANT client based on environment configuration."""
         self.qdrant_client = None
         self.credential = credential or DefaultAzureCredential()
+        self.collection_name = os.getenv("QDRANT_COLLECTION_NAME", "colpali-documents")
 
         # Initialize QDRANT if enabled
         self._init_qdrant()
@@ -84,6 +84,47 @@ class SearchIndexer:
 
         return False
 
+    def delete_document_pages(self, source_file: str) -> bool:
+        """
+        Delete all pages for a given source file from QDRANT.
+
+        This is used before re-indexing a document to ensure that if the new version
+        has fewer pages than the old version, orphaned pages are removed.
+
+        Args:
+            source_file: The source filename to delete all pages for
+
+        Returns:
+            True if deletion successful or no points found, False otherwise
+        """
+        if not self.qdrant_client:
+            logging.error("QDRANT client not initialized")
+            return False
+
+        try:
+            # Delete all points where payload.source_file matches the given filename
+            self.qdrant_client.delete(
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="source_file",
+                                match=models.MatchValue(value=source_file),
+                            )
+                        ]
+                    )
+                ),
+            )
+            logging.info(f"QDRANT: Deleted existing pages for document: {source_file}")
+            return True
+
+        except Exception as e:
+            logging.error(
+                f"QDRANT: Failed to delete existing pages for {source_file}: {e}"
+            )
+            return False
+
     def _index_to_qdrant(self, embeddings_results: List[Dict[str, Any]]) -> bool:
         """Index documents to QDRANT with multi-vector configuration."""
         if not self.qdrant_client:
@@ -104,7 +145,7 @@ class SearchIndexer:
             if len(points) == 1:
                 # Single page - upload immediately
                 self.qdrant_client.upsert(
-                    collection_name="colpali-documents", points=points
+                    collection_name=self.collection_name, points=points
                 )
             else:
                 # Multiple pages - use batching
@@ -112,7 +153,7 @@ class SearchIndexer:
                 for i in range(0, len(points), batch_size):
                     batch = points[i : i + batch_size]
                     self.qdrant_client.upsert(
-                        collection_name="colpali-documents", points=batch
+                        collection_name=self.collection_name, points=batch
                     )
 
             logging.info(f"QDRANT: {len(points)} points indexed successfully")
@@ -156,15 +197,20 @@ class SearchIndexer:
                 self._image_to_base64(page_image) if page_image else None
             )
 
+            # Generate deterministic document ID to prevent duplicates on re-indexing
+            # Using the same ID for the same document/page ensures upsert will update
+            # existing entries rather than creating duplicates
+            document_id = self._generate_document_id(source_file, page_num)
+
             # QDRANT point with multi-vector configuration - store patches as-is
             point = models.PointStruct(
-                id=str(uuid.uuid4()),
+                id=document_id,  # Use deterministic ID to avoid duplicates
                 vector={
                     "original": original_embeddings,  # Keep as list of patches
                     "pooled": pooled_embeddings,  # Keep as list of patches
                 },
                 payload={
-                    "id": self._generate_document_id(source_file, page_num),
+                    "id": document_id,  # Also store in payload for backward compatibility
                     "source_file": source_file,
                     "page_number": page_num,
                     "page_image_base64": page_image_base64,

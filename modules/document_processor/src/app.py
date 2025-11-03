@@ -12,13 +12,14 @@ from typing import Any, Dict, List
 
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 from colpali_client import ColPaliClient
 
 # Import existing processors from the indexer module
 from document_processor import DocumentProcessor
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from search_indexer import SearchIndexer
 
 
@@ -204,6 +205,17 @@ async def process_document_async(
     """
     try:
         logger.info(f"Processing PDF file: {blob_name}")
+
+        # Delete existing pages for this document to handle re-indexing scenarios
+        # This ensures that if a document is re-uploaded with fewer pages,
+        # orphaned pages from the previous version are removed
+        delete_success = search_indexer.delete_document_pages(blob_name)
+        if delete_success:
+            logger.info(f"Cleared existing pages for document: {blob_name}")
+        else:
+            logger.warning(
+                f"Could not clear existing pages for document: {blob_name}, continuing anyway"
+            )
 
         # Process document into page chunks
         document_pages = doc_processor.process_document(
