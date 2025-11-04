@@ -23,6 +23,15 @@ param dataStorageAccountName string
 @description('The resource ID of the user assigned identity for Container Apps')
 param containerAppsIdentityId string
 
+@description('The client ID of the user assigned identity for Container Apps')
+param containerAppsIdentityClientId string
+
+@description('The resource ID of the existing Application Insights Log Analytics workspace')
+param logAnalyticsWorkspaceId string
+
+@description('The image tag for the document processor container')
+param documentProcessorImageTag string = 'latest'
+
 var environmentName = 'cae-${baseName}'
 var qdrantStorageName = replace('stqdrant${baseName}', '-', '')
 var qdrantShareName = 'qdrantazfiles'
@@ -54,12 +63,16 @@ resource qdrantFileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@
   }
 }
 
-resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' = {
   name: environmentName
   location: location
   properties: {
     appLogsConfiguration: {
-      destination: 'azure-monitor'
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: reference(logAnalyticsWorkspaceId, '2020-08-01').customerId
+        sharedKey: listKeys(logAnalyticsWorkspaceId, '2020-08-01').primarySharedKey
+      }
     }
     workloadProfiles: [
       {
@@ -106,6 +119,7 @@ resource qdrantContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       }
     }
+    workloadProfileName: 'Consumption'
     template: {
       containers: [
         {
@@ -172,11 +186,12 @@ resource docProcessorContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
     }
+    workloadProfileName: 'Consumption'
     template: {
       containers: [
         {
           name: 'document-processor'
-          image: '${containerRegistryName}.azurecr.io/document-processor:latest'
+          image: '${containerRegistryName}.azurecr.io/document-processor:${documentProcessorImageTag}'
           env: [
             {
               name: 'AML_EMBEDDING_ENDPOINT_URL'
@@ -197,30 +212,64 @@ resource docProcessorContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
             // Storage and other services
             {
               name: 'QDRANT_ENDPOINT'
-              value: 'http://${qdrantContainerApp.properties.configuration.ingress.fqdn}'
+              value: 'https://${qdrantContainerApp.properties.configuration.ingress.fqdn}'
             }
             {
               name: 'QDRANT_COLLECTION_NAME'
               value: 'colpali-documents'
             }
             {
-              name: 'STORAGE_ACCOUNT_NAME'
+              name: 'DATA_STORAGE_ACCOUNT_NAME'
               value: dataStorageAccountName
+            }
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: containerAppsIdentityClientId
             }
           ]
           resources: {
             cpu: json('1.0')
             memory: '2Gi'
           }
+          probes: [
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/health'
+                port: 8000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            }
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/health'
+                port: 8000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 10
+            }
+          ]
         }
       ]
       scale: {
-        minReplicas: 0 // Scale to zero when no events
+        minReplicas: 1 // Keep at least one replica running for Event Grid validation
         maxReplicas: 10 // Scale up for batch processing
       }
     }
   }
 }
+
+// Container Apps built-in logging with azure-monitor destination
+// Logs will automatically flow to Application Insights
+// No additional diagnostic settings needed - Container Apps handles this natively
 
 // Outputs
 @description('The name of the QDRANT storage account')
@@ -249,3 +298,6 @@ output docProcessorContainerAppName string = docProcessorContainerApp.name
 
 @description('The FQDN of the document processor container app')
 output docProcessorEndpoint string = docProcessorContainerApp.properties.configuration.ingress.fqdn
+
+@description('Container Apps use built-in azure-monitor logging')
+output loggingInfo string = 'Container Apps logs available in Azure Portal under Monitoring > Logs'

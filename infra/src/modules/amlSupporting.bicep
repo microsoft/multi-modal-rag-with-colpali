@@ -124,6 +124,9 @@ output applicationInsightsId string = applicationInsights.id
 @description('The name of the application insights')
 output applicationInsightsName string = applicationInsights.name
 
+@description('The connection string of the application insights')
+output applicationInsightsConnectionString string = applicationInsights.properties.ConnectionString
+
 @description('The resource ID of the user-assigned identity for AML')
 output userAssignedIdentityId string = userAssignedIdentity.id
 
@@ -132,3 +135,6 @@ output userAssignedIdentityPrincipalId string = userAssignedIdentity.properties.
 
 @description('The client ID of the user-assigned identity for AML')
 output userAssignedIdentityClientId string = userAssignedIdentity.properties.clientId
+
+@description('The resource ID of the Log Analytics workspace backing Application Insights')
+output logAnalyticsWorkspaceId string = applicationInsights.properties.WorkspaceResourceId

@@ -9,6 +9,13 @@ param deployRoleAssignments bool = false
 
 @description('Flag to control whether to deploy container apps (set to false if container images are not pushed yet)')
 param deployContainerApps bool = false
+
+@description('Flag to control whether to deploy Event Grid (must be mutually exclusive with deployContainerApps)')
+param deployEventGrid bool = false
+
+@description('The image tag for the document processor container')
+param documentProcessorImageTag string = 'latest'
+
 @description('The SKU name for the Azure Container Registry')
 @allowed([
   'Basic'
@@ -80,6 +87,9 @@ var amlWorkspaceName = 'mlw-${baseName}'
 var amlComputeClusterName = 'mlcc-${baseName}'
 var aiFoundryName = replace('aif-${baseName}', '-', '')
 var amlEmbeddingEndpointName = 'oep-${baseName}'
+
+// Note: Container Apps and Event Grid deployments should be mutually exclusive
+// Deploy Container Apps first, then Event Grid separately once apps are verified
 
 module acrModule 'modules/containerRegistry.bicep' = {
   name: 'acrDeployment'
@@ -177,10 +187,13 @@ module containerAppsModule 'modules/containerApps.bicep' = if (deployContainerAp
     colpaliEndpointUrl: amlEmbeddingEndpoint.outputs.scoringUri
     dataStorageAccountName: dataStorageModule.outputs.dataStorageAccountName
     containerAppsIdentityId: containerAppsSupportingModule!.outputs.containerAppsIdentityId
+    containerAppsIdentityClientId: containerAppsSupportingModule!.outputs.containerAppsIdentityClientId
+    logAnalyticsWorkspaceId: amlSupportingModule.outputs.logAnalyticsWorkspaceId
+    documentProcessorImageTag: documentProcessorImageTag
   }
 }
 
-module eventGridModule 'modules/eventGrid.bicep' = if (deployContainerApps) {
+module eventGridModule 'modules/eventGrid.bicep' = if (deployEventGrid) {
   name: 'eventGridDeployment'
   params: {
     baseName: baseName
@@ -205,6 +218,9 @@ module roleAssignmentsModule 'modules/roleAssignments.bicep' = {
     amlWorkspacePrincipalId: amlSupportingModule.outputs.userAssignedIdentityPrincipalId
     computeInstancePrincipalId: computeCluster.outputs.clusterPrincipalId
     userObjectId: userObjectId
+    containerAppsIdentityPrincipalId: deployContainerApps
+      ? containerAppsSupportingModule!.outputs.containerAppsIdentityPrincipalId
+      : ''
     deployRoleAssignments: deployRoleAssignments
   }
 }
@@ -307,6 +323,11 @@ output qdrantEndpoint string = deployContainerApps ? 'https://${containerAppsMod
 @description('The document processor container app endpoint URL')
 output docProcessorEndpoint string = deployContainerApps
   ? 'https://${containerAppsModule!.outputs.docProcessorEndpoint}'
+  : ''
+
+@description('The document processor container app name')
+output docProcessorContainerAppName string = deployContainerApps
+  ? containerAppsModule!.outputs.docProcessorContainerAppName
   : ''
 
 @description('The Event Grid system topic resource ID')

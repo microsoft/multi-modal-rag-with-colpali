@@ -16,13 +16,13 @@ COPY pyproject.toml uv.lock* ./
 
 # Install dependencies in optimized layers
 # First, install dependencies without the project itself
-RUN uv sync --locked --no-install-project
+RUN uv sync --no-install-project
 
 # Copy application code
 COPY src/ ./
 
 # Install the project itself
-RUN uv sync --locked
+RUN uv sync
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser && \

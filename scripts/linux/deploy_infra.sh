@@ -9,6 +9,7 @@ set -e  # Exit on any error
 RESOURCE_GROUP="colqwen-rg"
 DEPLOY_ROLES="true"
 DEPLOY_CONTAINER_APPS="false"
+DEPLOY_EVENT_GRID="false"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -25,11 +26,16 @@ while [[ $# -gt 0 ]]; do
             DEPLOY_CONTAINER_APPS="$2"
             shift 2
             ;;
+        -e|--deploy-event-grid)
+            DEPLOY_EVENT_GRID="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Usage: $0 [-g resource-group] [-r deploy-roles] [-c deploy-container-apps]"
+            echo "Usage: $0 [-g resource-group] [-r deploy-roles] [-c deploy-container-apps] [-e deploy-event-grid]"
             echo "  -g, --resource-group       Resource group name (default: colqwen-rg)"
             echo "  -r, --deploy-roles         Deploy role assignments (default: true)"
-            echo "  -c, --deploy-container-apps Deploy container apps and Event Grid (default: false)"
+            echo "  -c, --deploy-container-apps Deploy container apps (default: false)"
+            echo "  -e, --deploy-event-grid    Deploy Event Grid (default: false, mutually exclusive with -c)"
             exit 0
             ;;
         *)
@@ -47,6 +53,31 @@ PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$PROJECT_ROOT"
 
 echo "Project root: $PROJECT_ROOT"
+
+# Validate mutually exclusive parameters
+if [ "$DEPLOY_CONTAINER_APPS" = "true" ] && [ "$DEPLOY_EVENT_GRID" = "true" ]; then
+    echo "Error: DEPLOY_CONTAINER_APPS and DEPLOY_EVENT_GRID cannot both be true - they must be mutually exclusive." >&2
+    echo "Deploy Container Apps first, then Event Grid separately." >&2
+    exit 1
+fi
+
+# Get document processor image tag from .env file if deploying container apps
+DOCUMENT_PROCESSOR_IMAGE_TAG="latest"
+if [ "$DEPLOY_CONTAINER_APPS" = "true" ]; then
+    ENV_FILE="$PROJECT_ROOT/.env"
+    if [ -f "$ENV_FILE" ]; then
+        echo "Reading document processor image tag from .env file..."
+        DOCUMENT_PROCESSOR_IMAGE_TAG=$(grep '^DOCUMENT_PROCESSOR_IMAGE_TAG=' "$ENV_FILE" | cut -d'=' -f2)
+        if [ -n "$DOCUMENT_PROCESSOR_IMAGE_TAG" ]; then
+            echo "Using document processor image tag: $DOCUMENT_PROCESSOR_IMAGE_TAG"
+        else
+            DOCUMENT_PROCESSOR_IMAGE_TAG="latest"
+            echo "No DOCUMENT_PROCESSOR_IMAGE_TAG found in .env, using default: $DOCUMENT_PROCESSOR_IMAGE_TAG"
+        fi
+    else
+        echo "No .env file found, using default image tag: $DOCUMENT_PROCESSOR_IMAGE_TAG"
+    fi
+fi
 
 # Get user object ID
 echo "Getting user object ID..."
@@ -88,10 +119,11 @@ echo "Bicep Param File: '$BICEP_PARAM_FILE'"
 echo "User Object ID: '$USER_OBJECT_ID'"
 echo "Deploy Roles: '$DEPLOY_ROLES'"
 echo "Deploy Container Apps: '$DEPLOY_CONTAINER_APPS'"
+echo "Deploy Event Grid: '$DEPLOY_EVENT_GRID'"
 
 DEPLOYMENT_OUTPUT=$(az deployment group create \
     --resource-group "$RESOURCE_GROUP" \
-    --parameters "$BICEP_PARAM_FILE" userObjectId="$USER_OBJECT_ID" deployRoleAssignments="$DEPLOY_ROLES" deployContainerApps="$DEPLOY_CONTAINER_APPS" createOnlineEndpoint="$CREATE_ENDPOINT" \
+    --parameters "$BICEP_PARAM_FILE" userObjectId="$USER_OBJECT_ID" deployRoleAssignments="$DEPLOY_ROLES" deployContainerApps="$DEPLOY_CONTAINER_APPS" createOnlineEndpoint="$CREATE_ENDPOINT" documentProcessorImageTag="$DOCUMENT_PROCESSOR_IMAGE_TAG" \
     --query properties.outputs -o json)
 
 if [ $? -ne 0 ]; then
@@ -112,14 +144,48 @@ AI_SEARCH_INDEX_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.aiSearchIndexName.val
 EMBEDDING_ENDPOINT_TYPE=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlEmbeddingEndpointType.value')
 EMBEDDING_ENDPOINT_COUNT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlEmbeddingEndpointCount.value')
 
-# Container Apps outputs (only available when DEPLOY_CONTAINER_APPS = true)
+# Container Apps outputs (available when DEPLOY_CONTAINER_APPS = true, or check existing)
 if [ "$DEPLOY_CONTAINER_APPS" = "true" ]; then
     QDRANT_ENDPOINT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.qdrantEndpoint.value')
     DOC_PROCESSOR_ENDPOINT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.docProcessorEndpoint.value')
     CONTAINER_APPS_ENVIRONMENT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.containerAppsEnvironmentName.value')
+    DOC_PROCESSOR_CONTAINER_APP_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.docProcessorContainerAppName.value')
 else
-    QDRANT_ENDPOINT=""
-    DOC_PROCESSOR_ENDPOINT=""
+    # Check if Container Apps exist already and get their information
+    echo "Checking for existing Container Apps..."
+
+    # Extract baseName from bicep parameter file
+    BASE_NAME=$(grep "baseName\s*=" "$BICEP_PARAM_FILE" | sed "s/.*baseName\s*=\s*['\"]\\([^'\"]*\\)['\"].*/\\1/")
+    if [ -n "$BASE_NAME" ]; then
+        EXPECTED_DOC_PROCESSOR_NAME="ca-docproc-$BASE_NAME"
+        EXPECTED_QDRANT_NAME="ca-qdrant-$BASE_NAME"
+
+        # Try to get document processor Container App info
+        DOC_PROCESSOR_INFO=$(az containerapp show --name "$EXPECTED_DOC_PROCESSOR_NAME" --resource-group "$RESOURCE_GROUP" --query "{name:name,fqdn:properties.configuration.ingress.fqdn}" -o json 2>/dev/null || echo "null")
+        if [ "$DOC_PROCESSOR_INFO" != "null" ]; then
+            DOC_PROCESSOR_CONTAINER_APP_NAME=$(echo "$DOC_PROCESSOR_INFO" | jq -r '.name // ""')
+            DOC_PROCESSOR_ENDPOINT=$(echo "$DOC_PROCESSOR_INFO" | jq -r '.fqdn // ""')
+            echo "Found existing document processor Container App: $DOC_PROCESSOR_CONTAINER_APP_NAME"
+        else
+            DOC_PROCESSOR_CONTAINER_APP_NAME=""
+            DOC_PROCESSOR_ENDPOINT=""
+        fi
+
+        # Try to get Qdrant Container App info
+        QDRANT_INFO=$(az containerapp show --name "$EXPECTED_QDRANT_NAME" --resource-group "$RESOURCE_GROUP" --query "{fqdn:properties.configuration.ingress.fqdn}" -o json 2>/dev/null || echo "null")
+        if [ "$QDRANT_INFO" != "null" ]; then
+            QDRANT_ENDPOINT=$(echo "$QDRANT_INFO" | jq -r '.fqdn // ""')
+            echo "Found existing Qdrant Container App: $EXPECTED_QDRANT_NAME"
+        else
+            QDRANT_ENDPOINT=""
+        fi
+    else
+        echo "Could not extract baseName from bicep parameter file"
+        QDRANT_ENDPOINT=""
+        DOC_PROCESSOR_ENDPOINT=""
+        DOC_PROCESSOR_CONTAINER_APP_NAME=""
+    fi
+
     CONTAINER_APPS_ENVIRONMENT=""
 fi
 
@@ -140,6 +206,7 @@ if [ "$DEPLOY_CONTAINER_APPS" = "true" ]; then
     echo "  QDRANT Endpoint: $QDRANT_ENDPOINT"
     echo "  Doc Processor Endpoint: $DOC_PROCESSOR_ENDPOINT"
     echo "  Container Apps Environment: $CONTAINER_APPS_ENVIRONMENT"
+    echo "  Logging: Integrated with AML Application Insights workspace"
 else
     echo "  Container Apps: Not deployed (use -c true to deploy)"
 fi
@@ -164,8 +231,17 @@ else
     ACR_PASSWORD=$(echo "$ACR_CREDENTIALS" | jq -r '.password')
 fi
 
-# Create .env file in project root
+# Preserve existing DOCUMENT_PROCESSOR_IMAGE_TAG if it exists
+EXISTING_IMAGE_TAG=""
 ENV_FILE="$PROJECT_ROOT/.env"
+if [ -f "$ENV_FILE" ]; then
+    EXISTING_IMAGE_TAG=$(grep '^DOCUMENT_PROCESSOR_IMAGE_TAG=' "$ENV_FILE" | cut -d'=' -f2 || true)
+    if [ -n "$EXISTING_IMAGE_TAG" ]; then
+        echo "Preserving existing image tag: $EXISTING_IMAGE_TAG"
+    fi
+fi
+
+# Create .env file in project root
 echo "Creating .env file at $ENV_FILE"
 
 cat > "$ENV_FILE" << EOF
@@ -187,8 +263,14 @@ AI_SEARCH_INDEX_NAME=$AI_SEARCH_INDEX_NAME
 QDRANT_ENDPOINT=$QDRANT_ENDPOINT
 QDRANT_COLLECTION_NAME=colpali-documents
 DOC_PROCESSOR_ENDPOINT=$DOC_PROCESSOR_ENDPOINT
+DOCUMENT_PROCESSOR_CONTAINER_APP_NAME=$DOC_PROCESSOR_CONTAINER_APP_NAME
 CONTAINER_APPS_ENVIRONMENT=$CONTAINER_APPS_ENVIRONMENT
 EOF
+
+# Add the image tag if it exists
+if [ -n "$EXISTING_IMAGE_TAG" ]; then
+    echo "DOCUMENT_PROCESSOR_IMAGE_TAG=$EXISTING_IMAGE_TAG" >> "$ENV_FILE"
+fi
 
 echo "Deployment complete."
 echo ".env file created with deployment outputs."

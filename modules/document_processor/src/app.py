@@ -27,7 +27,6 @@ from search_indexer import SearchIndexer
 class HealthResponse(BaseModel):
     status: str
     service: str
-    components: Dict[str, str]
 
 
 class WebhookResponse(BaseModel):
@@ -47,7 +46,8 @@ app = FastAPI(
 )
 
 # Configuration from environment variables
-STORAGE_ACCOUNT_NAME = os.getenv("STORAGE_ACCOUNT_NAME")
+STORAGE_ACCOUNT_NAME = os.getenv("DATA_STORAGE_ACCOUNT_NAME")
+AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 
 # Initialize shared Azure credential (cached and reused)
 credential = DefaultAzureCredential()
@@ -69,16 +69,7 @@ if STORAGE_ACCOUNT_NAME:
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint for container readiness"""
-    return HealthResponse(
-        status="healthy",
-        service="document-processor",
-        components={
-            "doc_processor": "ready",
-            "colpali_client": "ready",
-            "search_indexer": "ready",
-            "storage_client": "ready" if blob_service_client else "not configured",
-        },
-    )
+    return HealthResponse(status="healthy", service="document-processor")
 
 
 @app.post("/api/webhook")

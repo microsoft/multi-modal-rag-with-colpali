@@ -28,6 +28,9 @@ param computeInstancePrincipalId string = ''
 @description('User object ID for permissions')
 param userObjectId string
 
+@description('Container Apps user assigned identity principal ID for data storage access')
+param containerAppsIdentityPrincipalId string = ''
+
 @description('Flag to control whether to deploy role assignments')
 param deployRoleAssignments bool = true
 
@@ -222,6 +225,40 @@ resource amlWorkspaceAcrPushAssignment 'Microsoft.Authorization/roleAssignments@
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.acrPush)
     principalId: amlWorkspacePrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// =============================================================================
+// CONTAINER APPS PERMISSIONS
+// =============================================================================
+
+// Container Apps Identity -> Data Storage Account (for blob access from document processor)
+resource containerAppsDataStorageAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(containerAppsIdentityPrincipalId)) {
+  name: guid(
+    dataStorageAccountId,
+    containerAppsIdentityPrincipalId,
+    roles.storageBlobDataContributor,
+    'containerapps-data-storage'
+  )
+  scope: dataStorageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      roles.storageBlobDataContributor
+    )
+    principalId: containerAppsIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Container Apps Identity -> AML Workspace (for calling online endpoints)
+resource containerAppsAmlWorkspaceAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(containerAppsIdentityPrincipalId)) {
+  name: guid(amlWorkspaceId, containerAppsIdentityPrincipalId, roles.amlDataScientist, 'containerapps-aml-workspace')
+  scope: amlWorkspace
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.amlDataScientist)
+    principalId: containerAppsIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
 }

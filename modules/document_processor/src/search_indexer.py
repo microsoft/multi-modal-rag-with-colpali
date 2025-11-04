@@ -4,14 +4,14 @@ Supports QDRANT with optimized pooling strategies.
 Based on research from https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/
 
 Environment Variables:
-- ENABLE_QDRANT: Set to "true" to enable QDRANT indexing
-- QDRANT_URL: QDRANT service URL
+- QDRANT_ENDPOINT: QDRANT service ENDPOINT
 """
 
 import base64
 import hashlib
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -242,7 +242,8 @@ class SearchIndexer:
             return ""
 
     def _generate_document_id(self, source_file: str, page_number: int) -> str:
-        """Generate a unique document ID."""
+        """Generate a deterministic UUID from document metadata."""
         hash_input = f"{source_file}_page_{page_number}"
-        doc_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-        return f"doc_{doc_hash}"
+        doc_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+        # Create a deterministic UUID from the hash
+        return str(uuid.UUID(doc_hash[:32]))
