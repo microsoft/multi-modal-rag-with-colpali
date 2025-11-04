@@ -19,7 +19,7 @@ This app runs as a Container App and processes documents asynchronously using Ev
 - `app.py` - Main FastAPI application with webhook endpoints
 - `document_processor.py` - Converts PDFs to images using PyMuPDF
 - `colpali_client.py` - Sends images to ColPali ML endpoint
-- `search_indexer.py` - QDRANT indexer with optimized pooling strategies
+- `search_indexer.py` - Async QDRANT indexer with optimized pooling strategies and non-blocking I/O operations
 
 ## Search Service Configuration
 

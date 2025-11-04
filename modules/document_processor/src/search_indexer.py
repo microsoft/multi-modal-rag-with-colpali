@@ -1,10 +1,11 @@
 """
 QDRANT search indexer for ColPali/ColQwen2 embeddings.
-Supports QDRANT with optimized pooling strategies.
+Supports QDRANT with optimized pooling strategies and async I/O operations.
 Based on research from https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/
 
 Environment Variables:
 - QDRANT_ENDPOINT: QDRANT service ENDPOINT
+- QDRANT_COLLECTION_NAME: Collection name (default: colpali-documents)
 """
 
 import base64
@@ -18,12 +19,14 @@ from typing import Any, Dict, List, Optional
 
 from azure.identity.aio import DefaultAzureCredential
 from PIL import Image
-from qdrant_client import QdrantClient, models
+from qdrant_client import AsyncQdrantClient, models
 
 
 class SearchIndexer:
     """
     QDRANT search indexer supporting ColPali/ColQwen2 embeddings.
+
+    Uses async I/O patterns with AsyncQdrantClient for non-blocking operations.
 
     Uses hierarchical pooling embeddings provided by the ColPali API:
     - Original embeddings: Full token vectors for precise reranking
@@ -37,22 +40,19 @@ class SearchIndexer:
         self.qdrant_client = None
         self.credential = credential or DefaultAzureCredential()
         self.collection_name = os.getenv("QDRANT_COLLECTION_NAME", "colpali-documents")
+        self.qdrant_endpoint = os.getenv("QDRANT_ENDPOINT")
 
         # Initialize QDRANT if enabled
-        self._init_qdrant()
-
-    def _init_qdrant(self):
-        """Initialize QDRANT client."""
-        endpoint = os.getenv("QDRANT_ENDPOINT")
-        if not endpoint:
+        if self.qdrant_endpoint:
+            try:
+                self.qdrant_client = AsyncQdrantClient(
+                    url=self.qdrant_endpoint, port=443
+                )
+                logging.info(f"Async QDRANT client initialized: {self.qdrant_endpoint}")
+            except Exception as e:
+                logging.error(f"Failed to initialize QDRANT client: {e}")
+        else:
             logging.error("QDRANT_ENDPOINT not set - QDRANT indexing disabled")
-            return
-
-        try:
-            self.qdrant_client = QdrantClient(url=endpoint, port=443)
-            logging.info(f"QDRANT client initialized: {endpoint}")
-        except Exception as e:
-            logging.error(f"Failed to initialize QDRANT: {e}")
 
     async def index_embeddings(self, embeddings_results: List[Dict[str, Any]]) -> bool:
         """
@@ -71,7 +71,7 @@ class SearchIndexer:
 
         if self.qdrant_client:
             try:
-                qdrant_success = self._index_to_qdrant(embeddings_results)
+                qdrant_success = await self._index_to_qdrant(embeddings_results)
                 if qdrant_success:
                     logging.info("QDRANT indexing completed successfully")
                     return True
@@ -84,7 +84,7 @@ class SearchIndexer:
 
         return False
 
-    def delete_document_pages(self, source_file: str) -> bool:
+    async def delete_document_pages(self, source_file: str) -> bool:
         """
         Delete all pages for a given source file from QDRANT.
 
@@ -103,7 +103,7 @@ class SearchIndexer:
 
         try:
             # Delete all points where payload.source_file matches the given filename
-            self.qdrant_client.delete(
+            await self.qdrant_client.delete(
                 collection_name=self.collection_name,
                 points_selector=models.FilterSelector(
                     filter=models.Filter(
@@ -125,7 +125,7 @@ class SearchIndexer:
             )
             return False
 
-    def _index_to_qdrant(self, embeddings_results: List[Dict[str, Any]]) -> bool:
+    async def _index_to_qdrant(self, embeddings_results: List[Dict[str, Any]]) -> bool:
         """Index documents to QDRANT with multi-vector configuration."""
         if not self.qdrant_client:
             logging.error("QDRANT client not initialized")
@@ -144,7 +144,7 @@ class SearchIndexer:
             # Upload to QDRANT - use single upload for individual pages, batching for larger sets
             if len(points) == 1:
                 # Single page - upload immediately
-                self.qdrant_client.upsert(
+                await self.qdrant_client.upsert(
                     collection_name=self.collection_name, points=points
                 )
             else:
@@ -152,7 +152,7 @@ class SearchIndexer:
                 batch_size = 10
                 for i in range(0, len(points), batch_size):
                     batch = points[i : i + batch_size]
-                    self.qdrant_client.upsert(
+                    await self.qdrant_client.upsert(
                         collection_name=self.collection_name, points=batch
                     )
 

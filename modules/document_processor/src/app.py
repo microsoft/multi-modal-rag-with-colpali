@@ -244,7 +244,7 @@ async def process_blob_deleted_event_async(event: Dict[str, Any]) -> bool:
             return False
 
         # Delete all pages for this document from the index
-        delete_success = search_indexer.delete_document_pages(blob_name)
+        delete_success = await search_indexer.delete_document_pages(blob_name)
 
         end_time = time.time()
         processing_time = end_time - start_time
@@ -281,7 +281,7 @@ async def process_document_async(
         # Delete existing pages for this document to handle re-indexing scenarios
         # This ensures that if a document is re-uploaded with fewer pages,
         # orphaned pages from the previous version are removed
-        delete_success = search_indexer.delete_document_pages(blob_name)
+        delete_success = await search_indexer.delete_document_pages(blob_name)
         if delete_success:
             logger.info(f"Cleared existing pages for document: {blob_name}")
         else:

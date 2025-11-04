@@ -6,6 +6,8 @@ This script creates and configures a QDRANT collection optimized for ColPali vis
 embeddings. The collection uses multiple vector configurations for different embedding strategies
 and stores the same document metadata as the AI Search index.
 
+Uses async I/O operations for non-blocking deployment.
+
 QDRANT Collection Configuration:
 - Document metadata fields: id, source_file, upload_timestamp, page_number, page_image_base64, processing_timestamp
 - Vector spaces: original (full embeddings), pooled (hierarchically pooled embeddings) (both 128D, cosine)
@@ -17,6 +19,7 @@ Features:
 - Uses cosine similarity with MAX_SIM comparator
 - Optimized for ColPali hierarchical pooling (128 dimensions)
 - Stores document metadata for retrieval and display
+- Async operations for improved performance
 
 Usage:
     python deploy_qdrant.py    # Create or update the QDRANT collection
@@ -26,18 +29,19 @@ Configuration:
     Requires QDRANT container app to be deployed and running.
 """
 
+import asyncio
 import logging
 import os
 import sys
 from typing import Dict
 
 from dotenv import find_dotenv, load_dotenv
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
 
 
 class ColPaliQdrantDeployer:
-    """Deploys and manages ColPali QDRANT collection."""
+    """Deploys and manages ColPali QDRANT collection using async operations."""
 
     def __init__(self):
         """Initialize the deployer with configuration from .env file."""
@@ -68,16 +72,18 @@ class ColPaliQdrantDeployer:
 
         # Initialize QDRANT client with extended timeout
         try:
-            self.client = QdrantClient(url=self.qdrant_endpoint, port=443, timeout=120)
+            self.client = AsyncQdrantClient(
+                url=self.qdrant_endpoint, port=443, timeout=120
+            )
             self.logger.info("Successfully connected to QDRANT")
         except Exception as e:
             self.logger.error("Failed to connect to QDRANT: %s", str(e))
             sys.exit(1)
 
-    def collection_exists(self) -> bool:
+    async def collection_exists(self) -> bool:
         """Check if the collection already exists."""
         try:
-            collections = self.client.get_collections()
+            collections = await self.client.get_collections()
             return any(
                 collection.name == self.collection_name
                 for collection in collections.collections
@@ -132,7 +138,7 @@ class ColPaliQdrantDeployer:
 
         return vectors_config
 
-    def create_collection(self) -> bool:
+    async def create_collection(self) -> bool:
         """Create the ColPali QDRANT collection with optimized vector configurations."""
         try:
             self.logger.info("Creating QDRANT collection: %s", self.collection_name)
@@ -141,7 +147,7 @@ class ColPaliQdrantDeployer:
             vectors_config = self.create_collection_schema()
 
             # Create collection with multiple vector configurations for ColPali
-            self.client.create_collection(
+            await self.client.create_collection(
                 collection_name=self.collection_name, vectors_config=vectors_config
             )
 
@@ -152,10 +158,10 @@ class ColPaliQdrantDeployer:
             self.logger.error("Failed to create QDRANT collection: %s", str(e))
             return False
 
-    def verify_collection(self) -> bool:
+    async def verify_collection(self) -> bool:
         """Verify the collection was created correctly."""
         try:
-            collection_info = self.client.get_collection(self.collection_name)
+            collection_info = await self.client.get_collection(self.collection_name)
             self.logger.info("Collection verification:")
             self.logger.info("  Status: %s", collection_info.status)
             self.logger.info("  Points count: %d", collection_info.points_count)
@@ -188,7 +194,7 @@ class ColPaliQdrantDeployer:
             self.logger.error("Failed to verify collection: %s", str(e))
             return False
 
-    def deploy_collection(self) -> bool:
+    async def deploy_collection(self) -> bool:
         """
         Deploy (create or update) the ColPali QDRANT collection.
 
@@ -199,13 +205,13 @@ class ColPaliQdrantDeployer:
             self.logger.info("Deploying QDRANT collection: %s", self.collection_name)
 
             # Check if collection already exists
-            if self.collection_exists():
+            if await self.collection_exists():
                 self.logger.info(
                     "Collection '%s' already exists - recreating it",
                     self.collection_name,
                 )
                 try:
-                    self.client.delete_collection(self.collection_name)
+                    await self.client.delete_collection(self.collection_name)
                     self.logger.info("Existing collection deleted")
                 except Exception as e:
                     self.logger.error(
@@ -214,11 +220,11 @@ class ColPaliQdrantDeployer:
                     return False
 
             # Create the collection
-            if not self.create_collection():
+            if not await self.create_collection():
                 return False
 
             # Verify the collection
-            if not self.verify_collection():
+            if not await self.verify_collection():
                 return False
 
             self.logger.info(
@@ -231,11 +237,11 @@ class ColPaliQdrantDeployer:
             return False
 
 
-def main():
+async def main():
     """Main entry point for the deployment script."""
     # Initialize deployer and deploy the collection
     deployer = ColPaliQdrantDeployer()
-    success = deployer.deploy_collection()
+    success = await deployer.deploy_collection()
 
     if success:
         deployer.logger.info("=" * 60)
@@ -261,4 +267,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
