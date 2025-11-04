@@ -14,9 +14,8 @@ param dataStorageAccountName string
 @secure()
 param containerAppWebhookUrl string
 
-// Event Grid System Topic (automatically handles blob events)
 resource blobSystemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' = {
-  name: 'egst-${dataStorageAccountName}-blobs' // CAF: Event Grid System Topic
+  name: 'egst-${dataStorageAccountName}-blobs'
   location: location
   properties: {
     source: dataStorageAccountId
@@ -24,10 +23,9 @@ resource blobSystemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' =
   }
 }
 
-// Event Subscription (blob created and deleted → container app webhook)
 resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2024-06-01-preview' = {
   parent: blobSystemTopic
-  name: 'egs-${baseName}-document-processing' // CAF: Event Grid Subscription
+  name: 'egs-${baseName}-document-processing'
   properties: {
     destination: {
       endpointType: 'WebHook'
@@ -46,8 +44,8 @@ resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscripti
       subjectEndsWith: '.pdf'
     }
     retryPolicy: {
-      maxDeliveryAttempts: 30
-      eventTimeToLiveInMinutes: 1440
+      maxDeliveryAttempts: 5
+      eventTimeToLiveInMinutes: 180
     }
     eventDeliverySchema: 'EventGridSchema'
   }

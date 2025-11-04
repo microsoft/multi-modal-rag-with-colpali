@@ -16,9 +16,7 @@ class DocumentProcessor:
 
     def __init__(self):
         self.supported_formats = {".pdf"}  # Only PDF support for now
-        self.pdf_image_dpi = int(
-            os.getenv("COLPALI_PDF_IMAGE_DPI", "200")
-        )  # Increased for better quality
+        self.pdf_image_dpi = int(os.getenv("COLPALI_IMAGE_DPI", "150"))
 
         logging.info(f"DocumentProcessor initialized - DPI: {self.pdf_image_dpi}")
 

@@ -24,11 +24,6 @@ COPY src/ ./
 # Install the project itself
 RUN uv sync
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app
-USER appuser
-
 # Place virtual environment at front of path
 ENV PATH="/app/.venv/bin:$PATH"
 

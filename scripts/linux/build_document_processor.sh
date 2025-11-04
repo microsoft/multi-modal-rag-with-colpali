@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Build and push document processor container
+# Build and push document processor container using local Docker for better caching
 
 set -e
 
-echo "Building Document Processor Container"
+echo "Building Document Processor Container (Local Docker Build)"
 
 # Load .env file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,28 +40,41 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
     IMAGE_TAG=$(git rev-parse --short HEAD)
     echo "Generated image tag from git hash: $IMAGE_TAG"
 else
-    echo "Git not available, using 'latest' as fallback"
-    IMAGE_TAG="latest"
+    echo "Git not available, using timestamp as fallback"
+    IMAGE_TAG=$(date +"%Y%m%d-%H%M%S")
 fi
 
 # Navigate to document processor directory
 DOC_PROCESSOR_DIR="$PROJECT_ROOT/modules/document_processor"
-
 cd "$DOC_PROCESSOR_DIR"
 
-# Build and push container image
-echo "Building and pushing to $ACR_NAME..."
-
-# Push with unique tag
-az acr build --registry "$ACR_NAME" --image "document-processor:$IMAGE_TAG" .
-
+# Login to ACR
+echo "Logging into Azure Container Registry: $ACR_NAME"
+az acr login --name "$ACR_NAME"
 if [ $? -ne 0 ]; then
-    echo "Build failed"
+    echo "Failed to login to ACR"
     exit 1
 fi
 
-# Also tag as latest for backward compatibility
-az acr import --name "$ACR_NAME" --source "$ACR_NAME.azurecr.io/document-processor:$IMAGE_TAG" --image "document-processor:latest" --force
+# Build locally with Docker (leverages local cache)
+FULL_IMAGE_NAME="$ACR_NAME.azurecr.io/document-processor:$IMAGE_TAG"
+
+echo "Building Docker image locally: $FULL_IMAGE_NAME"
+docker build --tag "$FULL_IMAGE_NAME" .
+if [ $? -ne 0 ]; then
+    echo "Docker build failed"
+    exit 1
+fi
+
+# Push the image to ACR
+echo "Pushing image to ACR: $FULL_IMAGE_NAME"
+docker push "$FULL_IMAGE_NAME"
+if [ $? -ne 0 ]; then
+    echo "Failed to push image to ACR"
+    exit 1
+fi
+
+echo "Container built and pushed successfully with local Docker caching!"
 
 # Save the image tag to .env file for deployment
 TMP_FILE=$(mktemp)
@@ -97,13 +110,12 @@ if [ $? -eq 0 ]; then
             echo "Updating Container App revision with new image tag: $IMAGE_TAG"
 
             # Update the container app with the new image
-            NEW_IMAGE_URL="$ACR_NAME.azurecr.io/document-processor:$IMAGE_TAG"
             REVISION_SUFFIX=$(echo "$IMAGE_TAG" | tr '.' '-' | tr '_' '-')
 
             az containerapp update \
                 --name "$DOCUMENT_PROCESSOR_CONTAINER_APP_NAME" \
                 --resource-group "$RESOURCE_GROUP" \
-                --image "$NEW_IMAGE_URL" \
+                --image "$FULL_IMAGE_NAME" \
                 --revision-suffix "$REVISION_SUFFIX"
 
             if [ $? -eq 0 ]; then

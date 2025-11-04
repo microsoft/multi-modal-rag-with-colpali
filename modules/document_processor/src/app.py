@@ -8,19 +8,20 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Union
 
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from azure.storage.blob.aio import BlobServiceClient
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from colpali_client import ColPaliClient
-
-# Import existing processors from the indexer module
 from document_processor import DocumentProcessor
 from search_indexer import SearchIndexer
+
+# Global set to keep track of running background tasks
+background_processing_tasks = set()
 
 
 # Pydantic models for API documentation and validation
@@ -29,28 +30,62 @@ class HealthResponse(BaseModel):
     service: str
 
 
-class WebhookResponse(BaseModel):
+class EventProcessingResponse(BaseModel):
     status: str
     eventCount: int
     processedCount: int
+
+
+class EventGridValidationResponse(BaseModel):
+    validationResponse: str
 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI application startup and shutdown events
+    """
+    # Startup
+    global background_processing_tasks
+    background_processing_tasks = set()
+    logger.info(
+        "Document processor startup complete - background task management initialized"
+    )
+
+    yield
+
+    # Shutdown
+    if background_processing_tasks:
+        logger.info(
+            f"Waiting for {len(background_processing_tasks)} background tasks to complete..."
+        )
+        await asyncio.gather(*background_processing_tasks, return_exceptions=True)
+        background_processing_tasks.clear()
+    logger.info("Document processor shutdown complete")
+
+
 app = FastAPI(
     title="Document Processor",
     description="Container App for processing documents with ColPali via Event Grid webhooks",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
 
 # Configuration from environment variables
 STORAGE_ACCOUNT_NAME = os.getenv("DATA_STORAGE_ACCOUNT_NAME")
 AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 
 # Initialize shared Azure credential (cached and reused)
-credential = DefaultAzureCredential()
+if AZURE_CLIENT_ID:
+    credential = ManagedIdentityCredential(client_id=AZURE_CLIENT_ID)
+else:
+    credential = DefaultAzureCredential()
 
 # Initialize processors
 doc_processor = DocumentProcessor()
@@ -69,11 +104,25 @@ if STORAGE_ACCOUNT_NAME:
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint for container readiness"""
-    return HealthResponse(status="healthy", service="document-processor")
+    # Clean up any completed tasks
+    completed_tasks = [task for task in background_processing_tasks if task.done()]
+    for task in completed_tasks:
+        background_processing_tasks.remove(task)
+
+    active_tasks = len(background_processing_tasks)
+    status = (
+        "healthy" if active_tasks < 50 else "busy"
+    )  # Mark as busy if too many background tasks
+
+    return HealthResponse(
+        status=f"{status}-tasks:{active_tasks}", service="document-processor"
+    )
 
 
 @app.post("/api/webhook")
-async def handle_webhook(request: Request):
+async def handle_webhook(
+    request: Request, background_tasks: BackgroundTasks
+) -> Union[EventGridValidationResponse, EventProcessingResponse]:
     """
     Handle Event Grid webhook notifications
 
@@ -103,29 +152,136 @@ async def handle_webhook(request: Request):
 
                 # Return validation response as per Event Grid requirements
                 # Must return HTTP 200 with JSON containing validationResponse
-                return JSONResponse(
-                    content={"validationResponse": validation_code}, status_code=200
-                )
+                return EventGridValidationResponse(validationResponse=validation_code)
 
         # Handle actual blob events
         logger.info(f"Processing {len(events)} blob events")
 
-        processed_count = 0
+        # Process events asynchronously using FastAPI BackgroundTasks
+        accepted_count = 0
+
         for event in events:
             if event.get("eventType") == "Microsoft.Storage.BlobCreated":
-                if await process_blob_event_async(event):
-                    processed_count += 1
+                # Add background task for blob processing
+                background_tasks.add_task(process_blob_event_background, event)
+                accepted_count += 1
             elif event.get("eventType") == "Microsoft.Storage.BlobDeleted":
-                if await process_blob_deleted_event_async(event):
-                    processed_count += 1
+                # Add background task for blob deletion
+                background_tasks.add_task(process_blob_deleted_event_background, event)
+                accepted_count += 1
 
-        return WebhookResponse(
-            status="processed", eventCount=len(events), processedCount=processed_count
+        # Return immediately to avoid Event Grid 30-second timeout
+        # Processing will continue in the background via FastAPI's task management
+        logger.info(f"Accepted {accepted_count} events for background processing")
+        return EventProcessingResponse(
+            status="accepted", eventCount=len(events), processedCount=accepted_count
         )
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def process_blob_event_background(event: Dict[str, Any]) -> None:
+    """
+    Background task wrapper for blob processing
+    """
+    try:
+        blob_url = event.get("data", {}).get("url", "unknown")
+        logger.info(f"Starting background blob processing for: {blob_url}")
+
+        # Process the blob event directly in this background task
+        await process_blob_event_with_cleanup(event)
+
+        logger.info(f"Completed background blob processing for: {blob_url}")
+    except Exception as e:
+        logger.error(f"Failed to process blob in background: {str(e)}", exc_info=True)
+
+
+async def process_blob_deleted_event_background(event: Dict[str, Any]) -> None:
+    """
+    Background task wrapper for blob deletion
+    """
+    try:
+        blob_url = event.get("data", {}).get("url", "unknown")
+        logger.info(f"Starting background blob deletion for: {blob_url}")
+
+        # Process the blob deletion event directly in this background task
+        await process_blob_deleted_event_with_cleanup(event)
+
+        logger.info(f"Completed background blob deletion for: {blob_url}")
+    except Exception as e:
+        logger.error(f"Failed to delete blob in background: {str(e)}", exc_info=True)
+
+
+async def process_blob_event_with_cleanup(event: Dict[str, Any]) -> None:
+    """
+    Wrapper that handles cleanup of completed tasks
+    """
+    blob_url = event.get("data", {}).get("url", "unknown")
+    start_time = time.time()
+
+    try:
+        logger.info(f"Starting background processing for: {blob_url}")
+        result = await process_blob_event_async(event)
+
+        end_time = time.time()
+        processing_time = end_time - start_time
+        logger.info(
+            f"Background blob processing completed successfully for {blob_url}: {result} (took {processing_time:.2f}s)"
+        )
+
+    except Exception as e:
+        end_time = time.time()
+        processing_time = end_time - start_time
+        logger.error(
+            f"Background blob processing failed for {blob_url} after {processing_time:.2f}s: {str(e)}",
+            exc_info=True,
+        )
+
+    finally:
+        # Clean up completed tasks
+        current_task = asyncio.current_task()
+        if current_task in background_processing_tasks:
+            background_processing_tasks.remove(current_task)
+            logger.debug(
+                f"Removed completed task for {blob_url} (remaining: {len(background_processing_tasks)})"
+            )
+
+
+async def process_blob_deleted_event_with_cleanup(event: Dict[str, Any]) -> None:
+    """
+    Wrapper that handles cleanup of completed tasks
+    """
+    blob_url = event.get("data", {}).get("url", "unknown")
+    start_time = time.time()
+
+    try:
+        logger.info(f"Starting background deletion for: {blob_url}")
+        result = await process_blob_deleted_event_async(event)
+
+        end_time = time.time()
+        processing_time = end_time - start_time
+        logger.info(
+            f"Background blob deletion completed successfully for {blob_url}: {result} (took {processing_time:.2f}s)"
+        )
+
+    except Exception as e:
+        end_time = time.time()
+        processing_time = end_time - start_time
+        logger.error(
+            f"Background blob deletion failed for {blob_url} after {processing_time:.2f}s: {str(e)}",
+            exc_info=True,
+        )
+
+    finally:
+        # Clean up completed tasks
+        current_task = asyncio.current_task()
+        if current_task in background_processing_tasks:
+            background_processing_tasks.remove(current_task)
+            logger.debug(
+                f"Removed completed deletion task for {blob_url} (remaining: {len(background_processing_tasks)})"
+            )
 
 
 def parse_blob_url(blob_url: str) -> tuple[str, str]:
@@ -296,123 +452,156 @@ async def process_document_async(
 
         logger.info(f"PDF split into {len(document_pages)} pages")
 
-        # Process all pages in parallel with ColPali (same logic as function app)
-        async def process_page(page_index: int, page_chunk: Dict[str, Any]):
-            """Process a single page and return the result with timing info."""
-            page_start_time = time.time()
-            try:
-                logger.info(f"Starting processing for page {page_index + 1}")
+        # Free the large blob content from memory immediately
+        del blob_content
 
-                # Generate embeddings using ColPali online endpoint (async)
-                embeddings = await colpali_client.generate_embeddings(page_chunk)
-                page_end_time = time.time()
-                page_processing_time = page_end_time - page_start_time
+        # Process pages in small batches to prevent memory exhaustion
+        # Batch size scales with GPU concurrency (2x for efficient memory usage)
+        max_concurrent_requests = int(os.getenv("COLPALI_MAX_CONCURRENT_REQUESTS", "3"))
+        batch_size = max_concurrent_requests * 2
 
-                if embeddings:
-                    # ColQwen2 returns structured embeddings with original and pooled versions
-                    # Format: [batch_size, num_patches, embedding_dim]
-                    original_embeddings = embeddings.get("original_embeddings", [])
-                    pooled_embeddings = embeddings.get("pooled_embeddings", [])
+        async def process_page_batch(batch_pages: List[tuple]):
+            """Process a batch of pages concurrently but with limited memory footprint."""
 
-                    # Handle batched embeddings: API returns [batch1, batch2, ...] where each batch is [patches...]
-                    # For single page processing, we flatten all batches into a single list of patches
-                    flattened_embeddings = {}
+            async def process_single_page(page_index: int, page_chunk: Dict[str, Any]):
+                """Process a single page and return the result with timing info."""
+                page_start_time = time.time()
+                try:
+                    logger.info(f"Starting processing for page {page_index + 1}")
 
-                    if original_embeddings and len(original_embeddings) > 0:
-                        # Flatten batches: concatenate all patches from all batches
-                        all_patches = []
-                        for batch in original_embeddings:
-                            if isinstance(batch, list):
-                                all_patches.extend(batch)
+                    # Generate embeddings using ColPali online endpoint (async)
+                    embeddings = await colpali_client.generate_embeddings(page_chunk)
 
-                        flattened_embeddings["original_embeddings"] = all_patches
-                        num_patches = len(all_patches)
-                        patch_dim = len(all_patches[0]) if len(all_patches) > 0 else 0
-                    else:
-                        num_patches = 0
-                        patch_dim = 0
+                    # Clear page image from memory immediately after processing
+                    if "page_image" in page_chunk:
+                        page_chunk["page_image"].close()
+                        del page_chunk["page_image"]
 
-                    if pooled_embeddings and len(pooled_embeddings) > 0:
-                        # Flatten batches: concatenate all patches from all batches
-                        all_pooled_patches = []
-                        for batch in pooled_embeddings:
-                            if isinstance(batch, list):
-                                all_pooled_patches.extend(batch)
+                    page_end_time = time.time()
+                    page_processing_time = page_end_time - page_start_time
 
-                        flattened_embeddings["pooled_embeddings"] = all_pooled_patches
-                        pooled_patches = len(all_pooled_patches)
-                        pooled_dim = (
-                            len(all_pooled_patches[0])
-                            if len(all_pooled_patches) > 0
-                            else 0
-                        )
-                    else:
-                        pooled_patches = 0
-                        pooled_dim = 0
+                    if embeddings:
+                        # ColQwen2 returns structured embeddings with original and pooled versions
+                        original_embeddings = embeddings.get("original_embeddings", [])
+                        pooled_embeddings = embeddings.get("pooled_embeddings", [])
+                        flattened_embeddings = {}
 
-                    result = {
-                        "page_id": page_chunk["page_number"],
-                        "page_content": page_chunk,
-                        "embeddings": flattened_embeddings,  # Pass flattened patches to indexer
-                        "source_file": blob_name,
-                        "num_patches": num_patches,
-                        "patch_dimensions": patch_dim,
-                        "pooled_patches": pooled_patches,
-                        "pooled_dimensions": pooled_dim,
-                    }
-
-                    # Index this page immediately to avoid large batch timeouts
-                    try:
-                        index_success = await search_indexer.index_embeddings([result])
-                        if index_success:
-                            logger.info(
-                                f"Successfully generated and indexed embeddings for page {page_index + 1}: original ({num_patches} × {patch_dim}), pooled ({pooled_patches} × {pooled_dim}) in {page_processing_time:.2f}s"
+                        if original_embeddings and len(original_embeddings) > 0:
+                            # Flatten batches: concatenate all patches from all batches
+                            all_patches = []
+                            for batch in original_embeddings:
+                                if isinstance(batch, list):
+                                    all_patches.extend(batch)
+                            flattened_embeddings["original_embeddings"] = all_patches
+                            num_patches = len(all_patches)
+                            patch_dim = (
+                                len(all_patches[0]) if len(all_patches) > 0 else 0
                             )
                         else:
-                            logger.warning(
-                                f"Generated embeddings but failed to index page {page_index + 1}"
-                            )
-                    except Exception as index_error:
-                        logger.error(
-                            f"Failed to index page {page_index + 1}: {str(index_error)}"
-                        )
+                            num_patches = 0
+                            patch_dim = 0
 
-                    return result
-                else:
-                    logger.warning(
-                        f"No embeddings generated for page {page_index + 1} (took {page_processing_time:.2f}s)"
+                        if pooled_embeddings and len(pooled_embeddings) > 0:
+                            # Flatten batches: concatenate all patches from all batches
+                            all_pooled_patches = []
+                            for batch in pooled_embeddings:
+                                if isinstance(batch, list):
+                                    all_pooled_patches.extend(batch)
+                            flattened_embeddings["pooled_embeddings"] = (
+                                all_pooled_patches
+                            )
+                            pooled_patches = len(all_pooled_patches)
+                            pooled_dim = (
+                                len(all_pooled_patches[0])
+                                if len(all_pooled_patches) > 0
+                                else 0
+                            )
+                        else:
+                            pooled_patches = 0
+                            pooled_dim = 0
+
+                        result = {
+                            "page_id": page_chunk["page_number"],
+                            "page_content": page_chunk,
+                            "embeddings": flattened_embeddings,
+                            "source_file": blob_name,
+                            "num_patches": num_patches,
+                            "patch_dimensions": patch_dim,
+                            "pooled_patches": pooled_patches,
+                            "pooled_dimensions": pooled_dim,
+                        }
+
+                        # Index this page immediately to avoid large batch timeouts
+                        try:
+                            index_success = await search_indexer.index_embeddings(
+                                [result]
+                            )
+                            if index_success:
+                                logger.info(
+                                    f"Successfully generated and indexed embeddings for page {page_index + 1}: original ({num_patches} × {patch_dim}), pooled ({pooled_patches} × {pooled_dim}) in {page_processing_time:.2f}s"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Generated embeddings for page {page_index + 1} ({num_patches} patches) but QDRANT indexing failed - check QDRANT connection and collection setup"
+                                )
+                        except Exception as index_error:
+                            logger.error(
+                                f"Failed to index page {page_index + 1}: {str(index_error)}"
+                            )
+
+                        return result
+                    else:
+                        logger.warning(
+                            f"No embeddings generated for page {page_index + 1} (took {page_processing_time:.2f}s)"
+                        )
+                        return None
+
+                except Exception as e:
+                    page_end_time = time.time()
+                    page_processing_time = page_end_time - page_start_time
+                    logger.error(
+                        f"Failed to generate embeddings for page {page_index + 1} after {page_processing_time:.2f}s: {str(e)}"
                     )
                     return None
 
-            except Exception as e:
-                page_end_time = time.time()
-                page_processing_time = page_end_time - page_start_time
-                logger.error(
-                    f"Failed to generate embeddings for page {page_index + 1} after {page_processing_time:.2f}s: {str(e)}"
-                )
-                return None
+            # Process all pages in this batch concurrently
+            batch_tasks = [
+                process_single_page(i, page_chunk) for i, page_chunk in batch_pages
+            ]
+            return await asyncio.gather(*batch_tasks, return_exceptions=True)
 
-        # Process all pages concurrently
+        # Process all pages in batches to prevent memory exhaustion
         embedding_start_time = time.time()
-        logger.info(f"Starting parallel processing of {len(document_pages)} pages...")
+        logger.info(
+            f"Starting batched processing of {len(document_pages)} pages (batch size: {batch_size})..."
+        )
 
-        page_tasks = [
-            process_page(i, page_chunk) for i, page_chunk in enumerate(document_pages)
-        ]
-        page_results = await asyncio.gather(*page_tasks, return_exceptions=True)
+        embeddings_results: List[Dict[str, Any]] = []
+
+        # Split pages into batches
+        for batch_start in range(0, len(document_pages), batch_size):
+            batch_end = min(batch_start + batch_size, len(document_pages))
+            batch_pages = [
+                (i, document_pages[i]) for i in range(batch_start, batch_end)
+            ]
+
+            logger.info(
+                f"Processing batch {batch_start // batch_size + 1}: pages {batch_start + 1}-{batch_end}"
+            )
+
+            batch_results = await process_page_batch(batch_pages)
+
+            # Filter out None results and exceptions from this batch
+            for result in batch_results:
+                if (
+                    result is not None
+                    and not isinstance(result, Exception)
+                    and isinstance(result, dict)
+                ):
+                    embeddings_results.append(result)
 
         embedding_end_time = time.time()
         embedding_processing_time = embedding_end_time - embedding_start_time
-
-        # Filter out None results and exceptions
-        embeddings_results: List[Dict[str, Any]] = []
-        for result in page_results:
-            if (
-                result is not None
-                and not isinstance(result, Exception)
-                and isinstance(result, dict)
-            ):
-                embeddings_results.append(result)
 
         logger.info(
             f"Parallel processing completed in {embedding_processing_time:.2f}s"

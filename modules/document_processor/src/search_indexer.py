@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Dict, List, Optional
 
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from PIL import Image
 from qdrant_client import AsyncQdrantClient, models
 
@@ -35,7 +35,10 @@ class SearchIndexer:
     QDRANT schema: Multi-vector configuration with original and pooled embeddings
     """
 
-    def __init__(self, credential: Optional[DefaultAzureCredential] = None):
+    def __init__(
+        self,
+        credential: Optional[DefaultAzureCredential | ManagedIdentityCredential] = None,
+    ):
         """Initialize QDRANT client based on environment configuration."""
         self.qdrant_client = None
         self.credential = credential or DefaultAzureCredential()
@@ -76,10 +79,14 @@ class SearchIndexer:
                     logging.info("QDRANT indexing completed successfully")
                     return True
                 else:
-                    logging.error("QDRANT indexing failed")
+                    logging.error(
+                        f"QDRANT indexing failed for {len(embeddings_results)} results - check QDRANT connection and collection configuration"
+                    )
                     return False
             except Exception as e:
-                logging.error(f"QDRANT indexing error: {e}")
+                logging.error(
+                    f"QDRANT indexing error for {len(embeddings_results)} results: {type(e).__name__}: {e}"
+                )
                 return False
 
         return False
@@ -160,7 +167,9 @@ class SearchIndexer:
             return True
 
         except Exception as e:
-            logging.error(f"QDRANT indexing failed: {e}")
+            logging.error(
+                f"QDRANT indexing failed while upserting {len(points)} points: {type(e).__name__}: {e}"
+            )
             return False
 
     def _transform_to_qdrant_point(

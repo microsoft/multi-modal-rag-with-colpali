@@ -12,7 +12,7 @@ from io import BytesIO
 from typing import Any, Dict, Optional
 
 import aiohttp
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from PIL import Image
 from tenacity import (
     retry,
@@ -25,7 +25,10 @@ from tenacity import (
 class ColPaliClient:
     """Client for communicating with ColQwen2 online endpoint using managed identity authentication."""
 
-    def __init__(self, credential: Optional[DefaultAzureCredential] = None):
+    def __init__(
+        self,
+        credential: Optional[DefaultAzureCredential | ManagedIdentityCredential] = None,
+    ):
         self.endpoint_url = os.getenv("AML_EMBEDDING_ENDPOINT_URL")
         self.request_timeout = int(os.getenv("COLPALI_REQUEST_TIMEOUT", "120"))
         self.max_image_size = int(os.getenv("COLPALI_MAX_IMAGE_SIZE", "1536"))
