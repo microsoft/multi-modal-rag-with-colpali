@@ -113,6 +113,9 @@ Key modules enable multi-modal RAG: `aml.bicep` orchestrates ML workspace; `aiFo
 | `jobInstanceType` | GPU cluster VM size | `Standard_NC16as_T4_v3` |
 | `jobInstanceCount` | Max cluster instances | `1` |
 | `deployRoleAssignments` | Skip RBAC on repeat runs | `false` |
+| `createOnlineEndpoint` | Create endpoint (auto-detected by deployment scripts) | `true` |
+
+**Note on `createOnlineEndpoint`**: The deployment scripts automatically detect if the online endpoint already exists and skip creation to preserve traffic allocation. This parameter is automatically set by the scripts and typically doesn't need manual configuration.
 
 ## ColPali Model Configuration
 

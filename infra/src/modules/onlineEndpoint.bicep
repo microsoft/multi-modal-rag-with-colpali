@@ -13,13 +13,16 @@ param endpointDescription string = 'ColPali document understanding inference end
 @description('Tags for the endpoint')
 param tags object = {}
 
+@description('Whether to create the endpoint. Auto-detected by deployment scripts.')
+param createEndpoint bool = true
+
 // Get the existing Azure ML workspace resource
 resource amlWorkspace 'Microsoft.MachineLearningServices/workspaces@2024-04-01' existing = {
   name: split(amlWorkspaceId, '/')[8]
 }
 
-// Create the online endpoint
-resource onlineEndpoint 'Microsoft.MachineLearningServices/workspaces/onlineEndpoints@2024-04-01' = {
+// Create the online endpoint only if it doesn't already exist
+resource onlineEndpoint 'Microsoft.MachineLearningServices/workspaces/onlineEndpoints@2024-04-01' = if (createEndpoint) {
   parent: amlWorkspace
   name: endpointName
   location: location
@@ -34,23 +37,37 @@ resource onlineEndpoint 'Microsoft.MachineLearningServices/workspaces/onlineEndp
   }
 }
 
+// Reference existing endpoint only when not creating a new one
+resource existingEndpoint 'Microsoft.MachineLearningServices/workspaces/onlineEndpoints@2024-04-01' existing = if (!createEndpoint) {
+  parent: amlWorkspace
+  name: endpointName
+}
+
 // ------------------------------------------------------------
 // OUTPUTS
 // ------------------------------------------------------------
 @description('The name of the online endpoint')
-output endpointName string = onlineEndpoint.name
+output endpointName string = endpointName
 
 @description('The resource ID of the online endpoint')
-output endpointId string = onlineEndpoint.id
+output endpointId string = createEndpoint ? onlineEndpoint!.id : existingEndpoint!.id
 
 @description('The scoring URI of the online endpoint')
-output scoringUri string = onlineEndpoint.properties.scoringUri
+output scoringUri string = createEndpoint
+  ? onlineEndpoint!.properties.scoringUri
+  : existingEndpoint!.properties.scoringUri
 
 @description('The swagger URI for the online endpoint')
-output swaggerUri string = onlineEndpoint.properties.swaggerUri
+output swaggerUri string = createEndpoint
+  ? onlineEndpoint!.properties.swaggerUri
+  : existingEndpoint!.properties.swaggerUri
 
 @description('The principal ID of the online endpoint managed identity')
-output endpointPrincipalId string = onlineEndpoint.identity.principalId
+output endpointPrincipalId string = createEndpoint
+  ? onlineEndpoint!.identity.principalId
+  : existingEndpoint!.identity.principalId
 
 @description('The provisioning state of the online endpoint')
-output provisioningState string = onlineEndpoint.properties.provisioningState
+output provisioningState string = createEndpoint
+  ? onlineEndpoint!.properties.provisioningState
+  : existingEndpoint!.properties.provisioningState

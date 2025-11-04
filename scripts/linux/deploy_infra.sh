@@ -56,6 +56,27 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Check if online endpoint already exists
+echo "Checking if online endpoint already exists..."
+BASE_NAME=$(grep "param baseName = " "$PROJECT_ROOT/infra/src/main.bicepparam" | sed "s/param baseName = '\(.*\)'/\1/")
+ENDPOINT_NAME="oep-$BASE_NAME"
+WORKSPACE_NAME_FROM_PARAM="mlw-$BASE_NAME"
+
+# Get subscription ID for resource check
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+ENDPOINT_EXISTS=false
+# Use az resource show instead of az ml for better performance
+RESOURCE_ID="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.MachineLearningServices/workspaces/$WORKSPACE_NAME_FROM_PARAM/onlineEndpoints/$ENDPOINT_NAME"
+if az resource show --ids "$RESOURCE_ID" >/dev/null 2>&1; then
+    ENDPOINT_EXISTS=true
+    echo "  Endpoint '$ENDPOINT_NAME' already exists - will skip creation to preserve traffic allocation"
+else
+    echo "  Endpoint '$ENDPOINT_NAME' does not exist - will create it"
+fi
+
+CREATE_ENDPOINT=$([ "$ENDPOINT_EXISTS" = true ] && echo "false" || echo "true")
+
 # Use absolute paths for the Bicep files
 BICEP_PARAM_FILE="$PROJECT_ROOT/infra/src/main.bicepparam"
 echo "Using Bicep parameter file: $BICEP_PARAM_FILE"
@@ -70,7 +91,7 @@ echo "Deploy Container Apps: '$DEPLOY_CONTAINER_APPS'"
 
 DEPLOYMENT_OUTPUT=$(az deployment group create \
     --resource-group "$RESOURCE_GROUP" \
-    --parameters "$BICEP_PARAM_FILE" userObjectId="$USER_OBJECT_ID" deployRoleAssignments="$DEPLOY_ROLES" deployContainerApps="$DEPLOY_CONTAINER_APPS" \
+    --parameters "$BICEP_PARAM_FILE" userObjectId="$USER_OBJECT_ID" deployRoleAssignments="$DEPLOY_ROLES" deployContainerApps="$DEPLOY_CONTAINER_APPS" createOnlineEndpoint="$CREATE_ENDPOINT" \
     --query properties.outputs -o json)
 
 if [ $? -ne 0 ]; then

@@ -72,6 +72,9 @@ param jobInstanceCount int = 1
 @description('The optional object ID of the user to assign to the compute instance (if empty, will be auto-assigned)')
 param userObjectId string = ''
 
+@description('Whether to create the online endpoint. Automatically determined by deployment scripts based on endpoint existence.')
+param createOnlineEndpoint bool = true
+
 var acrName = replace('cr${baseName}', '-', '')
 var amlWorkspaceName = 'mlw-${baseName}'
 var amlComputeClusterName = 'mlcc-${baseName}'
@@ -139,6 +142,7 @@ module amlEmbeddingEndpoint 'modules/onlineEndpoint.bicep' = {
     location: location
     amlWorkspaceId: amlWorkspace.outputs.amlWorkspaceId
     endpointDescription: 'ColQwen2 embedding endpoint for document understanding'
+    createEndpoint: createOnlineEndpoint
     tags: {
       purpose: 'document-embedding'
       model: 'colqwen2'

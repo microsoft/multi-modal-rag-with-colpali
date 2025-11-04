@@ -14,6 +14,8 @@ Run scripts in this exact order for complete deployment:
 | 4 | **deploy_index** | Search Setup | Creates and configures both Azure AI Search index and QDRANT collection with aligned schemas optimized for ColPali vector embeddings |
 | 5 | **deploy_function** | Function Deploy | Deploys the document processing Function App code to Azure |
 
+**Note**: The `deploy_infra` script automatically detects if the online endpoint already exists and skips creation on subsequent runs to preserve traffic allocation configured by model deployments.
+
 ## Container Apps Deployment
 
 The infrastructure supports both Azure Functions and Container Apps for document processing. Container Apps include QDRANT vector database and are deployed conditionally.

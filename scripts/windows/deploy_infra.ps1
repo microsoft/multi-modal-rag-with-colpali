@@ -33,6 +33,32 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to get user object ID"
 }
 
+# Check if online endpoint already exists
+Write-Host "Checking if online endpoint already exists..."
+$BicepParamContent = Get-Content "$ProjectRoot\infra\src\main.bicepparam" -Raw
+$BaseName = if ($BicepParamContent -match "param baseName = '([^']+)'") { $Matches[1] } else { throw "Could not find baseName in main.bicepparam" }
+$EndpointName = "oep-$BaseName"
+$WorkspaceNameFromParam = "mlw-$BaseName"
+
+$EndpointExists = $false
+try {
+    # Use az resource show instead of az ml for better performance
+    $ResourceId = "/subscriptions/$((az account show --query id -o tsv))/resourceGroups/$ResourceGroup/providers/Microsoft.MachineLearningServices/workspaces/$WorkspaceNameFromParam/onlineEndpoints/$EndpointName"
+    $EndpointCheck = az resource show --ids "$ResourceId" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $EndpointCheck) {
+        $EndpointExists = $true
+        Write-Host "  Endpoint '$EndpointName' already exists - will skip creation to preserve traffic allocation"
+    }
+} catch {
+    # Endpoint doesn't exist, which is fine for first deployment
+}
+
+if (-not $EndpointExists) {
+    Write-Host "  Endpoint '$EndpointName' does not exist - will create it"
+}
+
+$CreateEndpoint = if ($EndpointExists) { "false" } else { "true" }
+
 # Use absolute paths for the Bicep files
 $BicepParamFile = Join-Path $ProjectRoot "infra\src\main.bicepparam"
 Write-Host "Using Bicep parameter file: $BicepParamFile"
@@ -45,7 +71,7 @@ Write-Host "User Object ID: '$UserObjectId'"
 Write-Host "Deploy Roles: '$DeployRoles'"
 Write-Host "Deploy Container Apps: '$DeployContainerApps'"
 
-$deploymentOutput = az deployment group create --resource-group "$ResourceGroup" --parameters "$BicepParamFile" userObjectId="$UserObjectId" deployRoleAssignments="$DeployRoles" deployContainerApps="$DeployContainerApps" --query "properties.outputs" -o json | ConvertFrom-Json
+$deploymentOutput = az deployment group create --resource-group "$ResourceGroup" --parameters "$BicepParamFile" userObjectId="$UserObjectId" deployRoleAssignments="$DeployRoles" deployContainerApps="$DeployContainerApps" createOnlineEndpoint="$CreateEndpoint" --query "properties.outputs" -o json | ConvertFrom-Json
 
 if ($LASTEXITCODE -ne 0) {
     throw "Bicep deployment failed"
