@@ -4,10 +4,11 @@ A FastAPI-based container app that processes PDF documents via Event Grid webhoo
 
 ## What it does
 
-1. **Receives webhooks**: Listens for Event Grid notifications when PDFs are uploaded to Azure Storage
+1. **Receives webhooks**: Listens for Event Grid notifications when PDFs are uploaded to or deleted from Azure Storage
 2. **Converts to images**: Splits the PDF into page images (configurable DPI and page limits)
 3. **Creates embeddings**: Sends images to ColPali endpoint to generate visual embeddings
 4. **Stores in search**: Indexes the embeddings in QDRANT vector database for retrieval
+5. **Handles deletions**: Removes document pages from the index when files are deleted from storage
 
 ## Architecture
 

@@ -23,7 +23,7 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        args: [--skip, "uv.lock,*.json,*.jsonl"]
+        args: [--skip, "uv.lock,*.json,*.jsonl", -L, caf]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.

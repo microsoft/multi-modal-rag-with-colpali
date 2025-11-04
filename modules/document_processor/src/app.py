@@ -124,6 +124,9 @@ async def handle_webhook(request: Request):
             if event.get("eventType") == "Microsoft.Storage.BlobCreated":
                 if await process_blob_event_async(event):
                     processed_count += 1
+            elif event.get("eventType") == "Microsoft.Storage.BlobDeleted":
+                if await process_blob_deleted_event_async(event):
+                    processed_count += 1
 
         return WebhookResponse(
             status="processed", eventCount=len(events), processedCount=processed_count
@@ -132,6 +135,30 @@ async def handle_webhook(request: Request):
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def parse_blob_url(blob_url: str) -> tuple[str, str]:
+    """
+    Parse Azure Blob Storage URL to extract container name and blob name.
+
+    URL format: https://{account}.blob.core.windows.net/{container}/{blob-path}
+
+    Args:
+        blob_url: Full blob URL from event data
+
+    Returns:
+        Tuple of (container_name, blob_name) where blob_name includes full path
+
+    Example:
+        parse_blob_url("https://storage.blob.core.windows.net/documents/reports/2024/file.pdf")
+        Returns: ("documents", "reports/2024/file.pdf")
+    """
+    url_parts = blob_url.split("/")
+    # URL structure: ['https:', '', 'account.blob.core.windows.net', 'container', 'path', 'to', 'blob']
+    # Container is at index 3, blob name is everything from index 4 onwards
+    container_name = url_parts[3]
+    blob_name = "/".join(url_parts[4:])
+    return container_name, blob_name
 
 
 async def process_blob_event_async(event: Dict[str, Any]) -> bool:
@@ -144,10 +171,8 @@ async def process_blob_event_async(event: Dict[str, Any]) -> bool:
     try:
         # Extract blob information from event
         blob_url = event["data"]["url"]
-        # Parse container and blob name from URL
-        url_parts = blob_url.split("/")
-        container_name = url_parts[-2]
-        blob_name = url_parts[-1]
+        # Parse container and blob name from URL (supports subdirectories)
+        container_name, blob_name = parse_blob_url(blob_url)
 
         logger.info(
             f"Document processor triggered for blob: {container_name}/{blob_name}"
@@ -193,6 +218,62 @@ async def process_blob_event_async(event: Dict[str, Any]) -> bool:
         processing_time = end_time - start_time
         logger.error(
             f"Error processing blob event after {processing_time:.2f} seconds: {str(e)}"
+        )
+        return False
+
+
+async def process_blob_deleted_event_async(event: Dict[str, Any]) -> bool:
+    """
+    Process a blob deleted event by removing the document from the search index
+    Returns True if successful, False otherwise
+    """
+    start_time = time.time()
+
+    try:
+        # Extract blob information from event
+        blob_url = event["data"]["url"]
+        # Parse container and blob name from URL (supports subdirectories)
+        container_name, blob_name = parse_blob_url(blob_url)
+
+        logger.info(
+            f"Document deletion triggered for blob: {container_name}/{blob_name}"
+        )
+
+        # Skip if not in documents container
+        if container_name != "documents":
+            logger.info(f"Skipping blob in container: {container_name}")
+            return False
+
+        # Determine file type from blob name
+        file_extension = os.path.splitext(blob_name)[1].lower()
+
+        # Only process PDF files
+        if file_extension != ".pdf":
+            logger.info(f"Skipping non-PDF file: {blob_name} ({file_extension})")
+            return False
+
+        # Delete all pages for this document from the index
+        delete_success = search_indexer.delete_document_pages(blob_name)
+
+        end_time = time.time()
+        processing_time = end_time - start_time
+
+        if delete_success:
+            logger.info(
+                f"Successfully deleted document pages for {blob_name} in {processing_time:.2f} seconds"
+            )
+            return True
+        else:
+            logger.error(
+                f"Failed to delete document pages for {blob_name} after {processing_time:.2f} seconds"
+            )
+            return False
+
+    except Exception as e:
+        end_time = time.time()
+        processing_time = end_time - start_time
+        logger.error(
+            f"Error processing blob deletion event after {processing_time:.2f} seconds: {str(e)}"
         )
         return False
 

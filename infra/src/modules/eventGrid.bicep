@@ -24,7 +24,7 @@ resource blobSystemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' =
   }
 }
 
-// Event Subscription (blob created → container app webhook)
+// Event Subscription (blob created and deleted → container app webhook)
 resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2024-06-01-preview' = {
   parent: blobSystemTopic
   name: 'egs-${baseName}-document-processing' // CAF: Event Grid Subscription
@@ -40,6 +40,7 @@ resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscripti
     filter: {
       includedEventTypes: [
         'Microsoft.Storage.BlobCreated'
+        'Microsoft.Storage.BlobDeleted'
       ]
       subjectBeginsWith: '/blobServices/default/containers/documents/blobs/'
       subjectEndsWith: '.pdf'
