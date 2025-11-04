@@ -213,3 +213,7 @@ environment.yml
 
 # Testing file for document processor module
 test_files/
+
+# Bicep compiled templates
+*.bicep.json
+infra/**/*.json

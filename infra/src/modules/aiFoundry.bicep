@@ -40,7 +40,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   parent: aiFoundry
   name: 'gpt-5-mini'
   sku: {
-    capacity: 1
+    capacity: 100
     name: 'GlobalStandard'
   }
   properties: {
