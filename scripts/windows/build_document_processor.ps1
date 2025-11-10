@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
 
-# Build and push document processor container using local Docker for better caching
+# Build and push Document Processor containers
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "Building Document Processor Container (Local Docker Build)"
+Write-Host "Building Document Processor Containers"
 
 # Load .env file
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -40,9 +40,9 @@ catch {
     $imageTag = (Get-Date -Format "yyyyMMdd-HHmmss")
 }
 
-# Navigate to document processor directory
-$docProcessorDir = Join-Path $PSScriptRoot "..\..\modules\document_processor"
-Push-Location $docProcessorDir
+# Navigate to document_processor directory
+$documentProcessorDir = Join-Path $PSScriptRoot "..\..\modules\document_processor"
+Push-Location $documentProcessorDir
 
 try {
     # Login to ACR
@@ -52,80 +52,46 @@ try {
         throw "Failed to login to ACR"
     }
 
-    # Build locally with Docker (leverages local cache)
-    $fullImageName = "${acrName}.azurecr.io/document-processor:${imageTag}"
+    # Build and push image remotely with cache
+    Write-Host "Building Document Processor unified image remotely with cache..."
+    $inferenceImage = "$acrName.azurecr.io/document-processor:$imageTag"
 
-    Write-Host "Building Docker image locally: $fullImageName"
-    docker build --tag $fullImageName .
-    if ($LASTEXITCODE -ne 0) {
-        throw "Docker build failed"
-    }
+    az acr build --registry $acrName --image $inferenceImage --file Dockerfile .
 
-    # Push the image to ACR
-    Write-Host "Pushing image to ACR: $fullImageName"
-    docker push $fullImageName
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to push image to ACR"
-    }
+    Write-Host "Document Processor image built and pushed successfully!"
+    Write-Host "   Image: $inferenceImage"
+    Write-Host "   Tag: $imageTag"
 
-    Write-Host "Container built and pushed successfully with local Docker caching!"
-
-    # Save the image tag to .env file for deployment
+    # Update .env file with the image tag
     $envContent = Get-Content $EnvFile
-    $newContent = @()
+    $newEnvContent = @()
     $tagUpdated = $false
 
     foreach ($line in $envContent) {
         if ($line -match '^DOCUMENT_PROCESSOR_IMAGE_TAG=') {
-            $newContent += "DOCUMENT_PROCESSOR_IMAGE_TAG=$imageTag"
+            $newEnvContent += "DOCUMENT_PROCESSOR_IMAGE_TAG=$imageTag"
             $tagUpdated = $true
         }
         else {
-            $newContent += $line
+            $newEnvContent += $line
         }
     }
 
-    # Add tag if not found
+    # Add DOCUMENT_PROCESSOR_IMAGE_TAG if it doesn't exist
     if (-not $tagUpdated) {
-        $newContent += "DOCUMENT_PROCESSOR_IMAGE_TAG=$imageTag"
+        $newEnvContent += "DOCUMENT_PROCESSOR_IMAGE_TAG=$imageTag"
     }
 
-    $newContent | Set-Content $EnvFile
-    Write-Host "Image tag $imageTag saved to .env file"
+    Set-Content $EnvFile $newEnvContent
+    Write-Host "Updated .env with DOCUMENT_PROCESSOR_IMAGE_TAG=$imageTag"
 
-    # Check if Container App exists and update revision
-    $containerAppName = $envVars['DOCUMENT_PROCESSOR_CONTAINER_APP_NAME']
-    $resourceGroup = $envVars['RESOURCE_GROUP']
+    Write-Host "Document Processor container build completed successfully!"
+    Write-Host "Run 'apply_helm.ps1' to deploy the updated image to AKS"
 
-    if ($containerAppName -and $resourceGroup) {
-        Write-Host "Checking if Container App '$containerAppName' exists..."
-        $containerAppExists = az containerapp show --name $containerAppName --resource-group $resourceGroup --query "name" -o tsv 2>$null
-
-        if ($containerAppExists) {
-            Write-Host "Updating Container App revision with new image tag: $imageTag"
-
-            # Update the container app with the new image
-            az containerapp update `
-                --name $containerAppName `
-                --resource-group $resourceGroup `
-                --image $fullImageName `
-                --revision-suffix $imageTag.Replace('.', '-').Replace('_', '-')
-
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "Container App revision updated successfully"
-            }
-            else {
-                Write-Host "Warning: Failed to update Container App revision. You may need to redeploy manually."
-            }
-        }
-        else {
-            Write-Host "Container App '$containerAppName' not found. Deploy infrastructure first with container apps enabled."
-        }
-    }
-    else {
-        Write-Host "Container App name or resource group not found in .env file. Skipping revision update."
-    }
-
+}
+catch {
+    Write-Host "Error building Document Processor images: $($_.Exception.Message)"
+    throw
 }
 finally {
     Pop-Location

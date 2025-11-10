@@ -1,0 +1,101 @@
+# SIMPLE - Three components: Qdrant + Ingress + Document Processor
+
+# Values passed from deploy script
+acrServer: "" # ACR login server
+aksIdentityClientId: "" # Workload identity
+aksKubeletIdentityClientId: "" # AKS kubelet identity for storage access
+tenantId: "" # Azure tenant ID for Key Vault access
+storageAccountName: "" # Storage account
+serviceBusNamespace: "" # Service Bus namespace for message queuing
+serviceBusQueueName: "document-processing" # Service Bus queue name
+# Application Insights connection string is now stored securely in Key Vault
+# and accessed via the app-secrets SecretProviderClass
+
+# Key Vault configuration for secrets
+keyVault:
+  name: "" # Key Vault name (passed from deploy script)
+  qdrantApiKeySecretName: "qdrant-api-key" # Secret name for Qdrant API key
+  qdrantReadOnlyApiKeySecretName: "qdrant-readonly-api-key" # Secret name for Qdrant read-only API key
+  applicationInsightsConnectionStringSecretName: "appinsights-connection-string" # Secret name for Application Insights connection string
+
+# Qdrant (dependency configuration)
+qdrant:
+  enabled: true
+  # Configure Qdrant subchart
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "managed-premium"
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+  # Schedule on CPU pool nodes (no taints on cpupool)
+  nodeSelector:
+    kubernetes.azure.com/agentpool: cpupool
+
+  # Security Configuration - API keys from Key Vault
+  # Note: These will be injected via Secret Provider Class
+  extraEnv:
+    - name: QDRANT__SERVICE__API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
+          key: api-key
+    - name: QDRANT__SERVICE__READ_ONLY_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
+          key: readonly-api-key
+
+# Document Processor - TEMPORARILY DISABLED FOR TESTING
+documentProcessor:
+  enabled: true
+  replicaCount: 1
+  imageTag: "latest"
+
+colqwenInference:
+  enabled: true
+  replicaCount: 1  # Start with 1 replica for testing
+  imageTag: "latest"
+
+  # Model configuration
+  model:
+    modelDirectory: "/tmp/model-directory"
+    storageSize: "20Gi"  # Size of the Premium SSD for model storage per replica
+
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "1"
+    limits:
+      memory: "12Gi"
+      cpu: "2"
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+
+  # Health check configuration
+  healthcheck:
+    initialDelaySeconds: 600  # Allow time for model download + loading (10 minutes)
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 5  # More retries during startup
+
+# Ingress Controller (for Qdrant access only)
+ingress-nginx:
+  enabled: false
+  # Configure ingress-nginx subchart
+  controller:
+    service:
+      type: LoadBalancer
+      externalTrafficPolicy: Local
+      annotations:
+        service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
+        service.beta.kubernetes.io/azure-load-balancer-health-probe-protocol: tcp

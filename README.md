@@ -1,27 +1,27 @@
-# ColPali on Azure
+# ColPali on Azure Kubernetes Service (AKS)
 
 [![CI](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/actions/workflows/ci.yml)
 
-Multi-modal RAG solution powered by ColPali for intelligent document understanding and retrieval. Deploy ColPali models on Azure with GPU-accelerated inference, serverless document processing, and vector search capabilities.
+Multi-modal RAG solution powered by ColPali for intelligent document understanding and retrieval. Deploy ColPali models natively on AKS with Kubernetes-native inference, document processing, and high-performance vector search with Qdrant.
 
 ```mermaid
 flowchart LR
-    subgraph Setup[Model Setup - One Time]
-        HF[HuggingFace] --> JOB[GPU Job Cluster]
-        JOB --> REG[Register Models]
-        REG --> DEPLOY[Deploy to Endpoint]
+    subgraph Setup[Model Setup - Kubernetes Native]
+        HF[HuggingFace Hub] --> DOWNLOAD[Model Download Job]
+        DOWNLOAD --> CACHE[Persistent Model Cache]
+        CACHE --> DEPLOY[ColQwen Inference Pods]
     end
 
-    subgraph Processing[Document Pipeline]
-        PDF[PDF Documents] --> FUNC[Function App]
-        FUNC --> ENDPOINT[ColPali Inference]
-        ENDPOINT --> EMBED[Multi-Modal Embeddings]
-        EMBED --> SEARCH[AI Search Index]
+    subgraph Processing[Document Pipeline - AKS]
+        PDF[PDF Documents] --> DOCPROC[Document Processor]
+        DOCPROC --> COLQWEN[ColQwen Inference Service]
+        COLQWEN --> EMBED[Multi-Modal Embeddings]
+        EMBED --> QDRANT[Qdrant Vector DB]
     end
 
     subgraph Query[Query & Retrieval]
-        USER[User Query] --> ENDPOINT
-        SEARCH --> RESULTS[Relevant Documents]
+        USER[User Query] --> COLQWEN
+        QDRANT --> RESULTS[Relevant Documents]
         RESULTS --> RAG[RAG Application]
     end
 
@@ -36,10 +36,10 @@ ColPali combines visual and textual understanding to process documents as images
 ## Key Features
 
 - **Multi-Modal Intelligence**: Processes both text and visual document elements
-- **GPU-Accelerated Inference**: Azure ML endpoints with A100/T4 GPUs
-- **Serverless Processing**: Auto-scaling document pipeline with Azure Functions
-- **Vector Search**: High-performance similarity search with AI Search
-- **Production Ready**: Complete infrastructure with monitoring and security
+- **Kubernetes-Native Deployment**: ColQwen inference runs directly on AKS pods
+- **Optimized Model Lifecycle**: Single download job with persistent cache shared across replicas
+- **Vector Search**: High-performance similarity search with Qdrant vector database
+- **Production Ready**: Complete infrastructure with monitoring, health checks, and security
 
 ## Quick Start
 
@@ -54,12 +54,24 @@ Once deployed, upload PDFs to the storage container and watch them get processed
 
 ## Architecture
 
-| Component | Purpose |
-|-----------|---------|
-| **Azure ML** | ColPali model hosting with GPU inference endpoints |
-| **AI Foundry** | GPT-5 Chat model for intelligent document retrieval and RAG |
-| **Storage** | PDF files and processed content |
-| **Key Vault** | Secure credential management |
+For detailed component descriptions, deployment topology, and technical specifications, see the **[Infrastructure Guide](infra/README.md)**.
+
+## Why Qdrant + AKS?
+
+### Why Qdrant over AI Search?
+- **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - critical for ColPali's page-based embeddings
+- **Advanced Operations**: Qdrant supports reranking and MAX_SIM operations that AI Search doesn't provide
+
+### Why AKS over Container Apps?
+- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure.
+- **Simpler Setup**: No need to setup multiple Azure Services to host the different services.
+
+### Why AKS over Azure ML?
+
+- **Shared Compute Costs**: Multiple services (document processor + ColQwen inference) share the same node pool
+- **Single Platform**: Document processor and inference unified on same AKS cluster
+
+**Looking for an approach with Azure Machine Learning?** A previous version of this repository, utilised AML for the hosting of the endpoint. You can find the code at in this commit [a5c7c0811e2b596cf6e68905512901ae3bb460a2](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/tree/a5c7c0811e2b596cf6e68905512901ae3bb460a2).
 
 ## Project Structure
 
@@ -67,24 +79,24 @@ Once deployed, upload PDFs to the storage container and watch them get processed
 ├── infra/              # Bicep infrastructure templates
 ├── modules/
 │   ├── colpali/        # ColPali model setup & deployment
-│   ├── indexer/        # Function App (PDF processing)
-│   └── index/          # AI Search index management
+│   └── document_processor/  # FastAPI document processing service
+├── helm/               # Helm charts for AKS deployment
 └── scripts/            # Deployment automation
 ```
 
 ## How It Works
 
-1. **PDF Upload** → Triggers Function App processing
+1. **PDF Upload** → Triggers document processing via AKS service
 2. **Document Processing** → Extracts pages as high-resolution images
-3. **ColPali Inference** → Generates multi-modal embeddings via Azure ML endpoint
-4. **Vector Storage** → Stores embeddings in AI Search with metadata
-5. **Query & Retrieve** → Semantic search returns relevant document sections
-6. **Intelligent Retrieval** → AI Foundry's GPT-5 Chat model powers advanced RAG capabilities
+3. **ColQwen Inference** → Generates multi-modal embeddings via Kubernetes-native pods
+4. **Vector Storage** → Stores embeddings in Qdrant vector database with metadata
+5. **Query & Retrieve** → Semantic search returns relevant document sections via Qdrant
+6. **Intelligent Retrieval** → AI Foundry's models power advanced RAG capabilities
 
 ## Documentation
 
 - **[Infrastructure Guide](infra/README.md)** - Detailed architecture and deployment
-- **[Deployment Guide](scripts/README.md.md)** - Step-by-step setup instructions
+- **[Deployment Guide](scripts/README.md)** - Step-by-step setup instructions
 
 ## Contributing
 

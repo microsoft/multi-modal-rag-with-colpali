@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Local testing script for the Document Processor
-Directly imports and runs the processing functions without needing a server
-This is more secure as it doesn't expose any HTTP endpoints
+Tests the document processing pipeline without requiring Service Bus, QDRANT, or ColPali endpoints
+Uses local mode to bypass production environment variable requirements
 """
 
 import asyncio
@@ -58,8 +58,8 @@ async def process_file_local(file_path: str) -> bool:
     start_time = time.time()
 
     try:
-        # Import the existing process_document_async function
-        from app import process_document_async
+        # Import the consolidated DocumentProcessor
+        from document_processor import DocumentProcessor
 
         # Read the file
         with open(file_path, "rb") as f:
@@ -67,24 +67,31 @@ async def process_file_local(file_path: str) -> bool:
 
         logger.info(f"File loaded: {len(file_content):,} bytes")
 
-        # Use the existing process_document_async function
-        success = await process_document_async(
-            blob_content=file_content,
-            blob_name=filename,
-            file_extension=".pdf",
-            start_time=start_time,
+        # Initialize the document processor in local mode (no Service Bus required)
+        processor = DocumentProcessor(require_service_bus=False)
+
+        logger.info("Document processor initialized successfully (local mode)")
+
+        # Process the document using the complete pipeline
+        result = await processor.process_document_complete(
+            blob_content=file_content, blob_name=filename, file_extension=".pdf"
         )
 
         end_time = time.time()
         total_processing_time = end_time - start_time
 
-        if success:
+        if result.success:
             logger.info("Processing completed successfully!")
             logger.info(f"Total time: {total_processing_time:.2f} seconds")
+            logger.info(
+                f"Success rate: {result.success_rate:.1f}% ({result.pages_processed}/{result.total_pages} pages)"
+            )
         else:
             logger.error("Processing failed - check logs above for details")
+            if result.error_message:
+                logger.error(f"Error: {result.error_message}")
 
-        return success
+        return result.success
 
     except ImportError as e:
         logger.error(f"Import error: {str(e)}")
@@ -101,7 +108,7 @@ async def process_file_local(file_path: str) -> bool:
         return False
 
 
-async def process_all_test_files() -> bool:
+async def process_all_test_files():
     """
     Process all PDF files in the test_files directory
 
@@ -133,7 +140,7 @@ async def process_all_test_files() -> bool:
 
     logger.info(f"Found {len(pdf_files)} PDF file(s) in test_files directory:")
     for pdf_file in pdf_files:
-        logger.info(f"  • {os.path.basename(pdf_file)}")
+        logger.info(f"  - {os.path.basename(pdf_file)}")
 
     # Process each file
     successful_files = 0
@@ -156,9 +163,9 @@ async def process_all_test_files() -> bool:
     # Summary
     logger.info("=" * 60)
     logger.info("Processing Summary:")
-    logger.info(f"  • Total files: {total_files}")
-    logger.info(f"  • Successful: {successful_files}")
-    logger.info(f"  • Failed: {total_files - successful_files}")
+    logger.info(f"  - Total files: {total_files}")
+    logger.info(f"  - Successful: {successful_files}")
+    logger.info(f"  - Failed: {total_files - successful_files}")
 
     if successful_files == total_files:
         logger.info("All files processed successfully!")

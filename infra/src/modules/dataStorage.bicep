@@ -1,5 +1,5 @@
-@description('Base name for all resources')
-param baseName string
+@description('The name of the data storage account')
+param dataStorageAccountName string
 
 @description('The location for all resources')
 param location string = resourceGroup().location
@@ -16,9 +16,6 @@ param location string = resourceGroup().location
   'Standard_RAGZRS'
 ])
 param storageAccountSku string = 'Standard_LRS'
-
-// Resource name variables - Following Cloud Adoption Framework (CAF) naming conventions
-var dataStorageAccountName = replace('stdata${baseName}', '-', '') // Storage Account: CAF standard 'st' + workload
 
 // Create Data Storage Account (for document storage and processing)
 resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {

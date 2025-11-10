@@ -1,7 +1,6 @@
 """
-ColQwen2 client for interfacing with Azure ML Online Endpoint.
+ColQwen2 client for interfacing with Kubernetes ColQwen2 service.
 Upgraded from ColPali to use the latest ColQwen2 model based on Qwen2-VL-2B-Instruct.
-Uses Azure managed identity for authentication.
 """
 
 import asyncio
@@ -9,11 +8,11 @@ import base64
 import logging
 import os
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
-from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from PIL import Image
+from PIL.ImageFile import ImageFile
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -21,15 +20,20 @@ from tenacity import (
     wait_exponential,
 )
 
+from .models import DocumentPage, EmbedHealthResponse, EmbedRequest
+
 
 class ColPaliClient:
-    """Client for communicating with ColQwen2 online endpoint using managed identity authentication."""
+    """Client for communicating with ColQwen2 service in Kubernetes."""
 
     def __init__(
         self,
-        credential: Optional[DefaultAzureCredential | ManagedIdentityCredential] = None,
+        require_endpoint: bool = True,
     ):
-        self.endpoint_url = os.getenv("AML_EMBEDDING_ENDPOINT_URL")
+        # Always use Kubernetes service
+        self.endpoint_url = os.getenv(
+            "COLQWEN_SERVICE_URL", "http://colqwen-inference-service:8080"
+        )
         self.request_timeout = int(os.getenv("COLPALI_REQUEST_TIMEOUT", "120"))
         self.max_image_size = int(os.getenv("COLPALI_MAX_IMAGE_SIZE", "1536"))
 
@@ -37,45 +41,59 @@ class ColPaliClient:
         max_concurrent_requests = int(os.getenv("COLPALI_MAX_CONCURRENT_REQUESTS", "5"))
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)
 
+        if require_endpoint and not self.endpoint_url:
+            raise ValueError(
+                "COLQWEN_SERVICE_URL environment variable is required but not set"
+            )
+
+        # Ensure endpoint URL has correct format for embedding endpoint
+        if self.endpoint_url and not self.endpoint_url.endswith("/embeddings"):
+            self.endpoint_url = f"{self.endpoint_url.rstrip('/')}/embeddings"
+
+        logging.info(
+            f"ColQwen2 client initialized for Kubernetes endpoint: {self.endpoint_url}"
+        )
+        logging.info(
+            f"Concurrency limit: {max_concurrent_requests} concurrent requests"
+        )
+
+    async def health_check(self) -> Optional[EmbedHealthResponse]:
+        """
+        Check the health status of the ColQwen2 service.
+
+        Returns:
+            EmbedHealthResponse object or None if check failed
+        """
         if not self.endpoint_url:
-            logging.warning(
-                "AML_EMBEDDING_ENDPOINT_URL not set - ColQwen2 processing will be skipped"
-            )
-            self.credential = None
-            return
+            return None
 
-        # Ensure endpoint URL has correct format
-        if not self.endpoint_url.endswith("/score"):
-            self.endpoint_url = f"{self.endpoint_url.rstrip('/')}/score"
-
-        # Use provided credential or create new one
         try:
-            self.credential = credential or DefaultAzureCredential()
-            logging.info(
-                f"ColQwen2 client initialized with managed identity for endpoint: {self.endpoint_url}"
-            )
-            logging.info(
-                f"Concurrency limit: {max_concurrent_requests} concurrent requests"
-            )
+            health_url = self.endpoint_url.replace("/embeddings", "/health")
+            headers = await self._get_auth_header()
+
+            timeout = aiohttp.ClientTimeout(
+                total=30
+            )  # Shorter timeout for health check
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(health_url, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return EmbedHealthResponse(**result)
+                    else:
+                        logging.error(
+                            f"Health check failed with status {response.status}"
+                        )
+                        return None
         except Exception as e:
-            logging.error(f"Failed to initialize Azure managed identity: {str(e)}")
-            self.credential = None
+            logging.error(f"Health check error: {str(e)}")
+            return None
 
     async def _get_auth_header(self) -> Dict[str, str]:
-        """Get authorization header with AAD token."""
-        if not self.credential:
-            return {}
-
-        try:
-            token = await self.credential.get_token("https://ml.azure.com/.default")
-            return {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token.token}",
-                "Accept": "application/json",
-            }
-        except Exception as e:
-            logging.error(f"Failed to get AAD token: {str(e)}")
-            return {}
+        """Get headers for Kubernetes service."""
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
 
     @retry(
         stop=stop_after_attempt(3),
@@ -84,58 +102,65 @@ class ColPaliClient:
         reraise=True,
     )
     async def generate_embeddings(
-        self, document_chunk: Dict[str, Any]
+        self, document_pages: Union[DocumentPage, List[DocumentPage]]
     ) -> Optional[Dict[str, Any]]:
         """
-        Generate hierarchically pooled embeddings for a document chunk using ColQwen2 online endpoint.
-
-        ColQwen2 returns both original patch-level embeddings and hierarchically pooled embeddings.
-        The hierarchical pooling compresses embeddings using a configurable pool factor.
+        Generate embeddings for document page(s) using ColQwen2 endpoint.
 
         Args:
-            document_chunk: Document chunk containing images (ColQwen2 is image-focused)
+            document_pages: Single DocumentPage or list of DocumentPages containing images and text
 
         Returns:
-            Dictionary with 'original_embeddings' and 'pooled_embeddings' keys, or None if generation failed.
-            Structure: {
-                "original_embeddings": [[patch1_dim1, ...], [patch2_dim1, ...]],
-                "pooled_embeddings": [[pooled_patch1, ...], ...],
-                "pool_factor": 4,
-                "compression_ratio": 0.25
+            Dictionary with embeddings, or None if generation failed.
+
+            For single page input:
+            {
+                "embeddings": [[patch1, patch2, ...]],  # 2D: patches x dimensions
+                "patch_count": number_of_patches
+            }
+
+            For multiple pages input:
+            {
+                "embeddings": [[[doc1_patches]], [[doc2_patches]], ...],  # 3D: documents x patches x dimensions
+                "document_count": number_of_documents
             }
         """
         # Skip processing if endpoint not configured
-        if not self.credential:
+        if not self.endpoint_url:
             logging.info(
                 "ColQwen2 endpoint not configured - skipping embedding generation"
             )
             return None
 
+        # Track if input was a single page
+        is_single_page = not isinstance(document_pages, list)
+
+        # Normalize input to list
+        pages_list = (
+            document_pages if isinstance(document_pages, list) else [document_pages]
+        )
+
         try:
             # Use semaphore to limit concurrent requests to the endpoint
+            page_numbers = [page.page_number for page in pages_list]
             logging.debug(
-                f"Acquiring semaphore for embedding request (page {document_chunk.get('page_number', 'unknown')})"
+                f"Acquiring semaphore for embedding request (pages {page_numbers})"
             )
             async with self.semaphore:
-                logging.debug(
-                    f"Semaphore acquired, processing page {document_chunk.get('page_number', 'unknown')}"
-                )
+                logging.debug(f"Semaphore acquired, processing pages {page_numbers}")
 
-                # Prepare the request payload
-                payload = self._prepare_payload(document_chunk)
+                # Prepare the request payload for multiple pages
+                request_payload = self._prepare_payload(pages_list)
 
                 logging.debug(
-                    f"Sending request to ColQwen2 endpoint for chunk from {document_chunk.get('source_file', 'unknown')}"
+                    f"Sending request to ColQwen2 endpoint for pages {page_numbers}"
                 )
                 logging.debug(
-                    f"Payload includes: {len(payload.get('images', []))} images, pooling_type: {payload.get('pooling_type')}, pool_factor: {payload.get('pooling_config', {}).get('pool_factor')}"
+                    f"Payload includes: {len(request_payload.images or [])} images, pooling_type: {request_payload.pooling_type}, pool_factor: {request_payload.pooling_config.get('pool_factor') if request_payload.pooling_config else None}"
                 )
 
-                # Get auth header with fresh token
+                # Get auth header
                 headers = await self._get_auth_header()
-                if not headers:
-                    logging.error("Failed to get authorization header")
-                    return None
 
                 # Make async request to ColQwen2 endpoint
                 if not self.endpoint_url:
@@ -145,32 +170,58 @@ class ColPaliClient:
                 timeout = aiohttp.ClientTimeout(total=self.request_timeout)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(
-                        self.endpoint_url, json=payload, headers=headers
+                        self.endpoint_url,
+                        json=request_payload.model_dump(),
+                        headers=headers,
                     ) as response:
                         if response.status == 200:
                             # Parse the JSON response
                             result = await response.json()
 
-                            embeddings = self._extract_embeddings(result)
+                            embeddings_dict = self._extract_embeddings(result)
 
-                            if embeddings:
-                                if (
-                                    "original_embeddings" in embeddings
-                                    and embeddings["original_embeddings"]
-                                ):
-                                    orig_shape = f"{len(embeddings['original_embeddings'])}x{len(embeddings['original_embeddings'][0]) if embeddings['original_embeddings'] else 0}"
-                                    logging.debug(
-                                        f"Successfully generated original embeddings shape: {orig_shape}"
+                            if embeddings_dict:
+                                # Get first embedding type for shape info
+                                first_key = next(iter(embeddings_dict))
+                                first_embeddings = embeddings_dict[first_key]
+                                doc_count = len(first_embeddings)
+
+                                if doc_count > 0 and len(first_embeddings[0]) > 0:
+                                    patch_count = len(first_embeddings[0])
+                                    dim = (
+                                        len(first_embeddings[0][0])
+                                        if len(first_embeddings[0][0]) > 0
+                                        else 0
                                     )
-                                if (
-                                    "pooled_embeddings" in embeddings
-                                    and embeddings["pooled_embeddings"]
-                                ):
-                                    pooled_shape = f"{len(embeddings['pooled_embeddings'])}x{len(embeddings['pooled_embeddings'][0]) if embeddings['pooled_embeddings'] else 0}"
+                                    shape = f"{doc_count} docs x {patch_count} patches x {dim} dim"
                                     logging.debug(
-                                        f"Successfully generated pooled embeddings shape: {pooled_shape}"
+                                        f"Successfully generated embeddings: {shape} for types: {list(embeddings_dict.keys())}"
                                     )
-                            return embeddings
+
+                                # Return format based on input type
+                                if is_single_page:
+                                    # Single page input - return single document embeddings (2D)
+                                    single_page_embeddings = {}
+                                    for emb_type, emb_data in embeddings_dict.items():
+                                        single_page_embeddings[emb_type] = emb_data[
+                                            0
+                                        ]  # First (and only) document
+
+                                    return {
+                                        "embeddings": single_page_embeddings,
+                                        "patch_count": len(first_embeddings[0]),
+                                    }
+                                else:
+                                    # Multiple pages input - return full batch (3D)
+                                    return {
+                                        "embeddings": embeddings_dict,  # All embedding types
+                                        "document_count": doc_count,
+                                    }
+                            else:
+                                logging.error(
+                                    "Failed to extract embeddings from response"
+                                )
+                                return None
                         else:
                             text = await response.text()
                             logging.error(
@@ -188,52 +239,66 @@ class ColPaliClient:
             logging.error(f"Unexpected error generating embeddings: {str(e)}")
             return None
 
-    def _prepare_payload(self, document_chunk: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_payload(self, document_pages: List[DocumentPage]) -> EmbedRequest:
         """
-        Prepare the request payload for ColQwen2 endpoint with hierarchical pooling.
+        Prepare the request payload for ColQwen2 endpoint with multiple pages.
 
         Args:
-            document_chunk: Document chunk data
+            document_pages: List of DocumentPage models with images and text
 
         Returns:
-            Formatted payload for the API request
+            EmbedRequest object for the API request
         """
+        images = []
+
+        # Extract image data from all pages - ColQwen2 is primarily image-focused
+        for document_page in document_pages:
+            # Use the first image (main page image) if available
+            page_image = document_page.images[0] if document_page.images else None
+
+            # Add image if available
+            if page_image:
+                # Handle PIL Image, ImageFile, and bytes
+                if isinstance(page_image, (Image.Image, ImageFile)):
+                    image_base64 = self._image_to_base64(page_image)
+                    images.append(image_base64)
+                else:
+                    # If it's bytes, convert to base64 directly
+                    image_base64 = base64.b64encode(page_image).decode("utf-8")
+                    images.append(image_base64)
+            else:
+                # If no image, we can't generate embeddings with ColQwen2
+                logging.warning(
+                    f"No page_image found for page {document_page.page_number}"
+                )
+
+        # Request both mean pooling and hierarchical pooling
         # 3 is recommended by ColPali team: https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling
-        payload = {
-            "images": [],
-            "pooling_type": "hierarchical",  # Request hierarchical pooling from ColQwen2
-            "pooling_config": {"pool_factor": 3},
-        }
-
-        # Extract image data - ColQwen2 is primarily image-focused
-        page_image = document_chunk.get("page_image")
-
-        # Add image if available
-        if page_image:
-            # Convert PIL Image to base64 string
-            image_base64 = self._image_to_base64(page_image)
-            payload["images"].append(image_base64)
-        else:
-            # If no image, we can't generate embeddings with ColQwen2
-            logging.warning(
-                f"No page_image found for chunk from {document_chunk.get('source_file', 'unknown')}"
-            )
-            payload["images"] = []
+        request = EmbedRequest(
+            images=images,
+            pooling_type=["mean_pooling", "hierarchical"],
+            pooling_config={"pool_factor": 3},
+        )
 
         # Validate payload structure
-        if payload["images"]:
+        if request.images:
+            pool_factor = (
+                request.pooling_config.get("pool_factor")
+                if request.pooling_config
+                else None
+            )
             logging.debug(
-                f"Prepared payload with hierarchical pooling enabled (factor: {payload['pooling_config']['pool_factor']})"
+                f"Prepared payload with {len(images)} images, hierarchical pooling enabled (factor: {pool_factor})"
             )
 
-        return payload
+        return request
 
-    def _image_to_base64(self, image: Image.Image) -> str:
+    def _image_to_base64(self, image: Union[Image.Image, ImageFile]) -> str:
         """
         Convert PIL Image to base64 string.
 
         Args:
-            image: PIL Image object
+            image: PIL Image or ImageFile object
 
         Returns:
             Base64 encoded image string
@@ -259,82 +324,86 @@ class ColPaliClient:
 
     def _extract_embeddings(
         self, response_data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[Dict[str, List[List[List[float]]]]]:
         """
-        Extract embeddings from ColQwen2 endpoint response with hierarchical pooling support.
+        Extract embeddings from ColQwen2 endpoint response with multiple pooling types.
 
-        New ColQwen2 API returns structured response with original and pooled embeddings:
+        Expected response format:
         {
-            "embeddings": {
-                "original_embeddings": [...],  # Full patch-level embeddings
-                "pooled_embeddings": [...],    # Hierarchically pooled embeddings
-                "pool_factor": 4,
-                "compression_ratio": 0.25
+            "hierarchical_pooled_embeddings": {
+                "hierarchical": [[[...]], [[...]], ...]
             },
-            "status": "success"
+            "mean_row_pooled_embeddings": {
+                "mean_pooling": [[[...]], [[...]], ...]
+            },
+            "mean_column_pooled_embeddings": {
+                "mean_pooling": [[[...]], [[...]], ...]
+            },
+            "embeddings": [[[...]], [[...]], ...]  # Optional original embeddings
         }
 
         Args:
             response_data: Response JSON from the endpoint
 
         Returns:
-            Dictionary containing original_embeddings and pooled_embeddings, or None if extraction failed
+            Dictionary with embedding types mapped to their vectors, or None if extraction failed
         """
         try:
-            # Check for error status first
-            if response_data.get("status") == "error":
-                logging.error(
-                    f"ColQwen2 endpoint returned error: {response_data.get('error', 'Unknown error')}"
-                )
+            extracted_embeddings = {}
+
+            # Extract hierarchical pooled embeddings (will map to "original" in Qdrant)
+            if "hierarchical_pooled_embeddings" in response_data:
+                hierarchical_data = response_data["hierarchical_pooled_embeddings"]
+                if "hierarchical" in hierarchical_data:
+                    extracted_embeddings["original"] = hierarchical_data["hierarchical"]
+                    logging.debug(
+                        "Extracted hierarchical embeddings for 'original' vector"
+                    )
+
+            # Extract mean row pooled embeddings
+            if "mean_row_pooled_embeddings" in response_data:
+                row_data = response_data["mean_row_pooled_embeddings"]
+                if "mean_pooling" in row_data:
+                    extracted_embeddings["mean_pooling_rows"] = row_data["mean_pooling"]
+                    logging.debug("Extracted mean row pooled embeddings")
+
+            # Extract mean column pooled embeddings
+            if "mean_column_pooled_embeddings" in response_data:
+                col_data = response_data["mean_column_pooled_embeddings"]
+                if "mean_pooling" in col_data:
+                    extracted_embeddings["mean_pooling_columns"] = col_data[
+                        "mean_pooling"
+                    ]
+                    logging.debug("Extracted mean column pooled embeddings")
+
+            # Fallback to original embeddings if available (for backward compatibility)
+            if not extracted_embeddings and "embeddings" in response_data:
+                extracted_embeddings["original"] = response_data["embeddings"]
+                logging.debug("Using fallback original embeddings")
+
+            if not extracted_embeddings:
+                logging.error("No valid embeddings found in response")
                 return None
 
-            # Extract structured embeddings response
-            if (
-                "embeddings" in response_data
-                and response_data.get("status") == "success"
-            ):
-                embeddings_data = response_data["embeddings"]
+            # Validate structure for at least one embedding type
+            first_key = next(iter(extracted_embeddings))
+            first_embeddings = extracted_embeddings[first_key]
 
-                # Validate structure: should be dict with original_embeddings and optionally pooled_embeddings
-                if isinstance(embeddings_data, dict):
-                    result = {}
+            if not isinstance(first_embeddings, list) or len(first_embeddings) == 0:
+                logging.error("Invalid embeddings structure")
+                return None
 
-                    # Extract original embeddings
-                    if "original_embeddings" in embeddings_data:
-                        original = embeddings_data["original_embeddings"]
-                        if isinstance(original, list) and len(original) > 0:
-                            result["original_embeddings"] = original
-                            logging.debug(
-                                f"Extracted {len(original)} original patch embeddings"
-                            )
+            first_doc = first_embeddings[0]
+            if not isinstance(first_doc, list) or len(first_doc) == 0:
+                logging.error("Invalid document structure in embeddings")
+                return None
 
-                    # Extract pooled embeddings (if hierarchical pooling was applied)
-                    if (
-                        "pooled_embeddings" in embeddings_data
-                        and embeddings_data["pooled_embeddings"]
-                    ):
-                        pooled = embeddings_data["pooled_embeddings"]
-                        if isinstance(pooled, list) and len(pooled) > 0:
-                            result["pooled_embeddings"] = pooled
-                            result["pool_factor"] = embeddings_data.get(
-                                "pool_factor", 1
-                            )
-                            result["compression_ratio"] = embeddings_data.get(
-                                "compression_ratio", 1.0
-                            )
-                            logging.debug(
-                                f"Extracted {len(pooled)} pooled embeddings with factor {result['pool_factor']}"
-                            )
-
-                    if result:
-                        return result
-
-            logging.warning("Could not find valid embeddings in response data")
             logging.debug(
-                f"Response keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}"
+                f"Successfully extracted {len(extracted_embeddings)} embedding types "
+                f"with {len(first_embeddings)} documents each"
             )
-            return None
+            return extracted_embeddings
 
         except Exception as e:
-            logging.error(f"Error extracting embeddings from response: {str(e)}")
+            logging.error(f"Error extracting embeddings: {str(e)}")
             return None

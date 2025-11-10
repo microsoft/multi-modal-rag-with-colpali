@@ -1,38 +1,47 @@
-# Use official uv image based on Python 3.11 slim
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+# Single-stage build for faster development and ACR compatibility
+FROM python:3.11-slim-trixie
 
-# Install system dependencies for PDF processing
+# Copy UV binary from official UV image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Install runtime dependencies for PDF processing
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     tesseract-ocr \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Configure UV for optimal performance
+ENV UV_LINK_MODE=copy
+ENV UV_COMPILE_BYTECODE=1
+
+# Create non-root user for security with home directory
+RUN groupadd -r app && useradd -r -g app -m app
+
+# Set UV cache directory to a writable location
+ENV UV_CACHE_DIR="/tmp/uv-cache"
+
+# Set working directory and change ownership
 WORKDIR /app
+RUN chown app:app /app
+
+# Switch to non-root user for dependency installation
+USER app
 
 # Copy dependency files first for better layer caching
-COPY pyproject.toml uv.lock* ./
+COPY --chown=app:app pyproject.toml uv.lock* ./
 
-# Install dependencies in optimized layers
-# First, install dependencies without the project itself
-RUN uv sync --no-install-project
+# Install dependencies - UV handles virtual environment creation
+RUN uv sync --locked --no-install-project --no-editable
 
-# Copy application code
-COPY src/ ./
+# Copy application code maintaining structure
+COPY --chown=app:app src/ ./src/
 
-# Install the project itself
-RUN uv sync
+# Install the project itself in non-editable mode
+RUN uv sync --locked --no-editable
 
-# Place virtual environment at front of path
+# Set PATH to include virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Expose port 8000
-EXPOSE 8000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Run with uvicorn for production using the virtual environment
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "300"]
+# Entry point for inference server
+CMD ["python", "-m", "src.app"]

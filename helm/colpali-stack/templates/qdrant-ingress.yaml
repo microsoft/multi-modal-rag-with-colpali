@@ -1,0 +1,23 @@
+{{- if index .Values "ingress-nginx" "enabled" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-qdrant-ingress
+  labels:
+    {{- include "colpali-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "colpali-stack.fullname" . }}-qdrant
+            port:
+              number: 6333
+{{- end }}

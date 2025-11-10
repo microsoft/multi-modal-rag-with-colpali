@@ -1,45 +1,34 @@
 #!/bin/bash
 # Complete deployment script: deploys Bicep infrastructure
-# Usage: ./deploy_infra.sh [-g resource-group] [-r deploy-roles] [-c deploy-container-apps]
+# Usage: ./deploy_infra.sh [--resource-group <resource-group>] [--deploy-roles <true|false>]
+# Note: AKS and Event Grid always deploy (containers pushed later via Helm)
 # Note: baseName and location are defined in infra/src/main.bicepparam
 
-set -e  # Exit on any error
+set -euo pipefail
 
 # Default values
-RESOURCE_GROUP="colqwen-rg"
+RESOURCE_GROUP="colpali-rg"
 DEPLOY_ROLES="true"
-DEPLOY_CONTAINER_APPS="false"
-DEPLOY_EVENT_GRID="false"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -g|--resource-group)
+        --resource-group)
             RESOURCE_GROUP="$2"
             shift 2
             ;;
-        -r|--deploy-roles)
+        --deploy-roles)
             DEPLOY_ROLES="$2"
             shift 2
             ;;
-        -c|--deploy-container-apps)
-            DEPLOY_CONTAINER_APPS="$2"
-            shift 2
-            ;;
-        -e|--deploy-event-grid)
-            DEPLOY_EVENT_GRID="$2"
-            shift 2
-            ;;
         -h|--help)
-            echo "Usage: $0 [-g resource-group] [-r deploy-roles] [-c deploy-container-apps] [-e deploy-event-grid]"
-            echo "  -g, --resource-group       Resource group name (default: colqwen-rg)"
-            echo "  -r, --deploy-roles         Deploy role assignments (default: true)"
-            echo "  -c, --deploy-container-apps Deploy container apps (default: false)"
-            echo "  -e, --deploy-event-grid    Deploy Event Grid (default: false, mutually exclusive with -c)"
+            echo "Usage: $0 [--resource-group <resource-group>] [--deploy-roles <true|false>]"
+            echo "  --resource-group: Resource group name (default: colpali-rg)"
+            echo "  --deploy-roles: Deploy role assignments (default: true)"
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
+            echo "Unknown parameter: $1"
             exit 1
             ;;
     esac
@@ -54,31 +43,6 @@ cd "$PROJECT_ROOT"
 
 echo "Project root: $PROJECT_ROOT"
 
-# Validate mutually exclusive parameters
-if [ "$DEPLOY_CONTAINER_APPS" = "true" ] && [ "$DEPLOY_EVENT_GRID" = "true" ]; then
-    echo "Error: DEPLOY_CONTAINER_APPS and DEPLOY_EVENT_GRID cannot both be true - they must be mutually exclusive." >&2
-    echo "Deploy Container Apps first, then Event Grid separately." >&2
-    exit 1
-fi
-
-# Get document processor image tag from .env file if deploying container apps
-DOCUMENT_PROCESSOR_IMAGE_TAG="latest"
-if [ "$DEPLOY_CONTAINER_APPS" = "true" ]; then
-    ENV_FILE="$PROJECT_ROOT/.env"
-    if [ -f "$ENV_FILE" ]; then
-        echo "Reading document processor image tag from .env file..."
-        DOCUMENT_PROCESSOR_IMAGE_TAG=$(grep '^DOCUMENT_PROCESSOR_IMAGE_TAG=' "$ENV_FILE" | cut -d'=' -f2)
-        if [ -n "$DOCUMENT_PROCESSOR_IMAGE_TAG" ]; then
-            echo "Using document processor image tag: $DOCUMENT_PROCESSOR_IMAGE_TAG"
-        else
-            DOCUMENT_PROCESSOR_IMAGE_TAG="latest"
-            echo "No DOCUMENT_PROCESSOR_IMAGE_TAG found in .env, using default: $DOCUMENT_PROCESSOR_IMAGE_TAG"
-        fi
-    else
-        echo "No .env file found, using default image tag: $DOCUMENT_PROCESSOR_IMAGE_TAG"
-    fi
-fi
-
 # Get user object ID
 echo "Getting user object ID..."
 USER_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
@@ -89,16 +53,20 @@ fi
 
 # Check if online endpoint already exists
 echo "Checking if online endpoint already exists..."
-BASE_NAME=$(grep "param baseName = " "$PROJECT_ROOT/infra/src/main.bicepparam" | sed "s/param baseName = '\(.*\)'/\1/")
+BICEP_PARAM_CONTENT=$(cat "$PROJECT_ROOT/infra/src/main.bicepparam")
+BASE_NAME=$(echo "$BICEP_PARAM_CONTENT" | grep -oP "param baseName = '\K[^']+")
+if [ -z "$BASE_NAME" ]; then
+    echo "Could not find baseName in main.bicepparam" >&2
+    exit 1
+fi
+
 ENDPOINT_NAME="oep-$BASE_NAME"
 WORKSPACE_NAME_FROM_PARAM="mlw-$BASE_NAME"
 
-# Get subscription ID for resource check
-SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-
 ENDPOINT_EXISTS=false
-# Use az resource show instead of az ml for better performance
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 RESOURCE_ID="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.MachineLearningServices/workspaces/$WORKSPACE_NAME_FROM_PARAM/onlineEndpoints/$ENDPOINT_NAME"
+
 if az resource show --ids "$RESOURCE_ID" >/dev/null 2>&1; then
     ENDPOINT_EXISTS=true
     echo "  Endpoint '$ENDPOINT_NAME' already exists - will skip creation to preserve traffic allocation"
@@ -106,7 +74,7 @@ else
     echo "  Endpoint '$ENDPOINT_NAME' does not exist - will create it"
 fi
 
-CREATE_ENDPOINT=$([ "$ENDPOINT_EXISTS" = true ] && echo "false" || echo "true")
+CREATE_ENDPOINT=$( [ "$ENDPOINT_EXISTS" = true ] && echo "false" || echo "true" )
 
 # Use absolute paths for the Bicep files
 BICEP_PARAM_FILE="$PROJECT_ROOT/infra/src/main.bicepparam"
@@ -118,159 +86,69 @@ echo "Resource Group: '$RESOURCE_GROUP'"
 echo "Bicep Param File: '$BICEP_PARAM_FILE'"
 echo "User Object ID: '$USER_OBJECT_ID'"
 echo "Deploy Roles: '$DEPLOY_ROLES'"
-echo "Deploy Container Apps: '$DEPLOY_CONTAINER_APPS'"
-echo "Deploy Event Grid: '$DEPLOY_EVENT_GRID'"
 
 DEPLOYMENT_OUTPUT=$(az deployment group create \
     --resource-group "$RESOURCE_GROUP" \
-    --parameters "$BICEP_PARAM_FILE" userObjectId="$USER_OBJECT_ID" deployRoleAssignments="$DEPLOY_ROLES" deployContainerApps="$DEPLOY_CONTAINER_APPS" createOnlineEndpoint="$CREATE_ENDPOINT" documentProcessorImageTag="$DOCUMENT_PROCESSOR_IMAGE_TAG" \
-    --query properties.outputs -o json)
+    --parameters "$BICEP_PARAM_FILE" \
+    userObjectId="$USER_OBJECT_ID" \
+    deployRoleAssignments="$DEPLOY_ROLES" \
+    createOnlineEndpoint="$CREATE_ENDPOINT" \
+    --query "properties.outputs" \
+    -o json)
 
 if [ $? -ne 0 ]; then
     echo "Bicep deployment failed" >&2
     exit 1
 fi
 
-# Parse deployment outputs using jq
-WORKSPACE_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlWorkspaceName.value')
-COMPUTE_CLUSTER_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlComputeClusterName.value')
-EMBEDDING_ENDPOINT_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlEmbeddingEndpointName.value')
-EMBEDDING_ENDPOINT_URL=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlEmbeddingEndpointUrl.value')
-ACR_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.acrName.value')
-ACR_LOGIN_SERVER=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.acrLoginServer.value')
-AI_SEARCH_SERVICE_URL=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.aiSearchServiceUrl.value')
-AI_SEARCH_SERVICE_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.aiSearchServiceName.value')
-AI_SEARCH_INDEX_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.aiSearchIndexName.value')
-EMBEDDING_ENDPOINT_TYPE=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlEmbeddingEndpointType.value')
-EMBEDDING_ENDPOINT_COUNT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.amlEmbeddingEndpointCount.value')
+# Convert all Bicep outputs to environment variables automatically
+declare -A env_values
+while IFS= read -r line; do
+    if [[ $line =~ \"([^\"]+)\":[[:space:]]*\{[[:space:]]*\"value\":[[:space:]]*\"([^\"]*)\" ]]; then
+        output_name="${BASH_REMATCH[1]}"
+        output_value="${BASH_REMATCH[2]}"
 
-# Container Apps outputs (available when DEPLOY_CONTAINER_APPS = true, or check existing)
-if [ "$DEPLOY_CONTAINER_APPS" = "true" ]; then
-    QDRANT_ENDPOINT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.qdrantEndpoint.value')
-    DOC_PROCESSOR_ENDPOINT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.docProcessorEndpoint.value')
-    CONTAINER_APPS_ENVIRONMENT=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.containerAppsEnvironmentName.value')
-    DOC_PROCESSOR_CONTAINER_APP_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.docProcessorContainerAppName.value')
-else
-    # Check if Container Apps exist already and get their information
-    echo "Checking for existing Container Apps..."
+        # Convert camelCase to UPPER_SNAKE_CASE for env var naming
+        env_var_name=$(echo "$output_name" | sed 's/\([a-z]\)\([A-Z]\)/\1_\2/g' | tr '[:lower:]' '[:upper:]')
 
-    # Extract baseName from bicep parameter file
-    BASE_NAME=$(grep "baseName\s*=" "$BICEP_PARAM_FILE" | sed "s/.*baseName\s*=\s*['\"]\\([^'\"]*\\)['\"].*/\\1/")
-    if [ -n "$BASE_NAME" ]; then
-        EXPECTED_DOC_PROCESSOR_NAME="ca-docproc-$BASE_NAME"
-        EXPECTED_QDRANT_NAME="ca-qdrant-$BASE_NAME"
-
-        # Try to get document processor Container App info
-        DOC_PROCESSOR_INFO=$(az containerapp show --name "$EXPECTED_DOC_PROCESSOR_NAME" --resource-group "$RESOURCE_GROUP" --query "{name:name,fqdn:properties.configuration.ingress.fqdn}" -o json 2>/dev/null || echo "null")
-        if [ "$DOC_PROCESSOR_INFO" != "null" ]; then
-            DOC_PROCESSOR_CONTAINER_APP_NAME=$(echo "$DOC_PROCESSOR_INFO" | jq -r '.name // ""')
-            DOC_PROCESSOR_ENDPOINT=$(echo "$DOC_PROCESSOR_INFO" | jq -r '.fqdn // ""')
-            echo "Found existing document processor Container App: $DOC_PROCESSOR_CONTAINER_APP_NAME"
-        else
-            DOC_PROCESSOR_CONTAINER_APP_NAME=""
-            DOC_PROCESSOR_ENDPOINT=""
-        fi
-
-        # Try to get Qdrant Container App info
-        QDRANT_INFO=$(az containerapp show --name "$EXPECTED_QDRANT_NAME" --resource-group "$RESOURCE_GROUP" --query "{fqdn:properties.configuration.ingress.fqdn}" -o json 2>/dev/null || echo "null")
-        if [ "$QDRANT_INFO" != "null" ]; then
-            QDRANT_ENDPOINT=$(echo "$QDRANT_INFO" | jq -r '.fqdn // ""')
-            echo "Found existing Qdrant Container App: $EXPECTED_QDRANT_NAME"
-        else
-            QDRANT_ENDPOINT=""
-        fi
-    else
-        echo "Could not extract baseName from bicep parameter file"
-        QDRANT_ENDPOINT=""
-        DOC_PROCESSOR_ENDPOINT=""
-        DOC_PROCESSOR_CONTAINER_APP_NAME=""
+        env_values["$env_var_name"]="$output_value"
     fi
+done <<< "$DEPLOYMENT_OUTPUT"
 
-    CONTAINER_APPS_ENVIRONMENT=""
-fi
-
-echo "Deployment outputs:"
-echo "  AML Workspace: $WORKSPACE_NAME"
-echo "  AML Compute Cluster: $COMPUTE_CLUSTER_NAME"
-echo "  Embedding Endpoint Name: $EMBEDDING_ENDPOINT_NAME"
-echo "  Embedding Endpoint URL: $EMBEDDING_ENDPOINT_URL"
-echo "  ACR Name: $ACR_NAME"
-echo "  ACR Login Server: $ACR_LOGIN_SERVER"
-echo "  AI Search Service Name: $AI_SEARCH_SERVICE_NAME"
-echo "  AI Search URL: $AI_SEARCH_SERVICE_URL"
-echo "  AI Search Index Name: $AI_SEARCH_INDEX_NAME"
-echo "  Embedding Endpoint Type: $EMBEDDING_ENDPOINT_TYPE"
-echo "  Embedding Endpoint Count: $EMBEDDING_ENDPOINT_COUNT"
-
-if [ "$DEPLOY_CONTAINER_APPS" = "true" ]; then
-    echo "  QDRANT Endpoint: $QDRANT_ENDPOINT"
-    echo "  Doc Processor Endpoint: $DOC_PROCESSOR_ENDPOINT"
-    echo "  Container Apps Environment: $CONTAINER_APPS_ENVIRONMENT"
-    echo "  Logging: Integrated with AML Application Insights workspace"
-else
-    echo "  Container Apps: Not deployed (use -c true to deploy)"
-fi
-
-# Get subscription ID
-echo "Getting subscription ID..."
-SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-if [ $? -ne 0 ]; then
-    echo "Failed to get subscription ID" >&2
-    exit 1
-fi
-
-# Get ACR credentials
-echo "Retrieving ACR credentials..."
-ACR_CREDENTIALS=$(az acr credential show --name "$ACR_NAME" --query "{username:username, password:passwords[0].value}" -o json 2>/dev/null)
-if [ $? -ne 0 ]; then
-    echo "Warning: Failed to retrieve ACR credentials. They will not be added to .env file."
-    ACR_USERNAME=""
-    ACR_PASSWORD=""
-else
-    ACR_USERNAME=$(echo "$ACR_CREDENTIALS" | jq -r '.username')
-    ACR_PASSWORD=$(echo "$ACR_CREDENTIALS" | jq -r '.password')
-fi
-
-# Preserve existing DOCUMENT_PROCESSOR_IMAGE_TAG if it exists
-EXISTING_IMAGE_TAG=""
+# Preserve all existing environment variables from .env file
 ENV_FILE="$PROJECT_ROOT/.env"
 if [ -f "$ENV_FILE" ]; then
-    EXISTING_IMAGE_TAG=$(grep '^DOCUMENT_PROCESSOR_IMAGE_TAG=' "$ENV_FILE" | cut -d'=' -f2 || true)
-    if [ -n "$EXISTING_IMAGE_TAG" ]; then
-        echo "Preserving existing image tag: $EXISTING_IMAGE_TAG"
+    echo "Preserving existing environment variables from .env file..."
+    preserved_count=0
+    while IFS= read -r line; do
+        if [[ $line =~ ^([^#][^=]*?)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            # Only preserve if not already set by Bicep outputs (Bicep takes precedence)
+            if [ -z "${env_values[$key]:-}" ]; then
+                env_values["$key"]="$value"
+                ((preserved_count++))
+            fi
+        fi
+    done < "$ENV_FILE"
+
+    if [ $preserved_count -gt 0 ]; then
+        echo "  Preserved $preserved_count existing environment variables"
     fi
 fi
 
-# Create .env file in project root
+# Create .env file in project root - automatically generate from env_values array
 echo "Creating .env file at $ENV_FILE"
 
-cat > "$ENV_FILE" << EOF
-RESOURCE_GROUP=$RESOURCE_GROUP
-SUBSCRIPTION_ID=$SUBSCRIPTION_ID
-AML_WORKSPACE_NAME=$WORKSPACE_NAME
-AML_COMPUTE_NAME=$COMPUTE_CLUSTER_NAME
-AML_EMBEDDING_ENDPOINT_NAME=$EMBEDDING_ENDPOINT_NAME
-AML_EMBEDDING_ENDPOINT_URL=$EMBEDDING_ENDPOINT_URL
-AML_EMBEDDING_ENDPOINT_TYPE=$EMBEDDING_ENDPOINT_TYPE
-AML_EMBEDDING_ENDPOINT_COUNT=$EMBEDDING_ENDPOINT_COUNT
-ACR_NAME=$ACR_NAME
-ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER
-ACR_USERNAME=$ACR_USERNAME
-ACR_PASSWORD=$ACR_PASSWORD
-AI_SEARCH_ENDPOINT=$AI_SEARCH_SERVICE_URL
-AI_SEARCH_SERVICE_NAME=$AI_SEARCH_SERVICE_NAME
-AI_SEARCH_INDEX_NAME=$AI_SEARCH_INDEX_NAME
-QDRANT_ENDPOINT=$QDRANT_ENDPOINT
-QDRANT_COLLECTION_NAME=colpali-documents
-DOC_PROCESSOR_ENDPOINT=$DOC_PROCESSOR_ENDPOINT
-DOCUMENT_PROCESSOR_CONTAINER_APP_NAME=$DOC_PROCESSOR_CONTAINER_APP_NAME
-CONTAINER_APPS_ENVIRONMENT=$CONTAINER_APPS_ENVIRONMENT
-EOF
+# Sort keys and write to file
+{
+    for key in $(printf '%s\n' "${!env_values[@]}" | sort); do
+        value="${env_values[$key]}"
+        if [ -n "$value" ]; then
+            echo "$key=$value"
+        fi
+    done
+} > "$ENV_FILE"
 
-# Add the image tag if it exists
-if [ -n "$EXISTING_IMAGE_TAG" ]; then
-    echo "DOCUMENT_PROCESSOR_IMAGE_TAG=$EXISTING_IMAGE_TAG" >> "$ENV_FILE"
-fi
-
-echo "Deployment complete."
-echo ".env file created with deployment outputs."
+echo ""
+echo "Infrastructure deployment complete!"

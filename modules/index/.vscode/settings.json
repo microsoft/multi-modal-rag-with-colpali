@@ -1,9 +1,0 @@
-{
-  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
-  "python.envFile": "${workspaceFolder}/../../.env",
-  "python.terminal.activateEnvironment": true,
-  "python.testing.pytestEnabled": true,
-  "python.formatting.provider": "black",
-  "python.analysis.typeCheckingMode": "basic",
-  "editor.formatOnSave": true
-}

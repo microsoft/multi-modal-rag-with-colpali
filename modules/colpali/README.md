@@ -1,35 +1,40 @@
-# ColQwen2 Model Deployment
+# ColQwen2 Kubernetes Deployment
 
-This module downloads and registers the ColQwen2 visual document understanding model to Azure ML, then deploys it as an online endpoint for inference.
+This module provides a containerized ColQwen2 visual document understanding model for Kubernetes inference serving.
 
 ## What this module does
 
-1. **Downloads ColQwen2 model** from Hugging Face (vidore/colqwen2-v1.0)
-2. **Registers model in Azure ML** using an Azure ML pipeline
-3. **Creates online endpoint** with GPU compute for fast inference
-4. **Provides scoring script** that handles both image and text processing
+1. **Downloads ColQwen2 model** from Hugging Face (vidore/colqwen2-v1.0-hf) automatically on startup
+2. **Uses shared HF cache** for faster subsequent downloads across pods
+3. **Serves inference requests** via FastAPI with local storage for optimal performance
+4. **Handles both image and text processing** for document understanding workflows
 
 ## Key files
 
-- `pipeline.py` - Downloads and registers the ColQwen2 model via Azure ML pipeline
-- `src/score.py` - Scoring script that runs on the online endpoint
-- `scripts/deploy_endpoint.py` - Creates the Azure ML online endpoint
+- `Dockerfile` - Single-purpose inference container
+- `src/app.py` - FastAPI server entry point
+- `src/inference.py` - Model initialization and inference logic (includes download)
+- `src/colqwen_server.py` - FastAPI server for inference
 
 ## Deployment
 
-Run after the Azure infrastructure is deployed:
+Deploy via Helm after infrastructure is ready:
 
 ```bash
 # From the repo root
-scripts/windows/register_model.ps1
-scripts/windows/deploy_endpoint.ps1
+scripts/windows/apply_helm.ps1
 ```
 
-This script handles both model registration and endpoint deployment. The endpoint URL is automatically added to the Function App configuration as `AML_EMBEDDING_ENDPOINT_URL`.
+## How it works
 
-## Endpoint Usage
+- Container starts as inference server
+- Model downloads automatically if not present locally (first startup: ~5-10 minutes)
+- Subsequent pods use shared HuggingFace cache (startup: ~1-3 minutes)
+- Model runs from local ephemeral storage for maximum performance
 
-The scoring script (`src/score.py`) handles two types of requests:
+## API Usage
+
+The FastAPI server (`src/colqwen_server.py`) provides REST endpoints for embeddings:
 
 ### Image Embedding Processing
 For document indexing, send base64-encoded images:

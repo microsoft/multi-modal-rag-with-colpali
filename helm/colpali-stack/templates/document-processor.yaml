@@ -1,0 +1,71 @@
+{{- if .Values.documentProcessor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-document-processor
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-document-processor
+spec:
+  replicas: {{ .Values.documentProcessor.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "colpali-stack.fullname" . }}-document-processor
+  template:
+    metadata:
+      labels:
+        app: {{ include "colpali-stack.fullname" . }}-document-processor
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
+      # Schedule on CPU pool nodes (no taints on cpupool)
+      nodeSelector:
+        kubernetes.azure.com/agentpool: cpupool
+      containers:
+      - name: document-processor
+        image: "{{ .Values.acrServer }}/document-processor:{{ .Values.documentProcessor.imageTag }}"
+        env:
+        - name: COLQWEN_SERVICE_URL
+          value: "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}"
+        - name: DATA_STORAGE_ACCOUNT_NAME
+          value: {{ .Values.storageAccountName }}
+        - name: SERVICE_BUS_NAMESPACE_NAME
+          value: {{ .Values.serviceBusNamespace }}
+        - name: SERVICE_BUS_QUEUE_NAME
+          value: {{ .Values.serviceBusQueueName | default "document-processing" }}
+        - name: AZURE_CLIENT_ID
+          value: {{ .Values.aksIdentityClientId }}
+        - name: QDRANT_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: api-key
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: OTEL_SERVICE_NAME
+          value: "document-processor"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: connection-string
+        volumeMounts:
+        - name: app-secrets-store
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: app-secrets-store
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: {{ include "colpali-stack.fullname" . }}-keyvault
+{{- end }}

@@ -12,9 +12,6 @@ param location string = resourceGroup().location
 ])
 param acrSku string = 'Basic'
 
-@description('Enable admin user for the container registry')
-param acrAdminUserEnabled bool = true
-
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: acrName
   location: location
@@ -22,7 +19,7 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' =
     name: acrSku
   }
   properties: {
-    adminUserEnabled: acrAdminUserEnabled
+    adminUserEnabled: false
     dataEndpointEnabled: false
     publicNetworkAccess: 'Enabled'
     networkRuleBypassOptions: 'AzureServices'

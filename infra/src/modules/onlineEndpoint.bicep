@@ -21,6 +21,12 @@ resource amlWorkspace 'Microsoft.MachineLearningServices/workspaces@2024-04-01' 
   name: split(amlWorkspaceId, '/')[8]
 }
 
+// Create user-assigned identity for online endpoint
+resource endpointIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-${endpointName}'
+  location: location
+}
+
 // Create the online endpoint only if it doesn't already exist
 resource onlineEndpoint 'Microsoft.MachineLearningServices/workspaces/onlineEndpoints@2024-04-01' = if (createEndpoint) {
   parent: amlWorkspace
@@ -28,7 +34,10 @@ resource onlineEndpoint 'Microsoft.MachineLearningServices/workspaces/onlineEndp
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${endpointIdentity.id}': {}
+    }
   }
   properties: {
     description: endpointDescription
@@ -63,9 +72,10 @@ output swaggerUri string = createEndpoint
   : existingEndpoint!.properties.swaggerUri
 
 @description('The principal ID of the online endpoint managed identity')
-output endpointPrincipalId string = createEndpoint
-  ? onlineEndpoint!.identity.principalId
-  : existingEndpoint!.identity.principalId
+output endpointPrincipalId string = endpointIdentity.properties.principalId
+
+@description('The client ID of the online endpoint user-assigned managed identity')
+output endpointClientId string = endpointIdentity.properties.clientId
 
 @description('The provisioning state of the online endpoint')
 output provisioningState string = createEndpoint

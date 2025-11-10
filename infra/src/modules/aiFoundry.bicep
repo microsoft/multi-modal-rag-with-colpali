@@ -36,21 +36,21 @@ resource aiProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-pre
   properties: {}
 }
 
-resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
-  parent: aiFoundry
-  name: 'gpt-5-mini'
-  sku: {
-    capacity: 100
-    name: 'GlobalStandard'
-  }
-  properties: {
-    model: {
-      name: 'gpt-5-mini'
-      version: '2025-08-07'
-      format: 'OpenAI'
-    }
-  }
-}
+// resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+//   parent: aiFoundry
+//   name: 'gpt-5-mini'
+//   sku: {
+//     capacity: 100
+//     name: 'GlobalStandard'
+//   }
+//   properties: {
+//     model: {
+//       name: 'gpt-5-mini'
+//       version: '2025-08-07'
+//       format: 'OpenAI'
+//     }
+//   }
+// }
 
 @description('The name of the AI Foundry service')
 output aiFoundryName string = aiFoundry.name
@@ -73,5 +73,5 @@ output aiProjectId string = aiProject.id
 @description('The principal ID of the AI Project managed identity')
 output aiProjectPrincipalId string = aiProject.identity.principalId
 
-@description('The name of the deployed model')
-output modelDeploymentName string = modelDeployment.name
+// @description('The name of the deployed model')
+// output modelDeploymentName string = modelDeployment.name

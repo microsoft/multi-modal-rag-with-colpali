@@ -1,12 +1,17 @@
 [project]
-name = "colpali-deployment"
+name = "colqwen2-inference"
 version = "0.1.0"
-description = "ColPali model deployment for Azure ML"
+description = "Kubernetes-native ColQwen2 inference service for document understanding and embedding generation"
 authors = [
-    {name = "Ben Constable", email = "benconstable@microsoft.com"}
+    {name = "Ben Constable", email = "benconstable@microsoft.com"},
+    {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
 dependencies = [
-    # Core ML dependencies for score.py inference - pinned to working versions
+    # FastAPI web framework
+    "fastapi>=0.121.0",
+    "uvicorn[standard]>=0.38.0",
+    "pydantic>=2.0.0",
+    # Core ML dependencies for inference - pinned to working versions
     "torch>=2.7.0,<2.8.0",
     "torchvision>=0.22.0,<0.23.0",
     "transformers==4.53.1",
@@ -16,9 +21,18 @@ dependencies = [
     "accelerate==1.11.0",
     "einops==0.8.1",
     "huggingface-hub[hf-xet]==0.36.0",
-    "azureml-inference-server-http==1.5.0",
     "peft==0.14.0",
-    "pre-commit>=4.3.0",
+    # Flash Attention for optimized attention computation (Linux x86_64 only)
+    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl ; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    # HTTP client and utilities
+    "aiohttp>=3.13.2",
+    "aiofiles>=23.2.1",
+    "python-multipart>=0.0.6",
+    "tenacity>=9.1.2",
+    # Environment management
+    "python-dotenv>=1.0.0",
+    # Azure Monitor OpenTelemetry for Application Insights
+    "azure-monitor-opentelemetry>=1.6.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"
@@ -31,24 +45,7 @@ target-version = "py311"
 select = ["E", "W", "F", "I"]
 ignore = ["E501"]
 
-[tool.uv]
-no-build-isolation-package = ["flash-attn"]
-
-# Only include deploy dependencies by default (no flash-attn for local development)
-default-groups = ["deploy"]
-
 [dependency-groups]
 dev = [
     "ruff>=0.1.0",
-]
-deploy = [
-    "azure-ai-ml>=1.12.0",
-    "python-dotenv>=1.0.0",
-    "azure-identity>=1.15.0",
-    "python-dotenv>=1.0.0",
-    "tomli>=2.0.0",
-    "pyyaml>=6.0.0",
-]
-score = [
-    "flash-attn==2.8.3",
 ]

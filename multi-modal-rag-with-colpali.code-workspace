@@ -5,16 +5,16 @@
       "path": "modules/colpali"
     },
     {
-      "name": "Index",
-      "path": "modules/index"
-    },
-    {
       "name": "Document Processor",
       "path": "modules/document_processor"
     },
     {
       "name": "Infrastructure",
       "path": "infra"
+    },
+    {
+      "name": "Helm Charts",
+      "path": "helm"
     },
     {
       "name": "Automation Scripts",
@@ -41,7 +41,8 @@
       "ms-azuretools.vscode-docker",
       "ms-vscode.powershell",
       "ms-vscode.azure-account",
-      "bierner.markdown-mermaid"
+      "bierner.markdown-mermaid",
+      "ms-kubernetes-tools.vscode-kubernetes-tools"
     ]
   }
 }
