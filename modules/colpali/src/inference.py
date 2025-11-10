@@ -329,36 +329,34 @@ class ColQwen2Inference:
                 "Check InitContainer logs for download failures."
             )
 
+    def base64_to_image(self, base64_string: str):
+        """
+        Convert base64 string to PIL Image.
 
-# Helper functions from k8s_score.py
-def base64_to_image(base64_string):
-    """
-    Convert base64 string to PIL Image.
+        Args:
+            base64_string (str): Base64 encoded image
 
-    Args:
-        base64_string (str): Base64 encoded image
+        Returns:
+            PIL.Image: Decoded image
+        """
+        try:
+            # Remove data URL prefix if present
+            if base64_string.startswith("data:image"):
+                base64_string = base64_string.split(",")[1]
 
-    Returns:
-        PIL.Image: Decoded image
-    """
-    try:
-        # Remove data URL prefix if present
-        if base64_string.startswith("data:image"):
-            base64_string = base64_string.split(",")[1]
+            # Decode base64
+            image_data = base64.b64decode(base64_string)
+            image = Image.open(BytesIO(image_data))
 
-        # Decode base64
-        image_data = base64.b64decode(base64_string)
-        image = Image.open(BytesIO(image_data))
+            # Convert to RGB if necessary
+            if image.mode != "RGB":
+                image = image.convert("RGB")
 
-        # Convert to RGB if necessary
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+            return image
 
-        return image
-
-    except Exception as e:
-        logger.error("Failed to decode base64 image: %s", str(e))
-        raise ValueError("Invalid base64 image data: %s" % str(e))
+        except Exception as e:
+            logger.error("Failed to decode base64 image: %s", str(e))
+            raise ValueError("Invalid base64 image data: %s" % str(e))
 
     def _apply_hierarchical_pooling(
         self, embeddings: torch.Tensor, pooling_config: Optional[Dict[str, Any]] = None
@@ -495,7 +493,7 @@ def base64_to_image(base64_string):
                     else:
                         raise ValueError("Invalid image data format at index %s" % i)
 
-                    image = base64_to_image(base64_string)
+                    image = self.base64_to_image(base64_string)
                     images.append(image)
 
                 except Exception as e:
