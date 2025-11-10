@@ -1,4 +1,5 @@
-# SIMPLE - Three components: Qdrant + Ingress + Document Processor
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 # Values passed from deploy script
 acrServer: "" # ACR login server
@@ -8,8 +9,6 @@ tenantId: "" # Azure tenant ID for Key Vault access
 storageAccountName: "" # Storage account
 serviceBusNamespace: "" # Service Bus namespace for message queuing
 serviceBusQueueName: "document-processing" # Service Bus queue name
-# Application Insights connection string is now stored securely in Key Vault
-# and accessed via the app-secrets SecretProviderClass
 
 # Key Vault configuration for secrets
 keyVault:

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name of the AI Foundry service')
 param aiFoundryName string
 

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The base name for the Key Vault')
 param baseName string
 

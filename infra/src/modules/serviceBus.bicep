@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name for the Service Bus namespace')
 param serviceBusNamespaceName string
 
@@ -12,10 +14,8 @@ param location string = resourceGroup().location
 ])
 param serviceBusSku string = 'Standard'
 
-// Internal implementation details
 var documentProcessingQueueName = 'document-processing'
 
-// Create Service Bus Namespace with SAS authentication disabled
 resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2021-11-01' = {
   name: serviceBusNamespaceName
   location: location
@@ -24,32 +24,27 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2021-11-01' = {
     tier: serviceBusSku
   }
   properties: {
-    disableLocalAuth: true // Disable SAS authentication, use Azure RBAC instead
+    disableLocalAuth: true
   }
 }
 
-// Create Queue for document processing
 resource documentProcessingQueue 'Microsoft.ServiceBus/namespaces/queues@2021-11-01' = {
   parent: serviceBusNamespace
   name: documentProcessingQueueName
   properties: {
-    lockDuration: 'PT5M' // 5 minutes lock duration for message processing
-    maxSizeInMegabytes: 1024 // 1GB queue size
+    lockDuration: 'PT5M'
+    maxSizeInMegabytes: 1024
     requiresDuplicateDetection: true
-    duplicateDetectionHistoryTimeWindow: 'PT10M' // 10 minutes duplicate detection window
+    duplicateDetectionHistoryTimeWindow: 'PT10M'
     requiresSession: false
-    defaultMessageTimeToLive: 'P14D' // 14 days TTL
+    defaultMessageTimeToLive: 'P14D'
     deadLetteringOnMessageExpiration: true
-    maxDeliveryCount: 5 // Max retry attempts before dead lettering
+    maxDeliveryCount: 5
     enableBatchedOperations: true
-    autoDeleteOnIdle: 'P10675199DT2H48M5.4775807S' // Never auto-delete
+    autoDeleteOnIdle: 'P10675199DT2H48M5.4775807S'
     enablePartitioning: false
   }
 }
-
-// Dead letter queue is automatically created by Service Bus
-// Dead letter queue will be named: document-processing/$deadletterqueue
-// Note: SAS authentication is disabled, using Azure RBAC for access control instead
 
 @description('Service Bus namespace resource ID')
 output serviceBusNamespaceId string = serviceBusNamespace.id
@@ -62,6 +57,3 @@ output serviceBusNamespaceHostname string = serviceBusNamespace.properties.servi
 
 @description('Document processing queue name')
 output documentProcessingQueueName string = documentProcessingQueue.name
-
-// Note: Authorization rule outputs removed since SAS authentication is disabled
-// Access control is now managed through Azure RBAC

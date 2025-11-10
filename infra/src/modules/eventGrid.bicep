@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('Base name for all resources')
 param baseName string
 
@@ -23,11 +25,10 @@ var roles = {
   serviceBusDataReceiver: '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
 }
 
-// Internal resource names
 var systemTopicName = 'egst-${dataStorageAccountName}-blobs'
 var eventGridIdentityName = 'id-${systemTopicName}'
 
-// Create User Assigned Identity for Event Grid
+// Create User Assigned Identity for Event Grid. Needed to authenticate to Service Bus which needs to be authorised before the subscription can be created.
 resource eventGridIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: eventGridIdentityName
   location: location
@@ -84,7 +85,6 @@ resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscripti
   ]
 }
 
-// Reference the existing Service Bus namespace to scope role assignments correctly
 resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2021-11-01' existing = {
   name: last(split(serviceBusNamespaceId, '/'))
 }

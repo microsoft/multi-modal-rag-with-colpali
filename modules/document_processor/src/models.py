@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 Pydantic data models for document processing pipeline.
 Replaces dictionary-based data passing with strongly-typed models.

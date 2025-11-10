@@ -1,4 +1,6 @@
 #!/usr/bin/env pwsh
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 # Build and push ColQwen inference and downloader containers
 

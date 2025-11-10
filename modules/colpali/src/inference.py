@@ -1,16 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 ColQwen2 Model Inference Module
 
 Handles model initialization and inference logic for Kubernetes deployment.
-Integrates the complete ColQwen2 scoring functionality from k8s_score.py.
 """
 
 import base64
 import logging
 import os
-from enum import Enum
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import torch
 from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
@@ -18,427 +18,316 @@ from PIL import Image
 from transformers import ColQwen2ForRetrieval, ColQwen2Processor
 from transformers.utils.import_utils import is_flash_attn_2_available
 
-# Import models for type hints
-from .models import EmbedRequest, EmbedResponse
+from .models import EmbedRequest, EmbedResponse, PoolingType
 
-# Configure logging for Kubernetes environment
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    force=True,  # Override any existing configuration
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
 
-class PoolingType(Enum):
-    """Enumeration for different pooling types."""
-
-    NONE = "none"
-    HIERARCHICAL = "hierarchical"
-    MEAN_POOLING = "mean_pooling"
-
-
-# Global variables for model components
-model: Optional[ColQwen2ForRetrieval] = None
-processor: Optional[ColQwen2Processor] = None
-device: Optional[torch.device] = None
-hierarchical_pooler: Optional[HierarchicalTokenPooler] = None
-
-# Constants for model paths - defined in one place
-PROCESSOR_SUBDIR = "processor"
-MODEL_SUBDIR = "model"
-
-
-def _get_model_dir_name() -> str:
-    """Get the model directory name from MODEL_ID environment variable."""
-    model_id = os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf")
-    # Convert model ID to directory name (e.g., "vidore/colqwen2-v1.0-hf" -> "vidore-colqwen2-v1.0-hf")
-    return model_id.replace("/", "-")
-
-
-def _load_models_from_paths(
-    processor_path: str,
-    model_path: str,
-    torch_dtype,
-    device_map="auto",
-    device=None,
-    for_validation=False,
-):
+class ColQwen2Inference:
     """
-    Load processor and model from given paths with specified configuration.
-
-    Args:
-        processor_path: Path to processor directory
-        model_path: Path to model directory
-        torch_dtype: Torch data type (e.g., torch.bfloat16)
-        device_map: Device mapping ("auto", "cpu", etc.)
-        device: Target device (required when for_validation=False and device_map is None/cpu)
-        for_validation: If True, returns models for validation. If False, sets global variables.
-
-    Returns:
-        If for_validation=True: tuple of (processor, model)
-        If for_validation=False: None (sets global variables)
+    ColQwen2 model inference handler for embedding generation.
+    Manages model lifecycle and provides inference capabilities for both images and text.
     """
-    # Load processor
-    processor_result = ColQwen2Processor.from_pretrained(
-        processor_path, local_files_only=True
-    )
-    if isinstance(processor_result, tuple):
-        loaded_processor = processor_result[0]
-    else:
-        loaded_processor = processor_result
 
-    # Load model with Flash Attention configuration
-    use_flash_attention_2 = is_flash_attn_2_available()
-    attn_implementation = "flash_attention_2" if use_flash_attention_2 else "sdpa"
+    PROCESSOR_SUBDIR = "processor"
+    MODEL_SUBDIR = "model"
 
-    model_kwargs = {
-        "torch_dtype": torch_dtype,
-        "local_files_only": True,
-        "attn_implementation": attn_implementation,
-        "low_cpu_mem_usage": True,
-        "use_safetensors": True,
-        "trust_remote_code": True,
-    }
+    def __init__(self):
+        """Initialize the inference handler."""
+        self.model: Optional[ColQwen2ForRetrieval] = None
+        self.processor: Optional[ColQwen2Processor] = None
+        self.device: Optional[torch.device] = None
+        self.hierarchical_pooler: Optional[HierarchicalTokenPooler] = None
+        self.is_initialized = False
 
-    if device_map:
-        model_kwargs["device_map"] = device_map
+        self.device_map = "auto"
+        self.model_id = os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf")
+        self.model_directory = os.getenv("MODEL_DIRECTORY_PATH", "/tmp/model-directory")
+        self.torch_dtype = None
 
-    loaded_model = ColQwen2ForRetrieval.from_pretrained(model_path, **model_kwargs)
+    def _get_model_dir_name(self) -> str:
+        """Get the model directory name from instance model_id."""
+        return self.model_id.replace("/", "-")
 
-    if for_validation:
-        return loaded_processor, loaded_model
-    else:
-        # Set global variables for production use
-        global model, processor, hierarchical_pooler
-        processor = loaded_processor
-        model = loaded_model
+    def _load_models_from_paths(
+        self,
+        processor_path: str,
+        model_path: str,
+        for_validation=False,
+        device_map=None,
+    ):
+        """
+        Load processor and model from given paths using instance configuration.
 
-        # Move model to device if not using device_map
-        if (not device_map or device_map == "cpu") and device is not None:
-            model = model.to(device)
+        Args:
+            processor_path: Path to processor directory
+            model_path: Path to model directory
+            for_validation: If True, returns models for validation. If False, sets instance variables.
+            device_map: Optional override for device mapping (uses instance default if None)
 
-        model.eval()
-        hierarchical_pooler = HierarchicalTokenPooler()
+        Returns:
+            If for_validation=True: tuple of (processor, model)
+            If for_validation=False: None (sets instance variables)
+        """
+        effective_device_map = device_map if device_map is not None else self.device_map
 
-
-def _can_load_model(processor_path: str, model_path: str) -> bool:
-    """
-    Check if model can be loaded successfully from the given paths.
-    Returns True if both processor and model can be loaded without errors.
-    Performs full model loading to ensure integrity.
-    """
-    try:
-        # Check if directories exist and have required files
-        if not os.path.exists(processor_path) or not os.path.exists(model_path):
-            logger.info(
-                "Model paths don't exist: processor=%s, model=%s",
-                os.path.exists(processor_path),
-                os.path.exists(model_path),
-            )
-            return False
-
-        # Check for essential config files
-        processor_config = os.path.join(processor_path, "tokenizer_config.json")
-        model_config = os.path.join(model_path, "config.json")
-
-        if not os.path.exists(processor_config) or not os.path.exists(model_config):
-            logger.info(
-                "Model config files missing: processor_config=%s, model_config=%s",
-                os.path.exists(processor_config),
-                os.path.exists(model_config),
-            )
-            return False
-
-        logger.info(
-            "Testing FULL model loading from: processor=%s, model=%s",
-            processor_path,
-            model_path,
+        processor_result = ColQwen2Processor.from_pretrained(
+            processor_path, local_files_only=True
         )
-
-        # Use shared loading logic for validation
-        test_processor, test_model = _load_models_from_paths(
-            processor_path,
-            model_path,
-            torch_dtype=torch.bfloat16,
-            device_map="cpu",  # Always use CPU for testing to avoid GPU memory issues
-            for_validation=True,
-        )
-
-        logger.info("Processor loaded successfully")
-        logger.info("Model loaded successfully")
-
-        # Clean up test model from memory immediately
-        del test_model, test_processor
-        import gc
-
-        gc.collect()
-
-        logger.info(
-            "Full model loading test successful - model is complete and functional"
-        )
-        return True
-
-    except Exception as e:
-        logger.info("Full model loading test failed: %s - will re-download", str(e))
-        return False
-
-
-def _download_model_if_needed(output_dir_path: str):
-    """Download ColQwen2 model if it doesn't exist locally."""
-    import time
-    from pathlib import Path
-
-    output_dir = Path(output_dir_path)
-    start_time = time.time()
-
-    model_name = os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf")
-    logger.info("=" * 80)
-    logger.info("DOWNLOAD MODE: Starting model download")
-    logger.info("=" * 80)
-    logger.info("Model ID: %s", model_name)
-    logger.info("Output directory: %s", output_dir_path)
-    logger.info("HF_HOME cache: %s", os.getenv("HF_HOME", "default"))
-
-    # Create model directories using centralized path logic
-    model_dir_name = _get_model_dir_name()
-    model_base_dir = output_dir / model_dir_name
-    processor_dir = model_base_dir / PROCESSOR_SUBDIR
-    model_dir = model_base_dir / MODEL_SUBDIR
-
-    logger.info("Creating directory structure:")
-    logger.info("  Base dir: %s", model_base_dir)
-    logger.info("  Processor dir: %s", processor_dir)
-    logger.info("  Model dir: %s", model_dir)
-
-    processor_dir.mkdir(parents=True, exist_ok=True)
-    model_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Directories created successfully")
-
-    # Check if model already exists and can be loaded successfully
-    if _can_load_model(str(processor_dir), str(model_dir)):
-        logger.info("=" * 80)
-        logger.info("MODEL ALREADY EXISTS AND LOADABLE - SKIPPING DOWNLOAD")
-        logger.info("=" * 80)
-        logger.info("Processor path: %s", processor_dir)
-        logger.info("Model path: %s", model_dir)
-        logger.info("Total time: 0.00 minutes (cached)")
-        logger.info("Model location: %s", model_base_dir)
-        logger.info("=" * 80)
-        return
-
-    # Clean up any partial downloads to prevent disk space issues
-    # Only clean up if directories exist but model can't be loaded
-    if processor_dir.exists() or model_dir.exists():
-        if not _can_load_model(str(processor_dir), str(model_dir)):
-            logger.info("Cleaning up partial/corrupted downloads...")
-            import shutil
-
-            if processor_dir.exists():
-                shutil.rmtree(processor_dir)
-                logger.info("Cleaned up processor directory")
-            if model_dir.exists():
-                shutil.rmtree(model_dir)
-                logger.info("Cleaned up model directory")
-            # Recreate directories
-            processor_dir.mkdir(parents=True, exist_ok=True)
-            model_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        # Download and save processor
-        logger.info("-" * 80)
-        logger.info("STEP 1/2: Downloading processor...")
-        logger.info("-" * 80)
-        processor = ColQwen2Processor.from_pretrained(model_name)
-        if isinstance(processor, tuple):
-            processor = processor[0]
-            logger.info("Processor returned as tuple, using first element")
-
-        logger.info("Saving processor to: %s", processor_dir)
-        processor.save_pretrained(str(processor_dir))
-        logger.info("Processor downloaded and saved successfully")
-
-        # Download and save model
-        logger.info("-" * 80)
-        logger.info("STEP 2/2: Downloading model (this may take several minutes)...")
-        logger.info("-" * 80)
+        if isinstance(processor_result, tuple):
+            loaded_processor = processor_result[0]
+        else:
+            loaded_processor = processor_result
         use_flash_attention_2 = is_flash_attn_2_available()
         attn_implementation = "flash_attention_2" if use_flash_attention_2 else "sdpa"
-        logger.info("Using attention implementation: %s", attn_implementation)
 
-        model = ColQwen2ForRetrieval.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="cpu",
-            attn_implementation=attn_implementation,
-            low_cpu_mem_usage=True,
-            use_safetensors=True,
-            trust_remote_code=True,
-        )
-        logger.info("Saving model to: %s", model_dir)
-        model.save_pretrained(str(model_dir))
-        logger.info("Model downloaded and saved successfully")
+        model_kwargs = {
+            "torch_dtype": self.torch_dtype,
+            "local_files_only": True,
+            "attn_implementation": attn_implementation,
+            "low_cpu_mem_usage": True,
+            "use_safetensors": True,
+            "trust_remote_code": True,
+        }
 
-    except Exception as e:
-        logger.error("Download failed: %s", str(e))
-        # Clean up partial downloads on failure to prevent disk space issues
-        logger.info("Cleaning up partial downloads due to failure...")
-        if processor_dir.exists():
-            import shutil
+        if effective_device_map:
+            model_kwargs["device_map"] = effective_device_map
 
-            shutil.rmtree(processor_dir)
-            logger.info("Cleaned up partial processor download")
-        if model_dir.exists():
-            import shutil
+        loaded_model = ColQwen2ForRetrieval.from_pretrained(model_path, **model_kwargs)
 
-            shutil.rmtree(model_dir)
-            logger.info("Cleaned up partial model download")
-        raise
-
-    total_time = time.time() - start_time
-    logger.info("=" * 80)
-    logger.info("DOWNLOAD COMPLETE")
-    logger.info("=" * 80)
-    logger.info("Total time: %.2f minutes", total_time / 60)
-    logger.info("Model saved to: %s", model_base_dir)
-    logger.info("=" * 80)
-
-
-def _load_model_from_disk(
-    processor_path: str, model_model_path: str, torch_dtype, device
-):
-    """Helper function to load model from disk using shared loading logic."""
-    logger.info("Loading processor from: %s", processor_path)
-    logger.info("Loading ColQwen2 merged model from: %s", model_model_path)
-
-    # Determine device mapping
-    device_map = "auto" if device.type == "cuda" else None
-
-    # Use shared loading logic for production
-    _load_models_from_paths(
-        processor_path,
-        model_model_path,
-        torch_dtype=torch_dtype,
-        device_map=device_map,
-        device=device,
-        for_validation=False,  # Sets global variables
-    )
-
-    logger.info("Model loaded and moved to device: %s", device)
-    logger.info("Hierarchical pooler initialized")
-
-
-def init_model():
-    """
-    Initialize the ColQwen2 model and processor for Kubernetes deployment.
-    Adapted from the original Azure ML version to work with Kubernetes volume mounts.
-    """
-    global model, processor, device, hierarchical_pooler
-
-    logger.info("=" * 80)
-    logger.info("INFERENCE MODE: Initializing ColQwen2 model")
-    logger.info("=" * 80)
-
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info("Device: %s", device)
-
-    # Get model paths using centralized logic
-    model_directory_path = os.getenv("MODEL_DIRECTORY_PATH", "/model-directory")
-    model_dir_name = _get_model_dir_name()
-
-    # Construct paths
-    model_base_path = os.path.join(model_directory_path, model_dir_name)
-    processor_path = os.path.join(model_base_path, PROCESSOR_SUBDIR)
-    model_model_path = os.path.join(model_base_path, MODEL_SUBDIR)
-
-    logger.info("Model paths:")
-    logger.info("  MODEL_DIRECTORY_PATH env: %s", model_directory_path)
-    logger.info("  MODEL_ID env: %s", os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf"))
-    logger.info("  Computed model dir name: %s", model_dir_name)
-    logger.info("  Base: %s", model_base_path)
-    logger.info("  Processor: %s", processor_path)
-    logger.info("  Model: %s", model_model_path)
-
-    # Check if directories exist
-    logger.info("-" * 80)
-    logger.info("Checking directory structure...")
-    logger.info("  Model base directory exists: %s", os.path.exists(model_base_path))
-    if os.path.exists(model_base_path):
-        logger.info("  Contents: %s", os.listdir(model_base_path))
-    logger.info("  Processor directory exists: %s", os.path.exists(processor_path))
-    if os.path.exists(processor_path):
-        proc_files = os.listdir(processor_path)
-        logger.info("  Processor files (%d total): %s", len(proc_files), proc_files)
-    logger.info("  Model directory exists: %s", os.path.exists(model_model_path))
-    if os.path.exists(model_model_path):
-        model_files = os.listdir(model_model_path)
-        logger.info("  Model files (%d total): %s", len(model_files), model_files)
-    logger.info("-" * 80)
-
-    torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    logger.info("Using torch dtype: %s", torch_dtype)
-
-    # Load pre-downloaded model
-    logger.info("Loading pre-downloaded model from InitContainer...")
-
-    try:
-        _load_model_from_disk(processor_path, model_model_path, torch_dtype, device)
-        logger.info("=" * 80)
-        logger.info("ColQwen2 model initialization completed successfully")
-        logger.info("=" * 80)
-
-    except Exception as e:
-        logger.error("=" * 80)
-        logger.error("FAILED to load pre-downloaded model")
-        logger.error("=" * 80)
-        logger.error("Error: %s", str(e))
-        logger.error("Model base path: %s", model_base_path)
-        logger.error("Processor path: %s", processor_path)
-        logger.error("Model path: %s", model_model_path)
-
-        # Provide debugging information
-        logger.error("-" * 80)
-        logger.error("Directory diagnostics:")
-
-        if os.path.exists(model_directory_path):
-            logger.error("MODEL_DIRECTORY_PATH exists: %s", model_directory_path)
-            base_contents = os.listdir(model_directory_path)
-            logger.error("  Contents (%d items): %s", len(base_contents), base_contents)
+        if for_validation:
+            return loaded_processor, loaded_model
         else:
-            logger.error(
-                "MODEL_DIRECTORY_PATH does not exist: %s", model_directory_path
+            self.processor = loaded_processor
+            self.model = loaded_model
+
+            if (
+                not effective_device_map or effective_device_map == "cpu"
+            ) and self.device is not None:
+                self.model = self.model.to(self.device)
+
+            self.model.eval()
+            self.hierarchical_pooler = HierarchicalTokenPooler()
+
+    def _can_load_model(self, processor_path: str, model_path: str) -> bool:
+        """
+        Check if model can be loaded successfully from the given paths.
+        Returns True if both processor and model can be loaded without errors.
+        Performs full model loading to ensure integrity.
+        """
+        try:
+            if not os.path.exists(processor_path) or not os.path.exists(model_path):
+                logger.info(
+                    "Model paths don't exist: processor=%s, model=%s",
+                    os.path.exists(processor_path),
+                    os.path.exists(model_path),
+                )
+                return False
+
+            processor_config = os.path.join(processor_path, "tokenizer_config.json")
+            model_config = os.path.join(model_path, "config.json")
+
+            if not os.path.exists(processor_config) or not os.path.exists(model_config):
+                logger.info(
+                    "Model config files missing: processor_config=%s, model_config=%s",
+                    os.path.exists(processor_config),
+                    os.path.exists(model_config),
+                )
+                return False
+
+            logger.info(
+                "Testing FULL model loading from: processor=%s, model=%s",
+                processor_path,
+                model_path,
             )
 
-        if os.path.exists(model_base_path):
-            logger.error("Model base directory exists: %s", model_base_path)
-            base_dir_contents = os.listdir(model_base_path)
-            logger.error(
-                "  Contents (%d items): %s", len(base_dir_contents), base_dir_contents
+            test_processor, test_model = self._load_models_from_paths(
+                processor_path,
+                model_path,
+                for_validation=True,
+                device_map="cpu",
             )
-        else:
-            logger.error("Model base directory does not exist: %s", model_base_path)
 
-        if os.path.exists(processor_path):
-            logger.error("Processor directory exists: %s", processor_path)
-            proc_files = os.listdir(processor_path)
-            logger.error("  Files (%d total): %s", len(proc_files), proc_files)
-        else:
-            logger.error("Processor directory does not exist: %s", processor_path)
+            logger.debug("Validation: Processor and model loaded successfully")
 
-        if os.path.exists(model_model_path):
-            logger.error("Model directory exists: %s", model_model_path)
-            model_files = os.listdir(model_model_path)
-            logger.error("  Files (%d total): %s", len(model_files), model_files)
-        else:
-            logger.error("Model directory does not exist: %s", model_model_path)
+            del test_model, test_processor
+            import gc
 
-        logger.error("=" * 80)
+            gc.collect()
 
-        raise RuntimeError(
-            f"InitContainer should have pre-downloaded the model to {model_base_path}. "
-            "Check InitContainer logs for download failures."
+            logger.debug(
+                "Model validation successful - model is complete and functional"
+            )
+            return True
+
+        except Exception as e:
+            logger.info("Full model loading test failed: %s - will re-download", str(e))
+            return False
+
+    def _download_model_if_needed(self, output_dir_path: str = None):
+        """Download ColQwen2 model if it doesn't exist locally."""
+        import time
+        from pathlib import Path
+
+        output_path = (
+            output_dir_path if output_dir_path is not None else self.model_directory
         )
+        output_dir = Path(output_path)
+        start_time = time.time()
+
+        logger.info("Starting model download")
+        logger.debug("Model ID: %s", self.model_id)
+        logger.debug("Output directory: %s", output_path)
+        logger.debug("HF_HOME cache: %s", os.getenv("HF_HOME", "default"))
+
+        model_dir_name = self._get_model_dir_name()
+        model_base_dir = output_dir / model_dir_name
+        processor_dir = model_base_dir / self.PROCESSOR_SUBDIR
+        model_dir = model_base_dir / self.MODEL_SUBDIR
+
+        logger.debug("Creating directory structure:")
+        logger.debug("Base dir: %s", model_base_dir)
+        logger.debug("Processor dir: %s", processor_dir)
+        logger.debug("Model dir: %s", model_dir)
+
+        processor_dir.mkdir(parents=True, exist_ok=True)
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        if self._can_load_model(str(processor_dir), str(model_dir)):
+            logger.info("Model already exists and loadable - skipping download")
+            logger.debug("Model location: %s", model_base_dir)
+            return
+        if processor_dir.exists() or model_dir.exists():
+            if not self._can_load_model(str(processor_dir), str(model_dir)):
+                logger.info("Cleaning up partial/corrupted downloads...")
+                import shutil
+
+                if processor_dir.exists():
+                    shutil.rmtree(processor_dir)
+                    logger.debug("Cleaned up processor directory")
+                if model_dir.exists():
+                    shutil.rmtree(model_dir)
+                    logger.debug("Cleaned up model directory")
+                # Recreate directories
+                processor_dir.mkdir(parents=True, exist_ok=True)
+                model_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Download and save processor
+            logger.info("Step 1/2: Downloading processor...")
+            processor = ColQwen2Processor.from_pretrained(self.model_id)
+            if isinstance(processor, tuple):
+                processor = processor[0]
+                logger.debug("Processor returned as tuple, using first element")
+
+            logger.debug("Saving processor to: %s", processor_dir)
+            processor.save_pretrained(str(processor_dir))
+            logger.debug("Processor downloaded successfully")
+
+            # Download and save model
+            logger.info(
+                "Step 2/2: Downloading model (this may take several minutes)..."
+            )
+            use_flash_attention_2 = is_flash_attn_2_available()
+            attn_implementation = (
+                "flash_attention_2" if use_flash_attention_2 else "sdpa"
+            )
+            logger.debug("Using attention implementation: %s", attn_implementation)
+
+            model = ColQwen2ForRetrieval.from_pretrained(
+                self.model_id,
+                torch_dtype=torch.bfloat16,  # Use bfloat16 for download regardless of device
+                device_map="cpu",
+                attn_implementation=attn_implementation,
+                low_cpu_mem_usage=True,
+                use_safetensors=True,
+                trust_remote_code=True,
+            )
+            logger.debug("Saving model to: %s", model_dir)
+            model.save_pretrained(str(model_dir))
+            logger.debug("Model downloaded successfully")
+
+        except Exception as e:
+            logger.error("Download failed: %s", str(e))
+            # Clean up partial downloads on failure to prevent disk space issues
+            logger.info("Cleaning up partial downloads due to failure...")
+            if processor_dir.exists():
+                import shutil
+
+                shutil.rmtree(processor_dir)
+                logger.debug("Cleaned up partial processor download")
+            if model_dir.exists():
+                import shutil
+
+                shutil.rmtree(model_dir)
+                logger.debug("Cleaned up partial model download")
+            raise
+
+        total_time = time.time() - start_time
+        logger.info("Download complete")
+        logger.debug("Total time: %.2f minutes", total_time / 60)
+        logger.debug("Model saved to: %s", model_base_dir)
+
+    def _load_model_from_disk(self, processor_path: str, model_model_path: str):
+        """Helper function to load model from disk using shared loading logic."""
+        logger.debug("Loading processor from: %s", processor_path)
+        logger.debug("Loading ColQwen2 merged model from: %s", model_model_path)
+
+        # Determine device mapping based on instance device
+        device_map = "auto" if self.device and self.device.type == "cuda" else None
+
+        # Use shared loading logic for production
+        self._load_models_from_paths(
+            processor_path,
+            model_model_path,
+            for_validation=False,  # Sets instance variables
+            device_map=device_map,
+        )
+
+        logger.info("Model loaded successfully")
+
+    def initialize(self):
+        """
+        Initialize the ColQwen2 model and processor for Kubernetes deployment.
+        Adapted from the original Azure ML version to work with Kubernetes volume mounts.
+        """
+        if self.is_initialized:
+            logger.debug("Model already initialized")
+            return
+
+        logger.info("Initializing ColQwen2 model for inference")
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.torch_dtype = (
+            torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        )
+        logger.info("Device: %s", self.device)
+
+        model_dir_name = self._get_model_dir_name()
+        model_base_path = os.path.join(self.model_directory, model_dir_name)
+        processor_path = os.path.join(model_base_path, self.PROCESSOR_SUBDIR)
+        model_model_path = os.path.join(model_base_path, self.MODEL_SUBDIR)
+
+        logger.info("Loading pre-downloaded model from InitContainer...")
+
+        try:
+            self._load_model_from_disk(processor_path, model_model_path)
+            logger.info("ColQwen2 model initialization completed successfully")
+            self.is_initialized = True
+
+        except Exception as e:
+            logger.error("Failed to load pre-downloaded model: %s", str(e))
+            logger.error("Model base path: %s", model_base_path)
+
+            raise RuntimeError(
+                f"InitContainer should have pre-downloaded the model to {model_base_path}. "
+                "Check InitContainer logs for download failures."
+            )
 
 
 # Helper functions from k8s_score.py
@@ -471,389 +360,344 @@ def base64_to_image(base64_string):
         logger.error("Failed to decode base64 image: %s", str(e))
         raise ValueError("Invalid base64 image data: %s" % str(e))
 
+    def _apply_hierarchical_pooling(
+        self, embeddings: torch.Tensor, pooling_config: Optional[Dict[str, Any]] = None
+    ) -> torch.Tensor:
+        """
+        Apply hierarchical token pooling to embeddings using ColPali's implementation.
+        """
+        try:
+            logger.debug("Applying hierarchical token pooling...")
 
-def apply_hierarchical_pooling(
-    embeddings: torch.Tensor, pooling_config: Optional[Dict[str, Any]] = None
-) -> torch.Tensor:
-    """
-    Apply hierarchical token pooling to embeddings using ColPali's implementation.
-    """
-    try:
-        logger.info("Applying hierarchical token pooling...")
+            # Get original shape
+            original_shape = embeddings.shape
+            logger.info("Original embeddings shape: %s", original_shape)
 
-        # Get original shape
-        original_shape = embeddings.shape
-        logger.info("Original embeddings shape: %s", original_shape)
+            # Default pooling configuration
+            pool_factor = 2
+            if pooling_config and "pool_factor" in pooling_config:
+                pool_factor = pooling_config["pool_factor"]
 
-        # Default pooling configuration
-        pool_factor = 2
-        if pooling_config and "pool_factor" in pooling_config:
-            pool_factor = pooling_config["pool_factor"]
-
-        # Apply pooling using the hierarchical pooler
-        pooled_embeddings = hierarchical_pooler.forward(
-            embeddings, pool_factor=pool_factor
-        )
-
-        # Get pooled shape
-        pooled_shape = pooled_embeddings.shape
-        logger.info("Pooled embeddings shape: %s", pooled_shape)
-
-        # Calculate compression ratio
-        original_size = original_shape[1] * original_shape[2]  # patches * dim
-        pooled_size = pooled_shape[1] * pooled_shape[2]  # pooled_patches * dim
-        compression_ratio = original_size / pooled_size
-
-        logger.info(
-            "Pooling completed - compression ratio: %.2fx (from %d to %d elements)",
-            compression_ratio,
-            original_size,
-            pooled_size,
-        )
-
-        return pooled_embeddings
-
-    except Exception as e:
-        logger.error("Hierarchical pooling failed: %s", str(e))
-        raise
-
-
-def get_patches(image_size, model_processor, model):
-    """Get the number of patches for x and y dimensions."""
-
-    # This code is taken from the example at: https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/
-    return model_processor.get_n_patches(
-        image_size,
-        patch_size=model.patch_size,
-        spatial_merge_size=model.spatial_merge_size,
-    )
-
-
-def generate_embeddings(request: EmbedRequest) -> Dict[str, Any]:
-    """
-    Main inference function that processes EmbedRequest models.
-    This is the main entry point called by the FastAPI wrapper.
-    """
-    try:
-        # Check if model is initialized
-        if model is None or processor is None:
-            raise RuntimeError("Model not initialized. Call init_model() first.")
-
-        logger.info("Processing inference request")
-
-        # Extract pooling configuration
-        pooling_types = []
-        for pooling_str in request.pooling_type:
-            try:
-                pooling_types.append(PoolingType(pooling_str))
-            except ValueError:
-                logger.warning(f"Invalid pooling type '{pooling_str}', skipping")
-
-        if not pooling_types:
-            logger.warning(
-                "No valid pooling types specified, defaulting to 'hierarchical'"
+            # Apply pooling using the hierarchical pooler
+            pooled_embeddings = self.hierarchical_pooler.forward(
+                embeddings, pool_factor=pool_factor
             )
-            pooling_types = [PoolingType.HIERARCHICAL]
 
-        pooling_config = request.pooling_config
+            # Get pooled shape
+            pooled_shape = pooled_embeddings.shape
+            logger.info("Pooled embeddings shape: %s", pooled_shape)
 
-        # Determine request type and process accordingly
-        if request.images:
-            return process_images_from_request(request, pooling_types, pooling_config)
-        elif request.texts:
-            return process_texts_from_request(request, pooling_types, pooling_config)
-        else:
-            raise ValueError("Request must contain either 'images' or 'texts' field")
+            # Calculate compression ratio
+            original_size = original_shape[1] * original_shape[2]  # patches * dim
+            pooled_size = pooled_shape[1] * pooled_shape[2]  # pooled_patches * dim
+            compression_ratio = original_size / pooled_size
 
-    except Exception as e:
-        logger.error("Inference failed: %s", str(e))
-        error_response = {"error": str(e), "status": "error"}
-        return error_response
+            logger.info(
+                "Pooling completed - compression ratio: %.2fx (from %d to %d elements)",
+                compression_ratio,
+                original_size,
+                pooled_size,
+            )
 
+            return pooled_embeddings
 
-def process_images_from_request(
-    request: EmbedRequest,
-    pooling_types: List[PoolingType],
-    pooling_config: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    Process image embedding request with multiple pooling types.
-    """
-    try:
-        # Extract image data from request
-        image_data_list = request.images
-        if not image_data_list:
-            raise ValueError("Request must contain 'images' field with image content")
+        except Exception as e:
+            logger.error("Hierarchical pooling failed: %s", str(e))
+            raise
 
-        if not isinstance(image_data_list, list):
-            raise ValueError("'images' field must be a list")
-
-        if len(image_data_list) == 0:
-            raise ValueError("'images' list cannot be empty")
-
-        logger.info(
-            "Processing %s images with pooling types: %s",
-            len(image_data_list),
-            [pt.value for pt in pooling_types],
-        )
-
-        # Convert base64 strings to PIL images
-        images = []
-        for i, image_data in enumerate(image_data_list):
-            try:
-                # Handle direct base64 string or data URI
-                if isinstance(image_data, str):
-                    base64_string = image_data
-                else:
-                    raise ValueError("Invalid image data format at index %s" % i)
-
-                image = base64_to_image(base64_string)
-                images.append(image)
-
-            except Exception as e:
-                logger.error("Failed to process image at index %s: %s", i, str(e))
-                raise ValueError(
-                    "Failed to process image at index %s: %s" % (i, str(e))
-                )
-
-        # Process images ONCE using ColQwen2Processor
-        logger.info("Processing images with ColQwen2...")
-
-        with torch.no_grad():
-            # Process images using ColQwen2Processor
-            batch_images = processor.process_images(images)
-
-            # Move tensors to the correct device
-            if hasattr(batch_images, "to"):
-                batch_images = batch_images.to(device)
-            elif isinstance(batch_images, dict):
-                batch_images = {
-                    k: v.to(device) if hasattr(v, "to") else v
-                    for k, v in batch_images.items()
-                }
-
-            # Generate embeddings ONCE
-            embeddings = model(**batch_images)
-
-        logger.info("Base embeddings generated, applying requested poolings...")
-
-        # Initialize response structure
-        response = {}
-
-        # Apply different pooling types to the SAME embeddings
+    def _get_patches(self, image_size):
+        """Get the number of patches for x and y dimensions."""
         # This code is taken from the example at: https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/
-        for pooling_type in pooling_types:
-            if pooling_type == PoolingType.MEAN_POOLING:
-                # Apply mean pooling to existing embeddings
-                logger.info("Applying mean pooling...")
+        return self.processor.get_n_patches(
+            image_size,
+            patch_size=self.model.patch_size,
+            spatial_merge_size=self.model.spatial_merge_size,
+        )
 
-                # Apply mean pooling logic directly
-                pooled_by_rows_batch = []
-                pooled_by_columns_batch = []
-                original_embeddings = embeddings.cpu().float().numpy().tolist()
+    def generate_embeddings(self, request: EmbedRequest) -> Dict[str, Any]:
+        """
+        Main inference function that processes EmbedRequest models.
+        This is the main entry point called by the FastAPI wrapper.
+        """
+        try:
+            # Check if model is initialized
+            if not self.is_initialized or self.model is None or self.processor is None:
+                raise RuntimeError("Model not initialized. Call initialize() first.")
 
-                for i, (image_embedding, tokenized_image, image) in enumerate(
-                    zip(embeddings, batch_images.input_ids, images)
-                ):
-                    x_patches, y_patches = get_patches(image.size, processor, model)
+            logger.info("Processing inference request")
 
-                    image_tokens_mask = tokenized_image == processor.image_token_id
+            # Extract pooling configuration (already validated by Pydantic)
+            pooling_types = request.pooling_type
 
-                    # Get embedding dimension from the shape of the tensor
-                    embedding_dim = image_embedding.shape[-1]
-                    image_tokens = image_embedding[image_tokens_mask].view(
-                        x_patches, y_patches, embedding_dim
+            if not pooling_types:
+                # Default to appropriate pooling based on request type
+                if request.images:
+                    logger.info(
+                        "No valid pooling types specified for images, defaulting to 'hierarchical'"
                     )
-                    pooled_by_rows = torch.mean(image_tokens, dim=0)
-                    pooled_by_columns = torch.mean(image_tokens, dim=1)
-
-                    image_token_idxs = torch.nonzero(
-                        image_tokens_mask.int(), as_tuple=False
+                    pooling_types = [PoolingType.HIERARCHICAL]
+                else:
+                    logger.info(
+                        "No valid pooling types specified for text, defaulting to 'none'"
                     )
-                    first_image_token_idx = image_token_idxs[0].cpu().item()
-                    last_image_token_idx = image_token_idxs[-1].cpu().item()
+                    pooling_types = [PoolingType.NONE]
 
-                    prefix_tokens = image_embedding[:first_image_token_idx]
-                    postfix_tokens = image_embedding[last_image_token_idx + 1 :]
+            pooling_config = request.pooling_config
 
-                    # Adding back prefix and postfix special tokens
-                    pooled_by_rows = (
-                        torch.cat(
-                            (prefix_tokens, pooled_by_rows, postfix_tokens), dim=0
-                        )
-                        .cpu()
-                        .float()
-                        .numpy()
-                        .tolist()
-                    )
-                    pooled_by_columns = (
-                        torch.cat(
-                            (prefix_tokens, pooled_by_columns, postfix_tokens), dim=0
-                        )
-                        .cpu()
-                        .float()
-                        .numpy()
-                        .tolist()
-                    )
+            # Update request with normalized pooling types
+            request.pooling_type = pooling_types
 
-                    pooled_by_rows_batch.append(pooled_by_rows)
-                    pooled_by_columns_batch.append(pooled_by_columns)
-
-                response["mean_row_pooled_embeddings"] = {
-                    "mean_pooling": pooled_by_rows_batch
-                }
-                response["mean_column_pooled_embeddings"] = {
-                    "mean_pooling": pooled_by_columns_batch
-                }
-                # Also add original embeddings if not already added
-                if "embeddings" not in response:
-                    response["embeddings"] = original_embeddings
-
-                logger.info("Mean pooling completed")
-
-            elif pooling_type == PoolingType.HIERARCHICAL:
-                # Apply hierarchical pooling to existing embeddings
-                logger.info("Applying hierarchical pooling...")
-
-                pooled_embeddings = apply_hierarchical_pooling(
-                    embeddings, pooling_config
+            # Determine request type and process accordingly
+            if request.images:
+                return self._process_images_from_request(request, pooling_config)
+            elif request.texts:
+                # Text processing doesn't use pooling types since text returns single embeddings
+                return self._process_texts_from_request(request)
+            else:
+                raise ValueError(
+                    "Request must contain either 'images' or 'texts' field"
                 )
-                final_embeddings = pooled_embeddings.cpu().float().numpy().tolist()
 
-                response["hierarchical_pooled_embeddings"] = {
-                    "hierarchical": final_embeddings
-                }
+        except Exception as e:
+            logger.error("Inference failed: %s", str(e))
+            error_response = {"error": str(e), "status": "error"}
+            return error_response
 
-                logger.info("Hierarchical pooling completed")
+    def _process_images_from_request(
+        self,
+        request: EmbedRequest,
+        pooling_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Process image embedding request with multiple pooling types.
+        """
+        try:
+            # Extract image data from request
+            image_data_list = request.images
+            if not image_data_list:
+                raise ValueError(
+                    "Request must contain 'images' field with image content"
+                )
 
-            elif pooling_type == PoolingType.NONE:
-                # No pooling - use original embeddings
-                logger.info("Adding original embeddings...")
+            if not isinstance(image_data_list, list):
+                raise ValueError("'images' field must be a list")
 
-                final_embeddings = embeddings.cpu().float().numpy().tolist()
-                response["embeddings"] = final_embeddings
+            if len(image_data_list) == 0:
+                raise ValueError("'images' list cannot be empty")
 
-                logger.info("Original embeddings added")
+            # Convert base64 strings to PIL images
+            images = []
+            for i, image_data in enumerate(image_data_list):
+                try:
+                    # Handle direct base64 string or data URI
+                    if isinstance(image_data, str):
+                        base64_string = image_data
+                    else:
+                        raise ValueError("Invalid image data format at index %s" % i)
 
-        logger.info("Generated embeddings for %s images", len(images))
+                    image = base64_to_image(base64_string)
+                    images.append(image)
 
-        # Create response with the new structure
-        return EmbedResponse(**response)
+                except Exception as e:
+                    logger.error("Failed to process image at index %s: %s", i, str(e))
+                    raise ValueError(
+                        "Failed to process image at index %s: %s" % (i, str(e))
+                    )
 
-    except Exception as e:
-        logger.error("Image processing failed: %s", str(e))
-        raise
+            logger.info("Processing images with ColQwen2...")
 
+            with torch.no_grad():
+                batch_images = self.processor.process_images(images)
 
-def process_texts_from_request(
-    request: EmbedRequest,
-    pooling_types: List[PoolingType],
-    pooling_config: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    Process text queries embedding request with multiple pooling types.
-    """
-    try:
-        # Extract text queries from request
-        text_queries = request.texts
-        if not text_queries:
-            raise ValueError("Request must contain 'texts' field with text content")
+                if hasattr(batch_images, "to"):
+                    batch_images = batch_images.to(self.device)
+                elif isinstance(batch_images, dict):
+                    batch_images = {
+                        k: v.to(self.device) if hasattr(v, "to") else v
+                        for k, v in batch_images.items()
+                    }
 
-        if not isinstance(text_queries, list):
-            raise ValueError("'texts' field must be a list")
+                embeddings = self.model(**batch_images)
 
-        if len(text_queries) == 0:
-            raise ValueError("'texts' list cannot be empty")
+            response = {}
+            for pooling_type in request.pooling_type:
+                if pooling_type == PoolingType.MEAN_POOLING:
+                    # Apply mean pooling to existing embeddings
+                    logger.debug("Applying mean pooling...")
 
-        logger.info(
-            "Processing %s text queries with pooling types: %s",
-            len(text_queries),
-            [pt.value for pt in pooling_types],
-        )
+                    pooled_by_rows_batch = []
+                    pooled_by_columns_batch = []
+                    original_embeddings = embeddings.cpu().float().numpy().tolist()
 
-        # Validate text queries
-        for i, text_query in enumerate(text_queries):
-            if not isinstance(text_query, str):
-                raise ValueError(f"Text query at index {i} must be a string")
-            if len(text_query.strip()) == 0:
-                raise ValueError(f"Text query at index {i} cannot be empty")
+                    for i, (image_embedding, tokenized_image, image) in enumerate(
+                        zip(embeddings, batch_images.input_ids, images)
+                    ):
+                        x_patches, y_patches = self._get_patches(image.size)
 
-        logger.info(
-            "Processing text queries: %s",
-            [q[:50] + "..." if len(q) > 50 else q for q in text_queries],
-        )
+                        image_tokens_mask = (
+                            tokenized_image == self.processor.image_token_id
+                        )
 
-        # Initialize response structure
-        response = {}
+                        embedding_dim = image_embedding.shape[-1]
+                        image_tokens = image_embedding[image_tokens_mask].view(
+                            x_patches, y_patches, embedding_dim
+                        )
+                        pooled_by_rows = torch.mean(image_tokens, dim=0)
+                        pooled_by_columns = torch.mean(image_tokens, dim=1)
 
-        # Process different pooling types
-        for pooling_type in pooling_types:
-            if pooling_type == PoolingType.HIERARCHICAL:
-                # Apply hierarchical pooling
-                logger.info("Applying hierarchical pooling to text queries...")
+                        image_token_idxs = torch.nonzero(
+                            image_tokens_mask.int(), as_tuple=False
+                        )
+                        first_image_token_idx = image_token_idxs[0].cpu().item()
+                        last_image_token_idx = image_token_idxs[-1].cpu().item()
 
-                with torch.no_grad():
-                    # Process text queries using ColQwen2Processor
-                    batch_queries = processor.process_queries(text_queries)
+                        prefix_tokens = image_embedding[:first_image_token_idx]
+                        postfix_tokens = image_embedding[last_image_token_idx + 1 :]
 
-                    # Move tensors to the correct device
-                    if hasattr(batch_queries, "to"):
-                        batch_queries = batch_queries.to(device)
-                    elif isinstance(batch_queries, dict):
-                        batch_queries = {
-                            k: v.to(device) if hasattr(v, "to") else v
-                            for k, v in batch_queries.items()
-                        }
+                        pooled_by_rows = (
+                            torch.cat(
+                                (prefix_tokens, pooled_by_rows, postfix_tokens), dim=0
+                            )
+                            .cpu()
+                            .float()
+                            .numpy()
+                            .tolist()
+                        )
+                        pooled_by_columns = (
+                            torch.cat(
+                                (prefix_tokens, pooled_by_columns, postfix_tokens),
+                                dim=0,
+                            )
+                            .cpu()
+                            .float()
+                            .numpy()
+                            .tolist()
+                        )
 
-                    # Generate embeddings for the queries
-                    query_embeddings = model(**batch_queries)
+                        pooled_by_rows_batch.append(pooled_by_rows)
+                        pooled_by_columns_batch.append(pooled_by_columns)
 
-                    pooled_embeddings = apply_hierarchical_pooling(
-                        query_embeddings, pooling_config
+                    response["mean_row_pooled_embeddings"] = {
+                        "mean_pooling": pooled_by_rows_batch
+                    }
+                    response["mean_column_pooled_embeddings"] = {
+                        "mean_pooling": pooled_by_columns_batch
+                    }
+                    # Also add original embeddings if not already added
+                    if "embeddings" not in response:
+                        response["embeddings"] = original_embeddings
+
+                    logger.debug("Mean pooling completed")
+
+                elif pooling_type == PoolingType.HIERARCHICAL:
+                    # Apply hierarchical pooling to existing embeddings
+                    logger.debug("Applying hierarchical pooling...")
+
+                    if pooling_config is None:
+                        raise ValueError(
+                            "Hierarchical pooling requires pooling_config to be provided"
+                        )
+
+                    pooled_embeddings = self._apply_hierarchical_pooling(
+                        embeddings, pooling_config
                     )
                     final_embeddings = pooled_embeddings.cpu().float().numpy().tolist()
 
-                response["hierarchical_pooled_embeddings"] = {
-                    "hierarchical": final_embeddings
-                }
+                    response["hierarchical_pooled_embeddings"] = {
+                        "hierarchical": final_embeddings
+                    }
 
-                logger.info("Hierarchical pooling completed for text queries")
+                    logger.debug("Hierarchical pooling completed")
 
-            elif pooling_type == PoolingType.NONE:
-                # No pooling - use original embeddings
-                logger.info("Processing text queries without pooling...")
+                elif pooling_type == PoolingType.NONE:
+                    # No pooling - use original embeddings
+                    logger.info("Adding original embeddings...")
 
-                with torch.no_grad():
-                    # Process text queries using ColQwen2Processor
-                    batch_queries = processor.process_queries(text_queries)
+                    final_embeddings = embeddings.cpu().float().numpy().tolist()
+                    response["embeddings"] = final_embeddings
 
-                    # Move tensors to the correct device
-                    if hasattr(batch_queries, "to"):
-                        batch_queries = batch_queries.to(device)
-                    elif isinstance(batch_queries, dict):
-                        batch_queries = {
-                            k: v.to(device) if hasattr(v, "to") else v
-                            for k, v in batch_queries.items()
-                        }
+                    logger.info("Original embeddings added")
 
-                    # Generate embeddings for the queries
-                    query_embeddings = model(**batch_queries)
-                    final_embeddings = query_embeddings.cpu().float().numpy().tolist()
+            logger.info("Generated embeddings for %s images", len(images))
 
-                response["embeddings"] = final_embeddings
+            # Create response with the new structure
+            return EmbedResponse(**response)
 
-                logger.info("Original embeddings generated for text queries")
+        except Exception as e:
+            logger.error("Image processing failed: %s", str(e))
+            raise
 
-            # Note: Mean pooling for text queries is typically not applicable
-            # as text embeddings don't have the same spatial structure as images
-            elif pooling_type == PoolingType.MEAN_POOLING:
-                logger.warning(
-                    "Mean pooling is not applicable for text queries, skipping"
-                )
+    def _process_texts_from_request(self, request: EmbedRequest) -> Dict[str, Any]:
+        """
+        Process text queries embedding request.
+        Text queries return single embeddings, so pooling is not applicable.
+        """
+        try:
+            # Extract text queries from request
+            text_queries = request.texts
+            if not text_queries:
+                raise ValueError("Request must contain 'texts' field with text content")
 
-        logger.info("Generated embeddings for %s text queries", len(text_queries))
-        return response
+            if not isinstance(text_queries, list):
+                raise ValueError("'texts' field must be a list")
 
-    except Exception as e:
-        logger.error("Text queries processing failed: %s", str(e))
-        raise
+            if len(text_queries) == 0:
+                raise ValueError("'texts' list cannot be empty")
+
+            logger.info("Processing %s text queries", len(text_queries))
+
+            # Validate text queries
+            for i, text_query in enumerate(text_queries):
+                if not isinstance(text_query, str):
+                    raise ValueError(f"Text query at index {i} must be a string")
+                if len(text_query.strip()) == 0:
+                    raise ValueError(f"Text query at index {i} cannot be empty")
+
+            logger.info("Processing text queries...")
+
+            with torch.no_grad():
+                batch_queries = self.processor.process_queries(text_queries)
+
+                if hasattr(batch_queries, "to"):
+                    batch_queries = batch_queries.to(self.device)
+                elif isinstance(batch_queries, dict):
+                    batch_queries = {
+                        k: v.to(self.device) if hasattr(v, "to") else v
+                        for k, v in batch_queries.items()
+                    }
+
+                query_embeddings = self.model(**batch_queries)
+                final_embeddings = query_embeddings.cpu().float().numpy().tolist()
+
+            response = {"embeddings": final_embeddings}
+
+            logger.info("Generated embeddings for %s text queries", len(text_queries))
+            return response
+
+        except Exception as e:
+            logger.error("Text queries processing failed: %s", str(e))
+            raise
+
+
+# Global instance for backward compatibility
+_inference_instance: Optional[ColQwen2Inference] = None
+
+
+def get_inference_instance() -> ColQwen2Inference:
+    """Get or create the global inference instance."""
+    global _inference_instance
+    if _inference_instance is None:
+        _inference_instance = ColQwen2Inference()
+    return _inference_instance
+
+
+def init_model():
+    """Initialize the model (backward compatibility function)."""
+    instance = get_inference_instance()
+    instance.initialize()
+
+
+def generate_embeddings(request: EmbedRequest) -> Dict[str, Any]:
+    """Generate embeddings (backward compatibility function)."""
+    instance = get_inference_instance()
+    return instance.generate_embeddings(request)

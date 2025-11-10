@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name for the AKS cluster')
 param aksClusterName string
 

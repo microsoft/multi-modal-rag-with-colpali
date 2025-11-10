@@ -1,4 +1,5 @@
-# Single-stage build for faster development and ACR compatibility
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 FROM python:3.11-slim-trixie
 
 # Copy UV binary from official UV image

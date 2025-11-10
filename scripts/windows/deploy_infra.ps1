@@ -1,7 +1,8 @@
 #!/usr/bin/env pwsh
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 # Complete deployment script: deploys Bicep infrastructure
 # Usage: .\deploy_infra.ps1 [-ResourceGroup <resource-group>] [-DeployRoles <true|false>]
-# Note: AKS and Event Grid always deploy (containers pushed later via Helm)
 # Note: baseName and location are defined in infra/src/main.bicepparam
 
 [CmdletBinding()]

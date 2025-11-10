@@ -1,87 +1,126 @@
-# ColQwen2 Kubernetes Deployment
+# ColQwen2 Inference Service
 
-This module provides a containerized ColQwen2 visual document understanding model for Kubernetes inference serving.
+This module provides a containerized ColQwen2 visual document understanding model for Kubernetes deployment with optimized inference serving.
 
-## What this module does
+## Architecture Overview
 
-1. **Downloads ColQwen2 model** from Hugging Face (vidore/colqwen2-v1.0-hf) automatically on startup
-2. **Uses shared HF cache** for faster subsequent downloads across pods
-3. **Serves inference requests** via FastAPI with local storage for optimal performance
-4. **Handles both image and text processing** for document understanding workflows
+This service uses a **StatefulSet with InitContainer pattern** for optimized model deployment:
 
-## Key files
+1. **InitContainer** - Downloads ColQwen2 model (vidore/colqwen2-v1.0-hf) to persistent volume
+2. **Main Container** - Serves inference requests via FastAPI using pre-downloaded model
+3. **Persistent Storage** - Each pod gets its own Premium SSD volume for model storage
+4. **Horizontal Scaling** - Each replica downloads its own model copy, enabling true multi-node scaling
 
-- `Dockerfile` - Single-purpose inference container
-- `src/app.py` - FastAPI server entry point
-- `src/inference.py` - Model initialization and inference logic (includes download)
-- `src/colqwen_server.py` - FastAPI server for inference
+## Key Components
 
-## Deployment
+- `src/app.py` - FastAPI server with dual modes (download/serve)
+- `src/inference.py` - ColQwen2 model initialization and inference logic
+- `src/models.py` - Pydantic models for API requests/responses
+- `src/logging.py` - Telemetry and structured logging
+- `Dockerfile` - Multi-purpose container (InitContainer + inference server)
 
-Deploy via Helm after infrastructure is ready:
+## Deployment Architecture
+
+```yaml
+StatefulSet:
+  InitContainer: Downloads model to PVC
+  MainContainer: Serves inference from PVC
+  Storage: Premium SSD per replica (20Gi default)
+  Scaling: Independent replicas across nodes
+```
+
+Deploy via Helm:
 
 ```bash
-# From the repo root
+# From repository root
 scripts/windows/apply_helm.ps1
 ```
 
-## How it works
+## API Endpoints
 
-- Container starts as inference server
-- Model downloads automatically if not present locally (first startup: ~5-10 minutes)
-- Subsequent pods use shared HuggingFace cache (startup: ~1-3 minutes)
-- Model runs from local ephemeral storage for maximum performance
+The FastAPI server provides REST endpoints for health checks and embeddings:
 
-## API Usage
+### Health Check
+```
+GET /health
+GET /
+```
 
-The FastAPI server (`src/colqwen_server.py`) provides REST endpoints for embeddings:
-
-### Image Embedding Processing
-For document indexing, send base64-encoded images:
-
+Returns service status and model readiness:
 ```json
 {
-  "images": [
-    "base64_encoded_image_1",
-    "base64_encoded_image_2"
-  ]
+  "status": "healthy",
+  "model_loaded": true,
+  "model_info": {
+    "model_name": "vidore/colqwen2-v1.0-hf",
+    "device": "cuda:0",
+    "architecture": "ColQwen2"
+  }
 }
 ```
 
-Returns embeddings for each image:
+### Embedding Generation
+```
+POST /embeddings
+```
 
+**Image Processing** (with multiple pooling options):
 ```json
 {
-  "embeddings": [[...], [...]],
-  "num_images": 2,
-  "embedding_dim": 128,
-  "model": "vidore/colqwen2-v1.0",
-  "input_type": "images",
-  "status": "success"
+  "images": ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."],
+  "pooling_type": ["hierarchical", "mean_pooling"],
+  "pooling_config": {"pool_factor": 2}
 }
 ```
 
-### Text Embedding Processing
-For retrieval, send text queries:
-
+Returns structured embeddings:
 ```json
 {
-  "texts": [
-    "Find documents about machine learning algorithms",
-    "Show me neural network architectures"
-  ]
+  "embeddings": [[[0.1, 0.2, ...]]],
+  "hierarchical_pooled_embeddings": {
+    "hierarchical": [[[0.15, 0.25, ...]]]
+  },
+  "mean_row_pooled_embeddings": {
+    "mean_pooling": [[[0.12, 0.22, ...]]]
+  },
+  "mean_column_pooled_embeddings": {
+    "mean_pooling": [[[0.13, 0.23, ...]]]
+  }
+}
+```
+
+**Text Processing** (single embeddings only):
+```json
+{
+  "texts": ["Find machine learning documents"],
+  "pooling_type": ["none"]
 }
 ```
 
 Returns query embeddings:
-
 ```json
 {
-  "embeddings": [[...], [...]],
-  "num_texts": 2,
-  "embedding_dim": 128,
-  "model": "vidore/colqwen2-v1.0",
-  "input_type": "texts",
-  "status": "success"
+  "embeddings": [[[0.1, 0.2, 0.3, ...]]]
 }
 ```
+
+## Scalability Optimizations
+
+This implementation incorporates two key optimisations to enable efficient scaling of ColPali embeddings:
+
+### Hierarchical Token Pooling
+
+We utilize [hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling) developed by the ColPali team to reduce embedding dimensions by approximately 3x. This technique significantly decreases storage requirements and computational overhead while preserving retrieval quality.
+
+### Mean Row and Column Pooling
+
+We implement mean row and column pooling techniques, suggested by the Qdrant team from their [PDF retrieval at scale tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/), which further compress embeddings for efficient initial retrieval stages.
+
+### Two-Stage Retrieval Architecture
+
+By combining both optimization techniques, we achieve a hybrid approach:
+
+1. **L1 Retrieval**: Uses mean row and column pooled embeddings for fast initial candidate selection
+2. **L2 Reranking**: Applies hierarchical pooled embeddings for precise final ranking
+
+This two-stage architecture balances retrieval speed with accuracy, enabling scalable deployment while maintaining high-quality results.

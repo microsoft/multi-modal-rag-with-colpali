@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 Local testing script for the Document Processor
 Tests the document processing pipeline without requiring Service Bus, QDRANT, or ColPali endpoints

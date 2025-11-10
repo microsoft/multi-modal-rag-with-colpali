@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('Data storage account resource ID for document storage')
 param dataStorageAccountId string
 
@@ -9,8 +11,6 @@ param containerRegistryId string
 
 @description('User object ID for permissions')
 param userObjectId string
-
-
 
 @description('AKS cluster kubelet identity object ID for ACR pull access')
 param aksKubeletIdentityPrincipalId string = ''
@@ -61,22 +61,17 @@ resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' exist
   name: last(split(dataStorageAccountId, '/'))
 }
 
-// Get reference to AI Foundry service for scoped role assignment
 resource aiFoundryService 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
   name: last(split(aiFoundryServiceId, '/'))
 }
 
-// Get reference to Container Registry for scoped role assignments
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: last(split(containerRegistryId, '/'))
 }
 
-// Get reference to Service Bus namespace for scoped role assignments
 resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = if (!empty(serviceBusNamespaceId)) {
   name: last(split(serviceBusNamespaceId, '/'))
 }
-
-// Get reference to Key Vault for scoped role assignments
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(keyVaultId)) {
   name: last(split(keyVaultId, '/'))
 }
@@ -132,8 +127,6 @@ resource aksClusterAcrPullAssignment 'Microsoft.Authorization/roleAssignments@20
   }
 }
 
-
-
 // AKS Workload Identity -> Key Vault (for reading Qdrant API key secrets)
 resource aksKeyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(keyVaultId)) {
   name: guid(keyVaultId, aksWorkloadPrincipalId, roles.keyVaultSecretsUser, 'aks-keyvault-secrets-user')
@@ -144,12 +137,6 @@ resource aksKeyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignmen
     principalType: 'ServicePrincipal'
   }
 }
-
-
-
-
-
-
 
 // =============================================================================
 // USER PERMISSIONS FOR STORAGE

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name for the Log Analytics workspace')
 param logAnalyticsWorkspaceName string
 
@@ -13,7 +15,6 @@ param retentionInDays int = 30
 @description('Tags to apply to all resources')
 param tags object = {}
 
-// Create the Log Analytics workspace that we own and control
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: logAnalyticsWorkspaceName
   location: location
@@ -29,12 +30,11 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09
       enableLogAccessUsingOnlyResourcePermissions: true
     }
     workspaceCapping: {
-      dailyQuotaGb: 10 // Set a reasonable daily quota to control costs
+      dailyQuotaGb: 10
     }
   }
 }
 
-// Create Application Insights that uses our Log Analytics workspace
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: applicationInsightsName
   location: location

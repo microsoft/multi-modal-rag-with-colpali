@@ -1,5 +1,6 @@
 #!/bin/bash
-
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 # ColPali Pure Kubernetes Deployment Script
 #
 # Deploys the complete ColPali stack to AKS using pure Kubernetes approach:

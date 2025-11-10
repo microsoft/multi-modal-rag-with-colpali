@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 Document Processor Service - Service Bus Consumer
 Processes documents using ColPali and indexes in Qdrant
@@ -8,12 +10,9 @@ import asyncio
 import logging
 import os
 
-from pydantic import BaseModel
-
 from .document_processor import DocumentProcessor
 from .logging import configure_telemetry, trace_operation
 
-# Configure telemetry on module import
 configure_telemetry()
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 try:
     from azure.monitor.opentelemetry import configure_azure_monitor
 
-    # Get Application Insights connection string from environment
     app_insights_connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
 
     if app_insights_connection_string:
@@ -42,22 +40,10 @@ except ImportError:
 except Exception as e:
     logger.error(f"Failed to configure Application Insights telemetry: {e}")
 
-# Global document processor instance
-document_processor = None
-consumer_task = None
 
-
-# Pydantic models for API documentation and validation
-class HealthResponse(BaseModel):
-    status: str
-    service: str
-    mode: str
-
-
-# Simple entry point for standalone Service Bus consumer
 @trace_operation(operation_name="consumer_mode", new_root=True)
 async def consumer_mode():
-    """Run the Service Bus consumer directly without FastAPI"""
+    """Run the Service Bus consumer for document processing."""
     processor = DocumentProcessor()
 
     try:

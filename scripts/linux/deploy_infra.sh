@@ -1,7 +1,8 @@
 #!/bin/bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 # Complete deployment script: deploys Bicep infrastructure
 # Usage: ./deploy_infra.sh [--resource-group <resource-group>] [--deploy-roles <true|false>]
-# Note: AKS and Event Grid always deploy (containers pushed later via Helm)
 # Note: baseName and location are defined in infra/src/main.bicepparam
 
 set -euo pipefail

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 {{- if .Values.documentProcessor.enabled }}
 apiVersion: apps/v1
 kind: Deployment

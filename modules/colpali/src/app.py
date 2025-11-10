@@ -1,8 +1,11 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 ColQwen2 Inference Service
 
-FastAPI inference server that serves embeddings via REST API.
-Downloads the model automatically on first startup if not present locally.
+FastAPI inference server for visual document understanding and embedding generation.
+Supports both init container mode (model download) and inference server mode.
+Provides REST API endpoints for health checks and embedding generation with multiple pooling strategies.
 """
 
 import asyncio
@@ -13,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from .inference import generate_embeddings
+from .inference import ColQwen2Inference
 from .logging import configure_telemetry, trace_operation
 from .models import EmbedHealthResponse, EmbedRequest, EmbedResponse
 
@@ -22,24 +25,24 @@ configure_telemetry()
 
 logger = logging.getLogger(__name__)
 
+# Global inference instance
+inference_service = ColQwen2Inference()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan handler for model initialization."""
+    """FastAPI lifespan handler for non-blocking model initialization in background."""
     logger.info("Starting ColQwen2 inference server...")
 
-    # Start model initialization in background - don't block app startup
-    from .inference import init_model
-
-    # Start model loading asynchronously
+    # Start model initialization asynchronously to avoid blocking FastAPI startup
     async def load_model_async():
         try:
             logger.info("Initializing ColQwen2 model (includes download if needed)...")
-            await asyncio.to_thread(init_model)
+            await asyncio.to_thread(inference_service.initialize)
             logger.info("ColQwen2 model initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize model: {e}")
-            # Don't raise - let health checks handle the failed state
+            # Don't raise - let health check endpoint handle the initialization state
 
     # Start model loading in background
     asyncio.create_task(load_model_async())
@@ -61,15 +64,10 @@ app = FastAPI(
 
 @app.get("/health", response_model=EmbedHealthResponse)
 async def health_check():
-    """Health check endpoint. Returns 503 if model is not ready, 200 if ready."""
+    """Health check endpoint with proper HTTP status codes. Returns 503 during initialization, 200 when ready."""
     try:
-        # Import here to avoid circular imports
-        from .inference import device, model, processor
-
-        # Check if model components are loaded
-        model_loaded = all(
-            [model is not None, processor is not None, device is not None]
-        )
+        # Check ColQwen2 model initialization status
+        model_loaded = inference_service.is_initialized
 
         if not model_loaded:
             # Raise 503 Service Unavailable if model is still loading
@@ -85,7 +83,7 @@ async def health_check():
 
         model_info = {
             "model_name": "vidore/colqwen2-v1.0-hf",
-            "device": str(device),
+            "device": str(inference_service.device),
             "architecture": "ColQwen2",
         }
 
@@ -99,7 +97,7 @@ async def health_check():
         raise
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        # Return 503 for any errors during initialization
+        # Return 503 Service Unavailable for initialization errors
         raise HTTPException(
             status_code=503,
             detail=EmbedHealthResponse(
@@ -113,7 +111,7 @@ async def health_check():
 
 @app.post("/embeddings", response_model=EmbedResponse)
 async def generate_embeddings_endpoint(request: EmbedRequest):
-    """Main embedding endpoint - handles both text and image embeddings."""
+    """Main embedding endpoint - generates ColQwen2 embeddings for images and text with multiple pooling strategies."""
     try:
         # Validate input - at least one of texts or images must be provided
         if not request.texts and not request.images:
@@ -128,8 +126,8 @@ async def generate_embeddings_endpoint(request: EmbedRequest):
                 detail="Cannot process both 'texts' and 'images' in the same request",
             )
 
-        # Run inference in thread pool to avoid blocking event loop
-        result = await asyncio.to_thread(generate_embeddings, request)
+        # Execute ColQwen2 inference in thread pool to prevent FastAPI event loop blocking
+        result = await asyncio.to_thread(inference_service.generate_embeddings, request)
 
         return result
 
@@ -148,7 +146,7 @@ async def root():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Global exception handler."""
+    """Global exception handler for unhandled errors in FastAPI endpoints."""
     logger.error(f"Unhandled exception: {exc}")
     return JSONResponse(
         status_code=500,
@@ -157,7 +155,7 @@ async def global_exception_handler(request, exc):
 
 
 def server_mode():
-    """Run FastAPI inference server mode."""
+    """Start ColQwen2 inference server with Uvicorn for production deployment."""
     logger.info("Starting ColQwen2 inference server mode...")
 
     import uvicorn
@@ -170,7 +168,7 @@ def server_mode():
     logger.info(f"Starting ColQwen2 inference server on {host}:{port}")
     logger.info(f"Log level: {log_level}")
     logger.info(
-        "Using single worker (required for model loading with lifespan handlers)"
+        "Using single worker (required for shared model state and lifespan handlers)"
     )
 
     uvicorn.run(
@@ -178,16 +176,14 @@ def server_mode():
         host=host,
         port=port,
         log_level=log_level,
-        workers=1,  # Single worker required for lifespan compatibility and model sharing
+        workers=1,  # Single worker required for shared ColQwen2 model state
         reload=False,
     )
 
 
 @trace_operation("model_download")
 def download_mode():
-    """Download mode for init container - downloads model then exits."""
-    from .inference import _download_model_if_needed
-
+    """Init container mode - downloads ColQwen2 model to persistent volume then exits."""
     logger.info("ColQwen2 container starting in download mode")
 
     # Get paths from environment variables
@@ -199,8 +195,8 @@ def download_mode():
     logger.info("Model directory: %s", model_directory)
 
     try:
-        # Use the existing download function
-        _download_model_if_needed(model_directory)
+        # Download ColQwen2 model using inference service download functionality
+        inference_service._download_model_if_needed(model_directory)
         logger.info("Init container: Model download completed successfully")
     except Exception as e:
         logger.error(f"Model download failed: {e}")
@@ -208,7 +204,7 @@ def download_mode():
 
 
 def main():
-    """Main entry point - checks for download mode or runs as inference server."""
+    """Main entry point - supports both init container (download) and inference server modes."""
     import sys
 
     # Check for download mode

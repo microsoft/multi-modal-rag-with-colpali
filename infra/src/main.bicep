@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('Base name for all resources')
 param baseName string
 
@@ -18,12 +20,9 @@ param acrSku string = 'Basic'
 @description('The optional object ID of the user to assign to the compute instance (if empty, will be auto-assigned)')
 param userObjectId string = ''
 
-// Resource naming - centralized for consistency
 var acrName = replace('cr${baseName}', '-', '')
 var aiFoundryName = replace('aif-${baseName}', '-', '')
 var dataStorageAccountName = replace('stdata${baseName}', '-', '')
-
-// Additional main resource names moved from modules
 var serviceBusNamespaceName = 'sbns-${baseName}'
 var logAnalyticsWorkspaceName = 'logs-${baseName}'
 var applicationInsightsName = 'appi-${baseName}'
@@ -55,8 +54,6 @@ module dataStorageModule 'modules/dataStorage.bicep' = {
     location: location
   }
 }
-
-// Service Bus module for message queuing
 module serviceBusModule 'modules/serviceBus.bicep' = {
   name: 'serviceBusDeployment'
   params: {
@@ -65,8 +62,6 @@ module serviceBusModule 'modules/serviceBus.bicep' = {
     serviceBusSku: 'Standard'
   }
 }
-
-// Event Grid module for blob storage events to Service Bus
 module eventGridModule 'modules/eventGrid.bicep' = {
   name: 'eventGridDeployment'
   params: {
@@ -78,8 +73,6 @@ module eventGridModule 'modules/eventGrid.bicep' = {
     serviceBusQueueName: serviceBusModule.outputs.documentProcessingQueueName
   }
 }
-
-// AML workspace, compute cluster, and endpoints removed - using pure Kubernetes approach
 
 module aiFoundryModule 'modules/aiFoundry.bicep' = {
   name: 'aiFoundryDeployment'
@@ -115,7 +108,6 @@ module aksFederatedIdentityModule 'modules/aksFederatedIdentity.bicep' = {
   }
 }
 
-// Key Vault for storing Qdrant API keys and Application Insights connection string
 module keyVaultModule 'modules/keyVault.bicep' = {
   name: 'keyVaultDeployment'
   params: {
@@ -124,8 +116,6 @@ module keyVaultModule 'modules/keyVault.bicep' = {
     applicationInsightsConnectionString: monitoringModule.outputs.applicationInsightsConnectionString
   }
 }
-
-// Assign role assignments
 module roleAssignmentsModule 'modules/roleAssignments.bicep' = {
   name: 'roleAssignmentsDeployment'
   params: {
@@ -140,8 +130,6 @@ module roleAssignmentsModule 'modules/roleAssignments.bicep' = {
     deployRoleAssignments: deployRoleAssignments
   }
 }
-
-// Outputs
 @description('The name of the resource group')
 output resourceGroup string = resourceGroup().name
 
@@ -191,8 +179,6 @@ output aksClusterFqdn string = aksModule.outputs.aksClusterFqdn
 output workloadIdentityClientId string = workloadIdentity.properties.clientId
 @description('The kubelet identity client ID for AKS node access')
 output aksKubeletIdentityClientId string = aksModule.outputs.kubeletIdentityClientId
-
-// Azure ML extension output removed - using pure Kubernetes approach
 
 @description('The Service Bus namespace name')
 output serviceBusNamespaceName string = serviceBusModule.outputs.serviceBusNamespaceName

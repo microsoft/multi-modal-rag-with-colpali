@@ -1,5 +1,6 @@
 #!/bin/bash
-
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 # Build and push Document Processor containers
 
 set -e

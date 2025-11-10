@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 Logging and telemetry configuration for Document Processor service.
 Configures Python logging and Azure Monitor OpenTelemetry integration.

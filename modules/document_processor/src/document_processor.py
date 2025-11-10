@@ -1,6 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 Document processor for handling PDF files with Service Bus message consumption and full processing pipeline.
-Combines PDF processing, Service Bus consumption, ColPali embedding generation, and QDRANT indexing.
+Combines PDF processing, Service Bus consumption, ColQwen2 embedding generation, and QDRANT indexing.
 """
 
 import asyncio
@@ -16,8 +18,6 @@ from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from azure.servicebus import ServiceBusMessage
 from azure.servicebus.aio import ServiceBusClient
 from azure.storage.blob.aio import BlobServiceClient
-
-# Import OpenTelemetry tracing
 from PIL import Image
 
 from .colpali_client import ColPaliClient
@@ -36,7 +36,7 @@ from .qdrant_index import QdrantIndex
 class DocumentProcessor:
     """
     Complete document processing service with Service Bus consumption and full pipeline.
-    Handles PDF processing, Service Bus messages, ColPali embedding generation, and QDRANT indexing.
+    Handles PDF processing, Service Bus messages, ColQwen2 embedding generation, and QDRANT indexing.
     """
 
     def __init__(self, require_service_bus: bool = True):
@@ -70,7 +70,7 @@ class DocumentProcessor:
         else:
             self.credential = DefaultAzureCredential()
 
-        # Initialize processing components
+        # Initialize processing components (QDRANT and ColQwen2 client)
         self.qdrant_index = QdrantIndex(
             credential=self.credential, require_endpoint=require_service_bus
         )
@@ -155,7 +155,7 @@ class DocumentProcessor:
                         f"Could not extract image {img_index} from page {page_num}: {e}"
                     )
 
-            # Render page as image for ColPali processing using configured DPI
+            # Render page as image for ColQwen2 processing using configured DPI
             zoom_factor = self.pdf_image_dpi / 72.0  # 72 DPI is default
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom_factor, zoom_factor))
             page_image = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -402,13 +402,13 @@ class DocumentProcessor:
         try:
             logging.info(f"Starting complete processing pipeline for: {blob_name}")
 
-            # Initialize qdrant index if not already done
+            # Initialize QDRANT index if not already done
             if not await self.qdrant_index.initialize():
-                logging.error("Failed to initialize qdrant index")
+                logging.error("Failed to initialize QDRANT index")
                 return ProcessingResult(
                     success=False,
                     document_id=document_id,
-                    error_message="Failed to initialize qdrant index",
+                    error_message="Failed to initialize QDRANT index",
                     processing_time_seconds=time.time() - start_time,
                 )
 
@@ -439,12 +439,12 @@ class DocumentProcessor:
                 try:
                     logging.info(f"Processing page {i + 1} of {len(document_pages)}")
 
-                    # Step 3: Generate embeddings using ColPali
+                    # Step 3: Generate embeddings using ColQwen2
                     embeddings = await self.colpali_client.generate_embeddings(
                         document_page
                     )
 
-                    # Clear page image from memory after processing
+                    # Clear page images from memory after embedding generation
                     if document_page.images:
                         for img in document_page.images:
                             try:
@@ -456,7 +456,7 @@ class DocumentProcessor:
                                 pass  # Ignore errors when closing images
 
                     if embeddings:
-                        # Handle new multi-embedding format
+                        # Handle multi-pooling embedding format from ColQwen2
                         embeddings_dict = embeddings.get("embeddings", {})
                         patch_count = embeddings.get("patch_count", 0)
 
@@ -469,7 +469,7 @@ class DocumentProcessor:
                                 patch_dimensions = len(first_embeddings[0])
 
                         embedding_data = EmbeddingData(
-                            embeddings=embeddings_dict,  # Now a dictionary of embedding types
+                            embeddings=embeddings_dict,  # Dictionary mapping pooling types to embeddings
                             num_patches=patch_count,
                             patch_dimensions=patch_dimensions,
                         )

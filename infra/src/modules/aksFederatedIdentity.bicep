@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name of the workload identity (user assigned managed identity)')
 param aksIdentityName string
 
@@ -10,12 +12,10 @@ param namespace string = 'default'
 @description('The Kubernetes service account name')
 param serviceAccountName string = 'document-processor'
 
-// Reference the existing workload identity (managed identity)
 resource workloadIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: aksIdentityName
 }
 
-// Create federated identity credential as child resource
 resource federatedIdentityCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
   parent: workloadIdentity
   name: 'workload-federated-identity'

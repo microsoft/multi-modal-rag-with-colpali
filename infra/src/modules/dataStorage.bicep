@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name of the data storage account')
 param dataStorageAccountName string
 
@@ -17,7 +19,6 @@ param location string = resourceGroup().location
 ])
 param storageAccountSku string = 'Standard_LRS'
 
-// Create Data Storage Account (for document storage and processing)
 resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: dataStorageAccountName
   location: location
@@ -50,13 +51,11 @@ resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// Blob service for data storage
 resource dataBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   parent: dataStorageAccount
   name: 'default'
 }
 
-// Container for documents (this is what the blob trigger watches)
 resource documentsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
   parent: dataBlobService
   name: 'documents'
@@ -65,9 +64,6 @@ resource documentsContainer 'Microsoft.Storage/storageAccounts/blobServices/cont
   }
 }
 
-// ------------------------------------------------------------
-// OUTPUTS
-// ------------------------------------------------------------
 @description('The resource ID of the data storage account')
 output dataStorageAccountId string = dataStorageAccount.id
 

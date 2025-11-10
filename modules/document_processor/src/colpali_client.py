@@ -1,6 +1,7 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 ColQwen2 client for interfacing with Kubernetes ColQwen2 service.
-Upgraded from ColPali to use the latest ColQwen2 model based on Qwen2-VL-2B-Instruct.
 """
 
 import asyncio
@@ -30,7 +31,7 @@ class ColPaliClient:
         self,
         require_endpoint: bool = True,
     ):
-        # Always use Kubernetes service
+        # Configure for Kubernetes ColQwen2 service
         self.endpoint_url = os.getenv(
             "COLQWEN_SERVICE_URL", "http://colqwen-inference-service:8080"
         )
@@ -251,7 +252,7 @@ class ColPaliClient:
         """
         images = []
 
-        # Extract image data from all pages - ColQwen2 is primarily image-focused
+        # Extract image data from all pages - ColQwen2 processes visual document content
         for document_page in document_pages:
             # Use the first image (main page image) if available
             page_image = document_page.images[0] if document_page.images else None
@@ -272,8 +273,8 @@ class ColPaliClient:
                     f"No page_image found for page {document_page.page_number}"
                 )
 
-        # Request both mean pooling and hierarchical pooling
-        # 3 is recommended by ColPali team: https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling
+        # Request both mean pooling and hierarchical pooling for multi-stage retrieval
+        # Pool factor 3 provides optimal balance between compression and quality
         request = EmbedRequest(
             images=images,
             pooling_type=["mean_pooling", "hierarchical"],
@@ -351,7 +352,7 @@ class ColPaliClient:
         try:
             extracted_embeddings = {}
 
-            # Extract hierarchical pooled embeddings (will map to "original" in Qdrant)
+            # Extract hierarchical pooled embeddings (stored as "original" vector in QDRANT)
             if "hierarchical_pooled_embeddings" in response_data:
                 hierarchical_data = response_data["hierarchical_pooled_embeddings"]
                 if "hierarchical" in hierarchical_data:

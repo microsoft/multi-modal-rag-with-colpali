@@ -1,13 +1,14 @@
-# ColPali Stack Helm Chart
+# ColQwen2 Stack Helm Chart
 
-Simple Helm chart that deploys the complete ColPali stack using dependencies.
+Simple Helm chart that deploys the complete ColQwen2 multi-modal RAG stack using dependencies.
 
 ## Components
 
-This chart deploys three components:
-- **Qdrant** - Vector database (via dependency)
+This chart deploys four main components:
+- **Qdrant** - Vector database for embeddings storage (via dependency)
 - **NGINX Ingress** - Load balancer and ingress controller (via dependency)
-- **Document Processor** - ColPali document processing service
+- **ColQwen2 Inference** - AI model service for generating document embeddings
+- **Document Processor** - Service that processes documents and orchestrates embedding creation
 
 ## Prerequisites
 
@@ -36,10 +37,10 @@ kubectl get ingress
 Access Qdrant dashboard at: `http://<INGRESS-IP>/qdrant`
 
 ## Pods and Services
-- **Document Processor**: Processes documents, creates embeddings via ColQwen, stores in Qdrant
-- **ColQwen Inference**: AI model for generating document embeddings (CPU/GPU)
+- **Document Processor**: Processes documents, creates embeddings via ColQwen2, stores in Qdrant
+- **ColQwen2 Inference**: AI model for generating document embeddings (CPU/GPU optimized)
 - **Qdrant**: Vector database for storing and searching embeddings
-- **NGINX Ingress**: Provides external access to services
+- **NGINX Ingress**: Provides external access to services and Qdrant dashboard
 
 ## Configuration
 
@@ -53,118 +54,108 @@ Values are passed from the deployment script via `--set` parameters.
 
 ### Pod Architecture
 ```mermaid
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'primaryColor': '#f5f5f5',
+    'primaryTextColor': '#000000',
+    'primaryBorderColor': '#333333',
+    'lineColor': '#666666',
+    'secondaryColor': '#f8f8f8',
+    'tertiaryColor': '#fafafa',
+    'background': '#ffffff',
+    'mainBkg': '#f5f5f5',
+    'secondBkg': '#f8f8f8',
+    'tertiaryBkg': '#fafafa'
+  }
+}}%%
 graph TB
     subgraph "AKS Cluster"
-        subgraph "ColPali Namespace"
+        subgraph "colpali Namespace"
             subgraph "Document Processing"
                 DP[Document Processor Pod]
                 DPSA[Document Processor SA<br/>Workload Identity]
             end
 
             subgraph "AI Inference"
-                CI[ColQwen Inference Pod<br/>CPU/GPU]
-                HFPV[HuggingFace Cache<br/>Persistent Volume]
+                CI[ColQwen2 Inference Pod<br/>CPU/GPU Optimized]
+                HFPV[Model Storage<br/>Persistent Volume<br/>HuggingFace Cache]
             end
 
             subgraph "Vector Database"
                 QD[Qdrant Pod]
-                QDPV[Qdrant Storage<br/>Premium SSD]
+                QDPV[Vector Storage<br/>Premium SSD PVC]
             end
 
-            subgraph "Ingress"
-                IG[NGINX Ingress Pod]
+            subgraph "Network Access"
+                IG[NGINX Ingress Controller]
             end
 
-            subgraph "Secrets Management"
+            subgraph "Configuration"
                 AS[app-secrets<br/>Kubernetes Secret]
-                CSI[Key Vault CSI Driver]
             end
         end
     end
 
-    subgraph "Azure Services"
-        KV[Azure Key Vault<br/>API Keys + App Insights]
-        SB[Service Bus<br/>Message Queue]
-        ST[Storage Account<br/>Document Blobs]
-        AI[Application Insights<br/>Telemetry]
-        ACR[Container Registry<br/>Docker Images]
+    subgraph "Azure Infrastructure"
+        KV[Key Vault<br/>Secrets & Config]
+        EG[Event Grid<br/>Blob Events]
+        SB[Service Bus<br/>Document Queue]
+        ST[Blob Storage<br/>Document Files]
+        AI[Application Insights<br/>Monitoring]
+        ACR[Container Registry<br/>Application Images]
     end
 
-    subgraph "External"
-        USER[User/Client]
+    subgraph "External Access"
+        USER[Users/Applications]
+        DOCS[Document Upload]
     end
 
-    %% Pod relationships
-    DP --> QD
-    CI --> QD
-    DP --> SB
-    DP --> ST
-    DPSA -.-> KV
-    CSI -.-> KV
-    CSI --> AS
-    AS --> DP
-    AS --> CI
-    AS --> QD
-    CI --> HFPV
-    QD --> QDPV
+    %% Data flow (solid lines)
+    DOCS -->|PDF Upload| ST
+    ST -->|Blob Created Event| EG
+    EG -->|Event Message| SB
+    SB -->|Queue Message| DP
+    DP -->|Read Document| ST
+    DP -->|Inference Request| CI
+    CI -->|Embeddings| DP
+    DP -->|Store Vectors| QD
+    USER -->|Query/Dashboard| IG
+    IG -->|Route Traffic| QD
 
-    %% External access
-    USER --> IG
-    IG --> QD
-    IG --> DP
+    %% Configuration/Management (dashed lines)
+    DPSA -.->|Authenticate| KV
+    KV -.->|Provide Secrets| AS
+    AS -.->|Mount Config| DP
+    AS -.->|Mount Config| CI
 
-    %% Azure services
-    DP --> AI
-    CI --> AI
-    ACR -.-> DP
-    ACR -.-> CI
-    ACR -.-> QD
+    %% Storage relationships (dotted lines)
+    CI -.->|Cache Models| HFPV
+    QD -.->|Persist Data| QDPV
+    DP -.->|Read Files| ST
+    DP -.->|Send Telemetry| AI
+    CI -.->|Send Telemetry| AI
 
-    %% Styling
-    classDef pod fill:#e1f5fe
-    classDef storage fill:#f3e5f5
-    classDef azure fill:#fff3e0
-    classDef secret fill:#e8f5e8
+    %% Container registry (deployment time)
+    ACR -.->|Pull Images| DP
+    ACR -.->|Pull Images| CI
+    ACR -.->|Pull Images| QD
 
-    class DP,CI,QD,IG pod
-    class QDPV,HFPV,AS storage
-    class KV,SB,ST,AI,ACR azure
-    class CSI,DPSA secret
+    %% Node Styling
+    classDef pod fill:#f0f8ff,stroke:#326ce5,stroke-width:2px
+    classDef storage fill:#f8f8f8,stroke:#666666,stroke-width:2px
+    classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px
+    classDef external fill:#f0fff0,stroke:#28a745,stroke-width:2px
+    classDef network fill:#f8f0ff,stroke:#6f42c1,stroke-width:2px
+
+    class DP,CI,QD pod
+    class HFPV,QDPV,AS storage
+    class KV,EG,SB,ST,AI,ACR azure
+    class USER,DOCS external
+    class IG,DPSA network
 ```
 
-### Network Flow
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant I as NGINX Ingress
-    participant Q as Qdrant
-    participant D as Document Processor
-    participant C as ColQwen Inference
-    participant S as Service Bus
-    participant K as Key Vault
-
-    Note over K: Secure Secret Management
-    K-->>D: API Keys & App Insights
-    K-->>C: App Insights Connection
-    K-->>Q: Authentication Keys
-
-    Note over U,I: External Access
-    U->>I: HTTP Request
-    I->>Q: Route to Qdrant Dashboard
-
-    Note over D,S: Document Processing Flow
-    S->>D: New Document Message
-    D->>C: Send Document for Embedding
-    C-->>D: Return Embeddings
-    D->>Q: Store Embeddings
-
-    Note over U,Q: Search Flow
-    U->>I: Search Request
-    I->>D: Route to Document Processor
-    D->>C: Generate Query Embedding
-    C-->>D: Return Query Embedding
-    D->>Q: Vector Search
-    Q-->>D: Search Results
-    D-->>I: Response
-    I-->>U: Search Results
-```
+**Legend:**
+- **Solid arrows**: Data/request flow
+- **Dashed arrows**: Authentication/configuration
+- **Dotted arrows**: Storage/monitoring relationships

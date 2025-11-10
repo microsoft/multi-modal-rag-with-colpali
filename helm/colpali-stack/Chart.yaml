@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 apiVersion: v2
 name: colpali-stack
 description: Simple ColPali Stack - Qdrant + Ingress + Document Processor

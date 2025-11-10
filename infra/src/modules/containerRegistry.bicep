@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 @description('The name of the Azure Container Registry')
 param acrName string
 
@@ -27,9 +29,6 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' =
   }
 }
 
-// ------------------------------------------------------------
-// OUTPUTS
-// ------------------------------------------------------------
 @description('The login server for the Azure Container Registry')
 output acrLoginServer string = containerRegistry.properties.loginServer
 

@@ -1,96 +1,137 @@
 # Infrastructure
 
-End‑to‑end Azure foundation for hosting ColPali multi‑modal RAG (Retrieval‑Augmented Generation) solution using pure Kubernetes approach. AKS provides scalable Kubernetes-based document processing pipeline with Qdrant for vector storage and retrieval; Container Registry stores deployment images; AI Foundry provides LLM services; Supporting services include Storage, Service Bus, and Application Insights for data persistence, message queuing, and operational monitoring.
+Azure foundation services for ColQwen2 multi‑modal RAG solution. This module provisions the managed Azure services required to host containerized document processing and AI inference workloads on Kubernetes.
+
+This infrastructure code creates **only** the Azure managed services. The actual ColQwen2 applications (model inference, document processing, vector database) are deployed separately to the AKS cluster via Helm charts in the `/modules` directory.
 
 ```mermaid
-flowchart LR
-	subgraph Provision
-		A[deploy_infra.*] --> M[main.bicep]
-		M --> ACR[Container Registry]
-		M --> AKS[AKS Cluster]
-		M --> AI[AI Foundry]
-		M --> SB[Service Bus]
-		M --> SUP[Storage / AppInsights]
-		M --> OUT[Outputs -> .env]
-	end
-	subgraph ModelSetup
-		OUT --> K8SJOB[K8s Job: Download Model]
-		K8SJOB --> HF[Download from HuggingFace]
-		HF --> VOL[Persist to PVC Storage]
-	end
-	subgraph InferenceDeploy
-		VOL --> K8SPOD[K8s Pod: ColPali Inference]
-		K8SPOD --> EMB[Inference API]
-	end
-	subgraph DocumentPipeline
-		DOC[PDF Documents] --> AKS
-		AKS --> EMB
-		EMB --> QDRANT[Qdrant on AKS]
-		QDRANT --> IDX[Vector Index]
-	end
-	subgraph Retrieval
-		QUERY[User Query] --> EMB
-		EMB --> QDRANT
-		QDRANT --> RESULTS[Relevant Documents]
-	end
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'primaryColor': '#f5f5f5',
+    'primaryTextColor': '#000000',
+    'primaryBorderColor': '#333333',
+    'lineColor': '#666666',
+    'secondaryColor': '#f8f8f8',
+    'tertiaryColor': '#fafafa',
+    'background': '#ffffff',
+    'mainBkg': '#f5f5f5',
+    'secondBkg': '#f8f8f8',
+    'tertiaryBkg': '#fafafa'
+  }
+}}%%
+flowchart TB
+    subgraph INFRA_MODULE ["This Infrastructure Module"]
+        direction TB
+        DEPLOY[deploy_infra.bicep] --> AZURE[Azure Resources]
+
+        subgraph AZURE["Azure Managed Services"]
+            AKS[AKS Cluster]
+            ACR[Container Registry]
+            STORAGE[Blob Storage]
+            SB[Service Bus]
+            KV[Key Vault]
+            AI[AI Foundry]
+            MON[App Insights]
+        end
+
+        AZURE --> ENV[.env outputs]
+    end
+
+    subgraph APP_LAYER ["Application Layer"]
+        direction TB
+        ENV -.-> HELM[Helm Charts]
+        HELM --> APPS[Kubernetes Apps]
+
+        subgraph APPS["Containerized Applications"]
+            COLQWEN[ColQwen2 Inference]
+            DOCPROC[Document Processor]
+            QDRANT[Qdrant Vector DB]
+        end
+    end
+
+    %% End-to-End Flow (integrated, no separate box)
+    DOCS[PDF Documents] --> DOCPROC
+    DOCPROC --> COLQWEN
+    COLQWEN --> QDRANT
+    QUERY[User Query] --> QDRANT
+    QDRANT --> RESULTS[Search Results]
+
+    %% Node Styling
+    classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px
+    classDef k8s fill:#f0f8ff,stroke:#326ce5,stroke-width:2px
+    classDef flow fill:#f0fff0,stroke:#28a745,stroke-width:2px
+
+    class DEPLOY,AKS,ACR,STORAGE,SB,KV,AI,MON,ENV azure
+    class HELM,APPS,COLQWEN,DOCPROC,QDRANT k8s
+    class DOCS,QUERY,RESULTS flow
 ```
 
-Below is the topology of the Azure resources deployed:
+Below is the topology of the Azure resources deployed by this module:
 
 ![Resource topology](images/resources.png)
 
-## What We Deploy & Why
+## Azure Infrastructure Components
 
-| Component | Why it exists |
-|-----------|---------------|
-| Container Registry (`acr${baseName}`) | Stores custom container images for document processing and ColPali inference deployments. |
-| AI Foundry Workspace (`aif-${baseName}`) | Provides LLM services and AI platform capabilities for the RAG solution. |
-| AKS Cluster (`aks-${baseName}`) | Kubernetes cluster hosting all application services with Helm-based deployments. Provides auto-scaling, load balancing, and managed networking for containerized workloads. |
-| ColPali Model Download Job | Kubernetes Job that downloads ColPali models from HuggingFace and persists them to Persistent Volume Claims (PVCs) for access by inference pods. |
-| ColPali Inference Deployment | Kubernetes StatefulSet running ColPali inference pods with individual PVCs for model storage, serving multi-modal embedding API for real-time document understanding. |
-| Qdrant Vector Database | High-performance vector database deployed on AKS via Helm; handles multi-modal document embeddings and similarity search for RAG operations. |
-| Document Processor Service | Containerized FastAPI application deployed on AKS; handles PDF ingestion, image extraction, calls ColPali inference endpoint, and orchestrates vector indexing workflows. |
-| Data Storage (`stdata${baseName}`) | Blob storage for processed documents and application data with hierarchical namespace support. |
-| Service Bus (`sbns-${baseName}`) | Message queuing service for asynchronous document processing workflows; handles reliable message delivery with RBAC-based authentication. |
-| Role Assignments | Grants least‑privilege access using Azure RBAC and managed identities: AKS workloads → data storage, Service Bus queues, container registry; cross-service authentication via user-assigned managed identities and workload identity federation. |
+The following Azure managed services provide the foundation for the Kubernetes-based workloads:
 
-## Structure
+| Component | Resource Type | Why it exists |
+|-----------|---------------|---------------|
+| Container Registry (`acr${baseName}`) | Azure Container Registry | Stores custom container images for document processing and ColPali inference deployments. |
+| AI Foundry Workspace (`aif-${baseName}`) | Azure AI Foundry | Provides LLM services and AI platform capabilities for the RAG solution. |
+| AKS Cluster (`aks-${baseName}`) | Azure Kubernetes Service | Managed Kubernetes cluster hosting all application services with auto-scaling, load balancing, and managed networking. |
+| Data Storage (`stdata${baseName}`) | Azure Storage Account | Blob storage for processed documents and application data with hierarchical namespace support. |
+| Service Bus (`sbns-${baseName}`) | Azure Service Bus | Message queuing service for asynchronous document processing workflows with reliable delivery and RBAC authentication. |
+| Key Vault (`kv-${baseName}`) | Azure Key Vault | Secure storage for application secrets, connection strings, and certificates. |
+| Event Grid (`eg-${baseName}`) | Azure Event Grid | Event routing service for document upload notifications and workflow orchestration. |
+| Monitoring (`appi-${baseName}`) | Application Insights | Application performance monitoring, logging, and telemetry collection for AKS workloads. |
+| Role Assignments | Azure RBAC | Grants least‑privilege access using managed identities: AKS workloads → data storage, Service Bus, container registry via workload identity federation. |
+
+## Kubernetes Application Components
+
+The following services are deployed to the AKS cluster via Helm charts (see `/modules` for implementation):
+
+| Component | Type | Purpose |
+|-----------|------|---------|
+| ColPali Model Download | Init Container | Downloads ColPali models from HuggingFace and persists to Persistent Volume Claims before inference pods start. |
+| ColPali Inference | Deployment | StatefulSet running ColPali inference pods with PVCs for model storage, serving multi-modal embedding API. |
+| Document Processor | Deployment | FastAPI application handling PDF ingestion, image extraction, and vector indexing workflows. |
+| Qdrant Vector Database | StatefulSet | High-performance vector database for storing document embeddings and similarity search operations. |
+
+## Infrastructure Structure
 
 ```
 src/main.bicep                # Orchestrates modules & outputs
 src/main.bicepparam           # Parameters (override defaults)
-src/modules/                  # Individual resource modules
+src/modules/                  # Azure infrastructure modules
 ├── aiFoundry.bicep          # AI Foundry workspace for LLM services
 ├── aks.bicep                # AKS cluster for Kubernetes workloads
-├── aksFederatedIdentity.bicep # Workload identity for AKS pods
-├── aksKubeletAcrAccess.bicep # AKS kubelet access to container registry
-├── aksSupporting.bicep      # AKS supporting resources (networking, etc.)
+├── aksFederatedIdentity.bicep # Workload identity for AKS pod authentication
 ├── containerRegistry.bicep   # Container registry for application images
 ├── dataStorage.bicep        # Blob storage for documents and data
-├── monitoring.bicep         # Application Insights and monitoring
+├── eventGrid.bicep          # Event Grid for workflow orchestration
+├── keyVault.bicep           # Key Vault for secrets management
+├── monitoring.bicep         # Application Insights for observability
 ├── roleAssignments.bicep    # RBAC for cross-service access
 └── serviceBus.bicep         # Service Bus for reliable message queuing
 ```
 
-Key modules enable pure Kubernetes multi-modal RAG: `aiFoundry.bicep` provides AI platform and LLM services; `aks.bicep` provisions Kubernetes cluster for all application services; `containerRegistry.bicep` stores custom container images; `dataStorage.bicep` manages document and data persistence; `serviceBus.bicep` provides reliable message queuing; `roleAssignments.bicep` secures integrations with modern RBAC patterns.
+**Azure Infrastructure**: These Bicep modules provision the Azure managed services that support the Kubernetes workloads.
+
+**Kubernetes Applications**: The actual ColPali services (inference, document processing, vector database) are deployed separately to AKS via Helm charts located in the `/modules` directory.
 
 ## Naming Conventions
 
-Resource names are centrally managed in `main.bicep` and passed to modules for consistency:
+Azure resource names are centrally managed in `main.bicep` and passed to modules for consistency:
 
 - Container Registry: `acr${baseName}` (hyphens stripped)
 - AI Foundry Workspace: `aif-${baseName}`
-- ML Workspace: `ml-${baseName}`
-- Job Compute Cluster: `gpu-cluster-${baseName}` (for model setup jobs)
-- Online Endpoint: `embedding-endpoint` (for inference)
 - AKS Cluster: `aks-${baseName}`
-- Data Storage: `ds${baseName}` (trimmed to Azure length rules)
+- Data Storage: `stdata${baseName}` (trimmed to Azure length rules)
 - Service Bus Namespace: `sbns-${baseName}`
 - Event Grid: `eg-${baseName}`
-- Storage: `st${baseName}` (trimmed to Azure length rules)
 - Key Vault: `kv-${baseName}`
 - App Insights: `appi-${baseName}`
-- Log Analytics Workspace: `law-${baseName}`
 
 ## Key Parameters
 
@@ -99,50 +140,47 @@ Resource names are centrally managed in `main.bicep` and passed to modules for c
 | `baseName` | Resource name prefix | (required) |
 | `location` | Deployment region | RG location |
 | `acrSku` | Container registry tier | `Basic` |
-| `amlSku` | ML workspace tier | `Basic` |
-| `amlEmbeddingEndpointType` | GPU instance for ColPali | `Standard_NC24ads_A100_v4` |
-| `amlEmbeddingEndpointCount` | Endpoint instance count | `1` |
-| `jobInstanceType` | GPU cluster VM size | `Standard_NC16as_T4_v3` |
-| `jobInstanceCount` | Max cluster instances | `1` |
 | `aksNodeVmSize` | AKS node pool VM size | `Standard_D4s_v3` |
 | `aksNodeCount` | Initial AKS node count | `3` |
 | `deployRoleAssignments` | Skip RBAC on repeat runs | `false` |
-| `createOnlineEndpoint` | Create endpoint (auto-detected by deployment scripts) | `true` |
 
-**Note on `createOnlineEndpoint`**: The deployment scripts automatically detect if the online endpoint already exists and skip creation to preserve traffic allocation. This parameter is automatically set by the scripts and typically doesn't need manual configuration.
+## Architecture Overview
 
-## ColPali Model Configuration
+The solution separates Azure infrastructure provisioning from Kubernetes application deployment:
 
-The infrastructure supports GPU-accelerated ColPali with distinct components for setup and inference:
+**Azure Infrastructure** (this directory):
+- Managed Kubernetes cluster (AKS) for container orchestration
+- Container registry for storing application images
+- Data services (Storage, Service Bus, Event Grid) for document processing workflows
+- Identity and security (Key Vault, RBAC, Workload Identity) for secure access
+- Monitoring and observability (Application Insights) for operational visibility
 
-- **Job Compute Cluster**: `Standard_NC16as_T4_v3` for model setup jobs (HuggingFace download, registration)
-  - Auto-scaling from 0 to configured max instances for cost efficiency
-  - Handles model preparation and AML workspace registration
-- **AKS Cluster**: Kubernetes-based container orchestration for all application services
-  - Auto-scaling based on HTTP requests and CPU utilization via Horizontal Pod Autoscaler
-  - Helm-based deployment of document processor, ColPali inference, and Qdrant vector database
-  - Workload identity integration for secure access to Azure services
-  - Ingress controller for external access and load balancing
-  - Persistent Volume Claims (PVCs) with Premium SSD storage for model persistence and multi-node scaling
+**Kubernetes Applications** (deployed via `/modules`):
+- Auto-scaling based on HTTP requests and CPU utilization via Horizontal Pod Autoscaler
+- Helm-based deployment of document processor, ColPali inference, and Qdrant vector database
+- Workload identity integration for secure access to Azure services without storing credentials
+- Persistent Volume Claims (PVCs) for model storage and data persistence
 
 ## How to Deploy
 
-Use the platform scripts – see `scripts/README.md` (`deploy_infra.*`). They provision Azure resources and write a `.env` file consumed by Kubernetes deployment and application scripts.
+This infrastructure module provisions only the Azure foundation services. Application deployment is handled separately.
 
-1. **Infrastructure**: `deploy_infra.*` creates all Azure resources (AKS cluster + supporting services)
-2. **Kubernetes Deployment**: `apply_helm.*` deploys all services to AKS cluster via Helm charts including:
-   - ColPali model download Job
-   - ColPali inference Deployment
+1. **Azure Infrastructure**: `deploy_infra.*` creates all Azure managed services (AKS cluster + supporting services)
+2. **Kubernetes Applications**: Deploy services to AKS via the `/modules` directory (separate from this infrastructure)
+   - ColPali model inference service
    - Document processor service
    - Qdrant vector database
+   - Supporting services and configurations
 
 ## Outputs
 
-Key outputs for integration and deployment:
+Key outputs for Kubernetes application deployment and integration:
 
 - `acrLoginServer`, `acrName` - Container registry for application images
 - `aiFoundryWorkspaceName`, `aiFoundryWorkspaceUrl` - AI Foundry workspace for LLM services
-- `aksClusterName`, `aksIdentityClientId` - AKS cluster and workload identity for Kubernetes deployments
+- `aksClusterName`, `aksIdentityClientId` - AKS cluster and workload identity for secure pod authentication
 - `dataStorageAccountName`, `dataStorageUrl` - Blob storage for documents and application data
-- `serviceBusNamespaceName`, `serviceBusQueueName` - Message queuing service for document processing workflows
-- All configuration exported to `.env` for downstream scripts
+- `serviceBusNamespaceName`, `serviceBusQueueName` - Message queuing for document processing workflows
+- `keyVaultName`, `keyVaultUrl` - Secure storage for application secrets and certificates
+- `eventGridTopicName`, `eventGridEndpoint` - Event routing for workflow orchestration
+- All configuration exported to `.env` for Kubernetes deployment scripts

@@ -1,77 +1,33 @@
 # Document Processor Service
 
-A consolidated document processing service that handles PDF documents via Azure Service Bus message queue and creates ColPali embeddings for visual document search. This provides reliable 1-in-1-out processing with guaranteed message delivery using managed identity authentication.
+This module provides a containerized document processing pipeline that converts PDF documents into ColQwen2 embeddings for visual document search with QDRANT vector database integration.
 
-## What it does
+## Architecture Overview
 
-1. **Consumes messages**: Listens to Azure Service Bus queue for document processing events from Event Grid
-2. **Converts to images**: Splits PDFs into page images (configurable DPI and page limits)
-3. **Creates embeddings**: Sends images to ColPali/ColQwen2 endpoint to generate visual embeddings
-4. **Stores in search**: Indexes the embeddings in QDRANT vector database for retrieval
-5. **Handles deletions**: Removes document pages from the index when files are deleted from storage
+This service uses a **Service Bus consumer pattern** for reliable document processing:
 
-## Architecture
+1. **Service Bus Consumer** - Listens for document events with guaranteed delivery and retry mechanisms
+2. **PDF Processing** - Converts multi-page PDFs into individual page images with configurable DPI
+3. **ColQwen2 Integration** - Sends page images to ColQwen2 inference service for visual embeddings
+4. **QDRANT Indexing** - Stores embeddings in QDRANT vector database for efficient similarity search
+5. **Document Lifecycle** - Handles both document creation and deletion events
 
-Event Grid → Service Bus Queue → Document Processor → QDRANT Index
+## Key Components
 
-This provides several benefits:
-- **Sequential processing**: Messages are processed one at a time in order
-- **Reliable delivery**: Built-in retry mechanisms and dead letter queues
-- **Load leveling**: Queue acts as a buffer during traffic spikes
-- **Message durability**: Messages are persisted until successfully processed
-- **Managed identity**: Secure authentication without connection strings
+- `src/document_processor.py` - Main processing pipeline with Service Bus integration
+- `src/colpali_client.py` - ColQwen2 service client with async request handling
+- `src/qdrant_index.py` - QDRANT vector database operations and indexing
+- `src/models.py` - Pydantic models for document processing pipeline
+- `src/app.py` - Service Bus consumer with health endpoints
+- `src/logging.py` - Telemetry and distributed tracing integration
 
-## Key components
+## Processing Pipeline
 
-- `document_processor.py` - Main service with integrated Service Bus consumption and PDF processing
-- `colpali_client.py` - ColPali/ColQwen2 ML endpoint client for embedding generation
-- `qdrant_index.py` - QDRANT vector database client for indexing
-- `models.py` - Data models for the processing pipeline
-- `app.py` - FastAPI application with health endpoints
-
-## Configuration
-
-The service requires the following environment variables and uses managed identity for authentication:
-
-### Required Environment Variables
-
-```bash
-# Service Bus Configuration (Managed Identity)
-SERVICE_BUS_NAMESPACE_NAME=your-servicebus-namespace  # Required - namespace only, no connection string
-SERVICE_BUS_QUEUE_NAME=document-processing       # Optional - defaults to "document-processing"
-
-# Storage Configuration
-DATA_STORAGE_ACCOUNT_NAME=your-storage-account   # Required - for blob access
-
-# Vector Database
-QDRANT_ENDPOINT=https://your-qdrant-endpoint  # Required - QDRANT vector database
-
-# ML Endpoint
-AML_EMBEDDING_ENDPOINT_URL=https://your-colpali-endpoint/score  # Required - ColPali/ColQwen2 endpoint
-
-# Processing Settings (Optional)
-COLPALI_IMAGE_DPI=150  # Optional - PDF to image conversion DPI, defaults to 150
-
-# Azure Authentication (Optional)
-AZURE_CLIENT_ID=your-managed-identity-client-id  # Optional - for specific managed identity
-```
-
-### Authentication
-
-The service uses Azure Managed Identity for authentication to Azure services. The service will refuse to start if any required environment variables are missing.## Local Development
-
-To test locally:
-
-```bash
-# Install dependencies
-cd modules/document_processor
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1  # Windows
-pip install -e .
-
-# Set environment variables
-# Export required environment variables listed above
-
-# Run test
-python scripts/test_local.py
+```yaml
+Document Processing Flow:
+  Event Trigger: Azure Storage blob events via Service Bus
+  PDF Conversion: Multi-page splitting with PIL/Poppler
+  Embedding Generation: ColQwen2 visual understanding model
+  Vector Storage: QDRANT collection with metadata
+  Search Integration: Semantic similarity retrieval
 ```
