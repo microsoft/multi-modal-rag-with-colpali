@@ -1,4 +1,4 @@
-# ColQwen2 Inference Service
+# ColQwen Inference Service
 
 This module provides a containerized ColQwen2 visual document understanding model for Kubernetes deployment with optimized inference serving.
 
@@ -6,7 +6,7 @@ This module provides a containerized ColQwen2 visual document understanding mode
 
 This service uses a **StatefulSet with InitContainer pattern** for optimized model deployment:
 
-1. **InitContainer** - Downloads ColQwen2 model (vidore/colqwen2-v1.0-hf) to persistent volume
+1. **InitContainer** - Downloads ColQwen2 model (vidore/colqwen2-v0.2) to persistent volume
 2. **Main Container** - Serves inference requests via FastAPI using pre-downloaded model
 3. **Persistent Storage** - Each pod gets its own Premium SSD volume for model storage
 4. **Horizontal Scaling** - Each replica downloads its own model copy, enabling true multi-node scaling
@@ -25,7 +25,7 @@ This service uses a **StatefulSet with InitContainer pattern** for optimized mod
 StatefulSet:
   InitContainer: Downloads model to PVC
   MainContainer: Serves inference from PVC
-  Storage: Premium SSD per replica (20Gi default)
+  Storage: Premium SSD per replica (30Gi default)
   Scaling: Independent replicas across nodes
 ```
 
@@ -52,7 +52,7 @@ Returns service status and model readiness:
   "status": "healthy",
   "model_loaded": true,
   "model_info": {
-    "model_name": "vidore/colqwen2-v1.0-hf",
+    "model_name": "vidore/colqwen2-v0.2",
     "device": "cuda:0",
     "architecture": "ColQwen2"
   }

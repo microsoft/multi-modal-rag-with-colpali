@@ -7,15 +7,16 @@ Handles model initialization and inference logic for Kubernetes deployment.
 """
 
 import base64
+import json
 import logging
 import os
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, cast
 
 import torch
 from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
+from colpali_engine.models import ColQwen2, ColQwen2Processor
 from PIL import Image
-from transformers import ColQwen2ForRetrieval, ColQwen2Processor
 from transformers.utils.import_utils import is_flash_attn_2_available
 
 from .models import EmbedRequest, EmbedResponse, PoolingType
@@ -39,14 +40,15 @@ class ColQwen2Inference:
 
     def __init__(self):
         """Initialize the inference handler."""
-        self.model: Optional[ColQwen2ForRetrieval] = None
+        self.model: Optional[ColQwen2] = None
         self.processor: Optional[ColQwen2Processor] = None
         self.device: Optional[torch.device] = None
         self.hierarchical_pooler: Optional[HierarchicalTokenPooler] = None
         self.is_initialized = False
 
         self.device_map = "auto"
-        self.model_id = os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf")
+        self.model_id = "vidore/colqwen2-v1.0"
+        self.base_model_id = "vidore/colqwen2-base"
         self.model_directory = os.getenv("MODEL_DIRECTORY_PATH", "/tmp/model-directory")
         self.torch_dtype = None
 
@@ -60,7 +62,7 @@ class ColQwen2Inference:
         model_path: str,
         for_validation=False,
         device_map=None,
-    ):
+    ) -> Optional[Tuple[ColQwen2Processor, ColQwen2]]:
         """
         Load processor and model from given paths using instance configuration.
 
@@ -83,22 +85,55 @@ class ColQwen2Inference:
             loaded_processor = processor_result[0]
         else:
             loaded_processor = processor_result
+        adapter_config_path = os.path.join(model_path, "adapter_config.json")
+        base_model_path = os.path.join(model_path, "base_model")
+
+        if os.path.exists(adapter_config_path) and os.path.isdir(base_model_path):
+            try:
+                with open(adapter_config_path, "r", encoding="utf-8") as config_file:
+                    adapter_config = json.load(config_file)
+
+                if adapter_config.get("base_model_name_or_path") != base_model_path:
+                    adapter_config["base_model_name_or_path"] = base_model_path
+                    with open(
+                        adapter_config_path, "w", encoding="utf-8"
+                    ) as config_file:
+                        json.dump(adapter_config, config_file, indent=2)
+                    logger.debug(
+                        "Updated adapter_config.json base_model path to %s",
+                        base_model_path,
+                    )
+            except (json.JSONDecodeError, OSError) as error:
+                logger.warning(
+                    "Unable to update adapter_config.json at %s: %s",
+                    adapter_config_path,
+                    error,
+                )
+        else:
+            logger.debug(
+                "Adapter configuration or base model directory missing at %s",
+                model_path,
+            )
+
         use_flash_attention_2 = is_flash_attn_2_available()
-        attn_implementation = "flash_attention_2" if use_flash_attention_2 else "sdpa"
+        attn_implementation = "flash_attention_2" if use_flash_attention_2 else None
 
         model_kwargs = {
             "torch_dtype": self.torch_dtype,
             "local_files_only": True,
-            "attn_implementation": attn_implementation,
             "low_cpu_mem_usage": True,
             "use_safetensors": True,
-            "trust_remote_code": True,
         }
+
+        if attn_implementation:
+            model_kwargs["attn_implementation"] = attn_implementation
 
         if effective_device_map:
             model_kwargs["device_map"] = effective_device_map
+        elif self.device and self.device.type == "cuda":
+            model_kwargs["device_map"] = "cuda:0"
 
-        loaded_model = ColQwen2ForRetrieval.from_pretrained(model_path, **model_kwargs)
+        loaded_model = ColQwen2.from_pretrained(model_path, **model_kwargs)
 
         if for_validation:
             return loaded_processor, loaded_model
@@ -109,10 +144,11 @@ class ColQwen2Inference:
             if (
                 not effective_device_map or effective_device_map == "cpu"
             ) and self.device is not None:
-                self.model = self.model.to(self.device)
+                cast(Any, self.model).to(self.device)
 
             self.model.eval()
             self.hierarchical_pooler = HierarchicalTokenPooler()
+            return None
 
     def _can_load_model(self, processor_path: str, model_path: str) -> bool:
         """
@@ -130,13 +166,19 @@ class ColQwen2Inference:
                 return False
 
             processor_config = os.path.join(processor_path, "tokenizer_config.json")
-            model_config = os.path.join(model_path, "config.json")
+            adapter_config = os.path.join(model_path, "adapter_config.json")
+            base_model_config = os.path.join(model_path, "base_model", "config.json")
 
-            if not os.path.exists(processor_config) or not os.path.exists(model_config):
+            if (
+                not os.path.exists(processor_config)
+                or not os.path.exists(adapter_config)
+                or not os.path.exists(base_model_config)
+            ):
                 logger.info(
-                    "Model config files missing: processor_config=%s, model_config=%s",
+                    "Model config files missing: processor_config=%s, adapter_config=%s, base_model_config=%s",
                     os.path.exists(processor_config),
-                    os.path.exists(model_config),
+                    os.path.exists(adapter_config),
+                    os.path.exists(base_model_config),
                 )
                 return False
 
@@ -146,12 +188,18 @@ class ColQwen2Inference:
                 model_path,
             )
 
-            test_processor, test_model = self._load_models_from_paths(
+            validation_models = self._load_models_from_paths(
                 processor_path,
                 model_path,
                 for_validation=True,
                 device_map="cpu",
             )
+
+            if validation_models is None:
+                logger.debug("Validation loading returned no models")
+                return False
+
+            test_processor, test_model = validation_models
 
             logger.debug("Validation: Processor and model loaded successfully")
 
@@ -169,8 +217,8 @@ class ColQwen2Inference:
             logger.info("Full model loading test failed: %s - will re-download", str(e))
             return False
 
-    def _download_model_if_needed(self, output_dir_path: str = None):
-        """Download ColQwen2 model if it doesn't exist locally."""
+    def _download_model_if_needed(self, output_dir_path: Optional[str] = None):
+        """Download ColQwen2 processor, base model, and adapter if missing."""
         import time
         from pathlib import Path
 
@@ -181,7 +229,8 @@ class ColQwen2Inference:
         start_time = time.time()
 
         logger.info("Starting model download")
-        logger.debug("Model ID: %s", self.model_id)
+        logger.debug("Adapter ID: %s", self.model_id)
+        logger.debug("Base model ID: %s", self.base_model_id)
         logger.debug("Output directory: %s", output_path)
         logger.debug("HF_HOME cache: %s", os.getenv("HF_HOME", "default"))
 
@@ -189,6 +238,8 @@ class ColQwen2Inference:
         model_base_dir = output_dir / model_dir_name
         processor_dir = model_base_dir / self.PROCESSOR_SUBDIR
         model_dir = model_base_dir / self.MODEL_SUBDIR
+        base_model_dir = model_dir / "base_model"
+        adapter_dir = model_dir / "adapter"
 
         logger.debug("Creating directory structure:")
         logger.debug("Base dir: %s", model_base_dir)
@@ -197,75 +248,85 @@ class ColQwen2Inference:
 
         processor_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
+        base_model_dir.mkdir(parents=True, exist_ok=True)
+        adapter_dir.mkdir(parents=True, exist_ok=True)
 
         if self._can_load_model(str(processor_dir), str(model_dir)):
             logger.info("Model already exists and loadable - skipping download")
             logger.debug("Model location: %s", model_base_dir)
             return
-        if processor_dir.exists() or model_dir.exists():
-            if not self._can_load_model(str(processor_dir), str(model_dir)):
-                logger.info("Cleaning up partial/corrupted downloads...")
-                import shutil
-
-                if processor_dir.exists():
-                    shutil.rmtree(processor_dir)
-                    logger.debug("Cleaned up processor directory")
-                if model_dir.exists():
-                    shutil.rmtree(model_dir)
-                    logger.debug("Cleaned up model directory")
-                # Recreate directories
-                processor_dir.mkdir(parents=True, exist_ok=True)
-                model_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Download and save processor
-            logger.info("Step 1/2: Downloading processor...")
+            import shutil
+
+            from huggingface_hub import snapshot_download
+            from transformers import AutoModelForVision2Seq
+
+            logger.info("Step 1/3: Downloading processor from %s", self.model_id)
             processor = ColQwen2Processor.from_pretrained(self.model_id)
             if isinstance(processor, tuple):
                 processor = processor[0]
                 logger.debug("Processor returned as tuple, using first element")
 
-            logger.debug("Saving processor to: %s", processor_dir)
             processor.save_pretrained(str(processor_dir))
-            logger.debug("Processor downloaded successfully")
+            logger.debug("Processor saved to %s", processor_dir)
 
-            # Download and save model
-            logger.info(
-                "Step 2/2: Downloading model (this may take several minutes)..."
+            logger.info("Step 2/3: Downloading base model from %s", self.base_model_id)
+            base_model = AutoModelForVision2Seq.from_pretrained(self.base_model_id)
+            base_model.save_pretrained(str(base_model_dir))
+            logger.debug("Base model saved to %s", base_model_dir)
+
+            logger.info("Step 3/3: Downloading adapter from %s", self.model_id)
+            snapshot_download(
+                repo_id=self.model_id,
+                allow_patterns=[
+                    "adapter_config.json",
+                    "adapter_model.safetensors",
+                ],
+                local_dir=str(adapter_dir),
+                local_dir_use_symlinks=False,
             )
-            use_flash_attention_2 = is_flash_attn_2_available()
-            attn_implementation = (
-                "flash_attention_2" if use_flash_attention_2 else "sdpa"
-            )
-            logger.debug("Using attention implementation: %s", attn_implementation)
 
-            model = ColQwen2ForRetrieval.from_pretrained(
-                self.model_id,
-                torch_dtype=torch.bfloat16,  # Use bfloat16 for download regardless of device
-                device_map="cpu",
-                attn_implementation=attn_implementation,
-                low_cpu_mem_usage=True,
-                use_safetensors=True,
-                trust_remote_code=True,
-            )
-            logger.debug("Saving model to: %s", model_dir)
-            model.save_pretrained(str(model_dir))
-            logger.debug("Model downloaded successfully")
+            for file_name in ["adapter_config.json", "adapter_model.safetensors"]:
+                source = adapter_dir / file_name
+                target = model_dir / file_name
+                if source.exists():
+                    shutil.copy2(source, target)
+                    logger.debug("Copied %s to %s", source, target)
+                else:
+                    logger.warning("Expected adapter file %s missing", source)
 
-        except Exception as e:
-            logger.error("Download failed: %s", str(e))
-            # Clean up partial downloads on failure to prevent disk space issues
-            logger.info("Cleaning up partial downloads due to failure...")
-            if processor_dir.exists():
-                import shutil
+            adapter_config_path = model_dir / "adapter_config.json"
+            if adapter_config_path.exists():
+                try:
+                    with adapter_config_path.open("r", encoding="utf-8") as config_file:
+                        adapter_config = json.load(config_file)
+                    adapter_config.setdefault("base_model_name_or_path", "./base_model")
+                    with adapter_config_path.open("w", encoding="utf-8") as config_file:
+                        json.dump(adapter_config, config_file, indent=2)
+                except (OSError, json.JSONDecodeError) as error:
+                    logger.warning(
+                        "Unable to normalise adapter_config.json at %s: %s",
+                        adapter_config_path,
+                        error,
+                    )
 
-                shutil.rmtree(processor_dir)
-                logger.debug("Cleaned up partial processor download")
-            if model_dir.exists():
-                import shutil
+            model_info = {
+                "name": "colqwen2-v1.0",
+                "adapter_name": self.model_id,
+                "base_model_name": self.base_model_id,
+                "processor_path": "processor",
+                "model_path": "model",
+                "architecture": "ColQwen2",
+            }
 
-                shutil.rmtree(model_dir)
-                logger.debug("Cleaned up partial model download")
+            model_info_path = model_base_dir / "model_info.json"
+            with model_info_path.open("w", encoding="utf-8") as info_file:
+                json.dump(model_info, info_file, indent=2)
+            logger.debug("Model info written to %s", model_info_path)
+
+        except Exception as error:
+            logger.error("Download failed: %s", error)
             raise
 
         total_time = time.time() - start_time
@@ -276,7 +337,7 @@ class ColQwen2Inference:
     def _load_model_from_disk(self, processor_path: str, model_model_path: str):
         """Helper function to load model from disk using shared loading logic."""
         logger.debug("Loading processor from: %s", processor_path)
-        logger.debug("Loading ColQwen2 merged model from: %s", model_model_path)
+        logger.debug("Loading ColQwen2 model weights from: %s", model_model_path)
 
         # Determine device mapping based on instance device
         device_map = "auto" if self.device and self.device.type == "cuda" else None
@@ -361,43 +422,55 @@ class ColQwen2Inference:
     def _apply_hierarchical_pooling(
         self, embeddings: torch.Tensor, pooling_config: Optional[Dict[str, Any]] = None
     ) -> torch.Tensor:
-        """
-        Apply hierarchical token pooling to embeddings using ColPali's implementation.
-        """
+        """Apply hierarchical token pooling using ColPali's helper."""
         try:
+            if self.hierarchical_pooler is None:
+                raise RuntimeError("Hierarchical pooler not initialized")
+
             logger.debug("Applying hierarchical token pooling...")
 
-            # Get original shape
             original_shape = embeddings.shape
             logger.info("Original embeddings shape: %s", original_shape)
 
-            # Default pooling configuration
-            pool_factor = 2
-            if pooling_config and "pool_factor" in pooling_config:
-                pool_factor = pooling_config["pool_factor"]
+            effective_config = pooling_config or {"pool_factor": 3}
+            pool_factor = effective_config.get("pool_factor", 3)
 
-            # Apply pooling using the hierarchical pooler
-            pooled_embeddings = self.hierarchical_pooler.forward(
-                embeddings, pool_factor=pool_factor
+            pooled_result = self.hierarchical_pooler.pool_embeddings(
+                embeddings,
+                pool_factor=pool_factor,
+                padding=True,
+                padding_side="right",
             )
 
-            # Get pooled shape
-            pooled_shape = pooled_embeddings.shape
+            if torch.is_tensor(pooled_result):
+                pooled_tensor = pooled_result
+            elif hasattr(pooled_result, "embeddings") and torch.is_tensor(
+                cast(Any, pooled_result).embeddings
+            ):
+                pooled_tensor = cast(Any, pooled_result).embeddings
+            elif isinstance(pooled_result, (list, tuple)) and pooled_result:
+                pooled_tensor = torch.stack(list(pooled_result))
+            else:
+                raise TypeError(
+                    f"Unexpected type from pool_embeddings: {type(pooled_result)}"
+                )
+
+            pooled_shape = pooled_tensor.shape
             logger.info("Pooled embeddings shape: %s", pooled_shape)
 
-            # Calculate compression ratio
-            original_size = original_shape[1] * original_shape[2]  # patches * dim
-            pooled_size = pooled_shape[1] * pooled_shape[2]  # pooled_patches * dim
-            compression_ratio = original_size / pooled_size
+            if len(original_shape) >= 3 and len(pooled_shape) >= 3:
+                original_size = original_shape[1] * original_shape[2]
+                pooled_size = pooled_shape[1] * pooled_shape[2]
+                if pooled_size > 0:
+                    compression_ratio = original_size / pooled_size
+                    logger.info(
+                        "Pooling completed - compression ratio: %.2fx (from %d to %d elements)",
+                        compression_ratio,
+                        original_size,
+                        pooled_size,
+                    )
 
-            logger.info(
-                "Pooling completed - compression ratio: %.2fx (from %d to %d elements)",
-                compression_ratio,
-                original_size,
-                pooled_size,
-            )
-
-            return pooled_embeddings
+            return pooled_tensor
 
         except Exception as e:
             logger.error("Hierarchical pooling failed: %s", str(e))
@@ -406,13 +479,31 @@ class ColQwen2Inference:
     def _get_patches(self, image_size):
         """Get the number of patches for x and y dimensions."""
         # This code is taken from the example at: https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/
+
+        if self.processor is None or self.model is None:
+            raise RuntimeError(
+                "Model and processor must be initialized before computing patches"
+            )
+
+        spatial_merge_size = getattr(self.model, "spatial_merge_size", None)
+
+        if (spatial_merge_size is None) and hasattr(self.model, "model"):
+            base_model = getattr(self.model, "model")
+            spatial_merge_size = getattr(
+                base_model, "spatial_merge_size", spatial_merge_size
+            )
+
+        if spatial_merge_size is None:
+            raise AttributeError(
+                "ColQwen2 model missing patch metadata required for pooling"
+            )
+
         return self.processor.get_n_patches(
             image_size,
-            patch_size=self.model.patch_size,
-            spatial_merge_size=self.model.spatial_merge_size,
+            spatial_merge_size=spatial_merge_size,
         )
 
-    def generate_embeddings(self, request: EmbedRequest) -> Dict[str, Any]:
+    def generate_embeddings(self, request: EmbedRequest) -> EmbedResponse:
         """
         Main inference function that processes EmbedRequest models.
         This is the main entry point called by the FastAPI wrapper.
@@ -424,32 +515,10 @@ class ColQwen2Inference:
 
             logger.info("Processing inference request")
 
-            # Extract pooling configuration (already validated by Pydantic)
-            pooling_types = request.pooling_type
-
-            if not pooling_types:
-                # Default to appropriate pooling based on request type
-                if request.images:
-                    logger.info(
-                        "No valid pooling types specified for images, defaulting to 'hierarchical'"
-                    )
-                    pooling_types = [PoolingType.HIERARCHICAL]
-                else:
-                    logger.info(
-                        "No valid pooling types specified for text, defaulting to 'none'"
-                    )
-                    pooling_types = [PoolingType.NONE]
-
-            pooling_config = request.pooling_config
-
-            # Update request with normalized pooling types
-            request.pooling_type = pooling_types
-
             # Determine request type and process accordingly
             if request.images:
-                return self._process_images_from_request(request, pooling_config)
+                return self._process_images_from_request(request)
             elif request.texts:
-                # Text processing doesn't use pooling types since text returns single embeddings
                 return self._process_texts_from_request(request)
             else:
                 raise ValueError(
@@ -458,42 +527,27 @@ class ColQwen2Inference:
 
         except Exception as e:
             logger.error("Inference failed: %s", str(e))
-            error_response = {"error": str(e), "status": "error"}
-            return error_response
+            raise
 
     def _process_images_from_request(
         self,
         request: EmbedRequest,
-        pooling_config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> EmbedResponse:
         """
         Process image embedding request with multiple pooling types.
         """
         try:
-            # Extract image data from request
-            image_data_list = request.images
-            if not image_data_list:
+            # Validate that images field is not None (should be guaranteed by caller)
+            if request.images is None:
                 raise ValueError(
                     "Request must contain 'images' field with image content"
                 )
 
-            if not isinstance(image_data_list, list):
-                raise ValueError("'images' field must be a list")
-
-            if len(image_data_list) == 0:
-                raise ValueError("'images' list cannot be empty")
-
             # Convert base64 strings to PIL images
             images = []
-            for i, image_data in enumerate(image_data_list):
+            for i, image_data in enumerate(request.images):
                 try:
-                    # Handle direct base64 string or data URI
-                    if isinstance(image_data, str):
-                        base64_string = image_data
-                    else:
-                        raise ValueError("Invalid image data format at index %s" % i)
-
-                    image = self.base64_to_image(base64_string)
+                    image = self.base64_to_image(image_data)
                     images.append(image)
 
                 except Exception as e:
@@ -503,6 +557,13 @@ class ColQwen2Inference:
                     )
 
             logger.info("Processing images with ColQwen2...")
+
+            if self.processor is None or self.model is None:
+                raise RuntimeError(
+                    "Model and processor must be initialized before inference"
+                )
+            if self.device is None:
+                raise RuntimeError("Device must be set before inference")
 
             with torch.no_grad():
                 batch_images = self.processor.process_images(images)
@@ -517,18 +578,35 @@ class ColQwen2Inference:
 
                 embeddings = self.model(**batch_images)
 
+            # Optimize for common case of single pooling type
+            pooling_types = set(request.pooling_type)  # Remove duplicates
+
+            # Pre-compute tokenized_images if needed for mean pooling
+            tokenized_images = None
+            if PoolingType.MEAN_POOLING in pooling_types:
+                tokenized_images = getattr(batch_images, "input_ids", None)
+                if tokenized_images is None and isinstance(batch_images, dict):
+                    tokenized_images = batch_images.get("input_ids")
+                if tokenized_images is None:
+                    raise ValueError("Processed image batch missing input_ids tensor")
+
             response = {}
-            for pooling_type in request.pooling_type:
+            for pooling_type in pooling_types:
                 if pooling_type == PoolingType.MEAN_POOLING:
                     # Apply mean pooling to existing embeddings
                     logger.debug("Applying mean pooling...")
 
                     pooled_by_rows_batch = []
                     pooled_by_columns_batch = []
-                    original_embeddings = embeddings.cpu().float().numpy().tolist()
 
+                    # Process all pooling operations on GPU first, then convert to CPU once
+                    pooled_rows_tensors = []
+                    pooled_cols_tensors = []
+
+                    # tokenized_images is guaranteed to be non-None by pre-computation check
+                    assert tokenized_images is not None
                     for i, (image_embedding, tokenized_image, image) in enumerate(
-                        zip(embeddings, batch_images.input_ids, images)
+                        zip(embeddings, tokenized_images, images)
                     ):
                         x_patches, y_patches = self._get_patches(image.size)
 
@@ -552,28 +630,26 @@ class ColQwen2Inference:
                         prefix_tokens = image_embedding[:first_image_token_idx]
                         postfix_tokens = image_embedding[last_image_token_idx + 1 :]
 
-                        pooled_by_rows = (
-                            torch.cat(
-                                (prefix_tokens, pooled_by_rows, postfix_tokens), dim=0
-                            )
-                            .cpu()
-                            .float()
-                            .numpy()
-                            .tolist()
+                        # Keep tensors on GPU during processing
+                        pooled_by_rows_full = torch.cat(
+                            (prefix_tokens, pooled_by_rows, postfix_tokens), dim=0
                         )
-                        pooled_by_columns = (
-                            torch.cat(
-                                (prefix_tokens, pooled_by_columns, postfix_tokens),
-                                dim=0,
-                            )
-                            .cpu()
-                            .float()
-                            .numpy()
-                            .tolist()
+                        pooled_by_columns_full = torch.cat(
+                            (prefix_tokens, pooled_by_columns, postfix_tokens), dim=0
                         )
 
-                        pooled_by_rows_batch.append(pooled_by_rows)
-                        pooled_by_columns_batch.append(pooled_by_columns)
+                        pooled_rows_tensors.append(pooled_by_rows_full)
+                        pooled_cols_tensors.append(pooled_by_columns_full)
+
+                    # Single batch conversion to CPU/numpy/list
+                    pooled_by_rows_batch = [
+                        tensor.cpu().float().numpy().tolist()
+                        for tensor in pooled_rows_tensors
+                    ]
+                    pooled_by_columns_batch = [
+                        tensor.cpu().float().numpy().tolist()
+                        for tensor in pooled_cols_tensors
+                    ]
 
                     response["mean_row_pooled_embeddings"] = {
                         "mean_pooling": pooled_by_rows_batch
@@ -581,9 +657,6 @@ class ColQwen2Inference:
                     response["mean_column_pooled_embeddings"] = {
                         "mean_pooling": pooled_by_columns_batch
                     }
-                    # Also add original embeddings if not already added
-                    if "embeddings" not in response:
-                        response["embeddings"] = original_embeddings
 
                     logger.debug("Mean pooling completed")
 
@@ -591,14 +664,10 @@ class ColQwen2Inference:
                     # Apply hierarchical pooling to existing embeddings
                     logger.debug("Applying hierarchical pooling...")
 
-                    if pooling_config is None:
-                        raise ValueError(
-                            "Hierarchical pooling requires pooling_config to be provided"
-                        )
-
                     pooled_embeddings = self._apply_hierarchical_pooling(
-                        embeddings, pooling_config
+                        embeddings, request.pooling_config
                     )
+                    # Convert once after pooling is complete
                     final_embeddings = pooled_embeddings.cpu().float().numpy().tolist()
 
                     response["hierarchical_pooled_embeddings"] = {
@@ -611,50 +680,42 @@ class ColQwen2Inference:
                     # No pooling - use original embeddings
                     logger.info("Adding original embeddings...")
 
+                    # Single conversion to CPU/numpy/list
                     final_embeddings = embeddings.cpu().float().numpy().tolist()
                     response["embeddings"] = final_embeddings
 
                     logger.info("Original embeddings added")
 
-            logger.info("Generated embeddings for %s images", len(images))
-
-            # Create response with the new structure
+            logger.info("Generated embeddings for %s images", len(request.images))
             return EmbedResponse(**response)
 
         except Exception as e:
             logger.error("Image processing failed: %s", str(e))
             raise
 
-    def _process_texts_from_request(self, request: EmbedRequest) -> Dict[str, Any]:
+    def _process_texts_from_request(self, request: EmbedRequest) -> EmbedResponse:
         """
         Process text queries embedding request.
         Text queries return single embeddings, so pooling is not applicable.
         """
         try:
-            # Extract text queries from request
-            text_queries = request.texts
-            if not text_queries:
+            # Validate that texts field is not None (should be guaranteed by caller)
+            if request.texts is None:
                 raise ValueError("Request must contain 'texts' field with text content")
 
-            if not isinstance(text_queries, list):
-                raise ValueError("'texts' field must be a list")
-
-            if len(text_queries) == 0:
-                raise ValueError("'texts' list cannot be empty")
-
-            logger.info("Processing %s text queries", len(text_queries))
-
-            # Validate text queries
-            for i, text_query in enumerate(text_queries):
-                if not isinstance(text_query, str):
-                    raise ValueError(f"Text query at index {i} must be a string")
-                if len(text_query.strip()) == 0:
-                    raise ValueError(f"Text query at index {i} cannot be empty")
+            logger.info("Processing %s text queries", len(request.texts))
 
             logger.info("Processing text queries...")
 
+            if self.processor is None or self.model is None:
+                raise RuntimeError(
+                    "Model and processor must be initialized before inference"
+                )
+            if self.device is None:
+                raise RuntimeError("Device must be set before inference")
+
             with torch.no_grad():
-                batch_queries = self.processor.process_queries(text_queries)
+                batch_queries = self.processor.process_queries(request.texts)
 
                 if hasattr(batch_queries, "to"):
                     batch_queries = batch_queries.to(self.device)
@@ -669,8 +730,8 @@ class ColQwen2Inference:
 
             response = {"embeddings": final_embeddings}
 
-            logger.info("Generated embeddings for %s text queries", len(text_queries))
-            return response
+            logger.info("Generated embeddings for %s text queries", len(request.texts))
+            return EmbedResponse(**response)
 
         except Exception as e:
             logger.error("Text queries processing failed: %s", str(e))
@@ -687,15 +748,3 @@ def get_inference_instance() -> ColQwen2Inference:
     if _inference_instance is None:
         _inference_instance = ColQwen2Inference()
     return _inference_instance
-
-
-def init_model():
-    """Initialize the model (backward compatibility function)."""
-    instance = get_inference_instance()
-    instance.initialize()
-
-
-def generate_embeddings(request: EmbedRequest) -> Dict[str, Any]:
-    """Generate embeddings (backward compatibility function)."""
-    instance = get_inference_instance()
-    return instance.generate_embeddings(request)

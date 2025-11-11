@@ -96,7 +96,7 @@ resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
   parent: aksCluster
   name: cpuNodePoolName
   properties: {
-    count: 2
+    count: 1
     vmSize: 'Standard_D4s_v3' // 4 vCPU, 16GB RAM
     osType: 'Linux'
     mode: 'User'
@@ -104,7 +104,7 @@ resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     osDiskType: 'Managed'
     enableAutoScaling: true
     minCount: 0
-    maxCount: 10
+    maxCount: 2
     nodeLabels: {
       agentpool: cpuNodePoolName
       workload: 'cpu'
@@ -114,31 +114,34 @@ resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
   }
 }
 
-// // GPU node pool for ML inference and training workloads
-// resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
-//   parent: aksCluster
-//   name: gpuNodePoolName
-//   properties: {
-//     count: 1
-//     vmSize: 'standard_nv6ads_a10_v5'
-//     osType: 'Linux'
-//     mode: 'User'
-//     osSKU: 'Ubuntu'
-//     osDiskType: 'Managed'
-//     enableAutoScaling: true
-//     minCount: 0
-//     maxCount: 5
-//     nodeLabels: {
-//       agentpool: gpuNodePoolName
-//       workload: 'gpu'
-//       compute: 'azureml'
-//       sku: 'gpu'
-//     }
-//     nodeTaints: [
-//       'sku=gpu:NoSchedule' // Ensure only GPU workloads get scheduled here
-//     ]
-//   }
-// }
+// GPU node pool for ML inference and training workloads
+resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
+  parent: aksCluster
+  name: gpuNodePoolName
+  properties: {
+    count: 1
+    vmSize: 'standard_nv12ads_a10_v5'
+    osType: 'Linux'
+    mode: 'User'
+    osSKU: 'Ubuntu'
+    osDiskType: 'Managed'
+    enableAutoScaling: true
+    minCount: 0
+    maxCount: 2
+    scaleSetPriority: 'Spot'
+    scaleSetEvictionPolicy: 'Delete'
+    spotMaxPrice: -1 // Pay up to on-demand price
+    nodeLabels: {
+      agentpool: gpuNodePoolName
+      workload: 'gpu'
+      compute: 'azureml'
+      sku: 'gpu'
+    }
+    nodeTaints: [
+      'sku=gpu:NoSchedule' // Ensure only GPU workloads get scheduled here
+    ]
+  }
+}
 
 @description('The name of the AKS cluster')
 output aksClusterName string = aksCluster.name

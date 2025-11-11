@@ -45,9 +45,9 @@ else
     IMAGE_TAG=$(date +"%Y%m%d-%H%M%S")
 fi
 
-# Navigate to colpali directory
-COLPALI_DIR="$PROJECT_ROOT/modules/colpali"
-cd "$COLPALI_DIR"
+# Navigate to colqwen directory
+COLQWEN_DIR="$PROJECT_ROOT/modules/colqwen"
+cd "$COLQWEN_DIR"
 
 # Login to ACR
 echo "Logging into Azure Container Registry: $ACR_NAME"

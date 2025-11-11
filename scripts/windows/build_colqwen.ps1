@@ -42,9 +42,8 @@ catch {
     $imageTag = (Get-Date -Format "yyyyMMdd-HHmmss")
 }
 
-# Navigate to colpali directory
-$colpaliDir = Join-Path $PSScriptRoot "..\..\modules\colpali"
-Push-Location $colpaliDir
+$colqwenDir = Join-Path $PSScriptRoot "..\..\modules\colqwen"
+Push-Location $colqwenDir
 
 try {
     # Login to ACR

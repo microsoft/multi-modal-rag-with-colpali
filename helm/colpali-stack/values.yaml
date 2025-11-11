@@ -64,15 +64,15 @@ colqwenInference:
   # Model configuration
   model:
     modelDirectory: "/tmp/model-directory"
-    storageSize: "20Gi"  # Size of the Premium SSD for model storage per replica
+    storageSize: "30Gi"  # Size of the Premium SSD for model storage per replica
 
   resources:
     requests:
-      memory: "8Gi"
-      cpu: "1"
+      memory: "32Gi"
+      cpu: "4"
     limits:
-      memory: "12Gi"
-      cpu: "2"
+      memory: "64Gi"
+      cpu: "6"
 
   # Service configuration
   service:

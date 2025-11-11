@@ -9,7 +9,6 @@ metadata:
   labels:
     app: {{ include "colpali-stack.fullname" . }}
   annotations:
-    "helm.sh/resource-policy": keep
     "helm.sh/hook-weight": "-5"
 provisioner: disk.csi.azure.com
 parameters:
@@ -43,23 +42,22 @@ spec:
       securityContext:
         fsGroup: 1000  # Ensure volume is writable by container user
       nodeSelector:
-        kubernetes.azure.com/agentpool: cpupool
-        # For GPU nodes, use:
-        # kubernetes.azure.com/agentpool: gpupool
-      # Uncomment toleration when using GPU nodes with taint (sku=gpu:NoSchedule):
-      # tolerations:
-      # - key: "sku"
-      #   operator: "Equal"
-      #   value: "gpu"
-      #   effect: "NoSchedule"
+        kubernetes.azure.com/agentpool: gpupool
+      tolerations:
+      - key: "sku"
+        operator: "Equal"
+        value: "gpu"
+        effect: "NoSchedule"
+      - key: "kubernetes.azure.com/scalesetpriority"
+        operator: "Equal"
+        value: "spot"
+        effect: "NoSchedule"
       # InitContainer downloads the model once per pod startup
       initContainers:
       - name: model-downloader
         image: "{{ .Values.acrServer }}/colqwen-inference:{{ .Values.colqwenInference.imageTag }}"
         command: ["python", "-m", "src.app", "download"]
         env:
-        - name: MODEL_ID
-          value: "vidore/colqwen2-v1.0-hf"
         - name: MODEL_DIRECTORY_PATH
           value: "/mnt/models/hf"
         - name: HF_HOME
@@ -75,11 +73,11 @@ spec:
               key: connection-string
         resources:
           requests:
-            memory: "4Gi"
-            cpu: "500m"
+            memory: "16Gi"
+            cpu: "2"
           limits:
-            memory: "8Gi"
-            cpu: "1"
+            memory: "32Gi"
+            cpu: "4"
         volumeMounts:
         - name: model-storage
           mountPath: /mnt/models/hf
@@ -92,8 +90,6 @@ spec:
       - name: colqwen-inference
         image: "{{ .Values.acrServer }}/colqwen-inference:{{ .Values.colqwenInference.imageTag }}"
         env:
-        - name: MODEL_ID
-          value: "vidore/colqwen2-v1.0-hf"
         - name: MODEL_DIRECTORY_PATH
           value: "/mnt/models/hf"
         - name: HF_HOME
@@ -111,9 +107,11 @@ spec:
           requests:
             memory: {{ .Values.colqwenInference.resources.requests.memory }}
             cpu: {{ .Values.colqwenInference.resources.requests.cpu }}
+            nvidia.com/gpu: 1
           limits:
             memory: {{ .Values.colqwenInference.resources.limits.memory }}
             cpu: {{ .Values.colqwenInference.resources.limits.cpu }}
+            nvidia.com/gpu: 1
         ports:
         - containerPort: 8080
           name: http

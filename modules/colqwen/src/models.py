@@ -73,6 +73,42 @@ class EmbedRequest(BaseModel):
 
         return v
 
+    @field_validator("texts")
+    @classmethod
+    def validate_texts_content(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate that all text items are not None and not empty."""
+        if v is not None:
+            for i, text in enumerate(v):
+                if text is None:
+                    raise ValueError(f"Text at index {i} cannot be None")
+                if not isinstance(text, str):
+                    raise ValueError(
+                        f"Text at index {i} must be a string, got {type(text)}"
+                    )
+                if len(text.strip()) == 0:
+                    raise ValueError(
+                        f"Text at index {i} cannot be empty or contain only whitespace"
+                    )
+        return v
+
+    @field_validator("images")
+    @classmethod
+    def validate_images_content(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate that all image items are not None and not empty."""
+        if v is not None:
+            for i, image in enumerate(v):
+                if image is None:
+                    raise ValueError(f"Image at index {i} cannot be None")
+                if not isinstance(image, str):
+                    raise ValueError(
+                        f"Image at index {i} must be a string, got {type(image)}"
+                    )
+                if len(image.strip()) == 0:
+                    raise ValueError(
+                        f"Image at index {i} cannot be empty or contain only whitespace"
+                    )
+        return v
+
 
 class EmbedResponse(BaseModel):
     """Response model for embedding API."""

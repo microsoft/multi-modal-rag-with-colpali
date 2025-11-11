@@ -1,13 +1,26 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-FROM python:3.11-slim-trixie
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
 # Copy UV binary from official UV image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install system dependencies including curl
-RUN apt-get update && apt-get install -y \
+# Install Python 3.11 and essential system dependencies
+# Set timezone non-interactively and configure debconf for non-interactive mode
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
+    && apt-get update && apt-get install -y \
+    software-properties-common \
     curl \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3.11-distutils \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure UV for optimal performance

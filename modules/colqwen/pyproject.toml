@@ -1,5 +1,5 @@
 [project]
-name = "colqwen2-inference"
+name = "colqwen-inference"
 version = "0.1.0"
 description = "Kubernetes-native ColQwen2 inference service for document understanding and embedding generation"
 authors = [
@@ -11,11 +11,11 @@ dependencies = [
     "fastapi>=0.121.0",
     "uvicorn[standard]>=0.38.0",
     "pydantic>=2.0.0",
-    # Core ML dependencies for inference - pinned to working versions
+    # Core ML dependencies for inference
     "torch>=2.7.0,<2.8.0",
     "torchvision>=0.22.0,<0.23.0",
-    "transformers==4.53.1",
-    "colpali-engine==0.3.11",
+    "transformers>=4.53.1,<4.54.0",
+    "colpali-engine==0.3.12",
     "pillow>=10.0.0",
     "numpy==2.3.4",
     "accelerate==1.11.0",
@@ -23,7 +23,8 @@ dependencies = [
     "huggingface-hub[hf-xet]==0.36.0",
     "peft==0.14.0",
     # Flash Attention for optimized attention computation (Linux x86_64 only)
-    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl ; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    # Using PyTorch 2.7 compatible wheel from v2.8.3 release
+    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiFALSE-cp311-cp311-linux_x86_64.whl ; platform_system == 'Linux' and platform_machine == 'x86_64'",
     # HTTP client and utilities
     "aiohttp>=3.13.2",
     "aiofiles>=23.2.1",

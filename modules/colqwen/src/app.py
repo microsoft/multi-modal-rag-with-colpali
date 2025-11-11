@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Global inference instance
 inference_service = ColQwen2Inference()
+HEALTH_MODEL_NAME = "vidore/colqwen2"
 
 
 @asynccontextmanager
@@ -82,7 +83,7 @@ async def health_check():
             )
 
         model_info = {
-            "model_name": "vidore/colqwen2-v1.0-hf",
+            "model_name": HEALTH_MODEL_NAME,
             "device": str(inference_service.device),
             "architecture": "ColQwen2",
         }
@@ -133,6 +134,9 @@ async def generate_embeddings_endpoint(request: EmbedRequest):
 
     except HTTPException:
         raise
+    except ValueError as e:
+        logger.error(f"Embedding generation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Embedding generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -188,10 +192,8 @@ def download_mode():
 
     # Get paths from environment variables
     model_directory = os.getenv("MODEL_DIRECTORY_PATH", "/tmp/model-directory")
-    model_name = os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf")
 
     logger.info("Init container: Starting model download...")
-    logger.info("Model ID: %s", model_name)
     logger.info("Model directory: %s", model_directory)
 
     try:

@@ -4,6 +4,8 @@ Azure foundation services for ColQwen2 multi‑modal RAG solution. This module p
 
 This infrastructure code creates **only** the Azure managed services. The actual ColQwen2 applications (model inference, document processing, vector database) are deployed separately to the AKS cluster via Helm charts in the `/modules` directory.
 
+> **Note:** The GPU node pool is configured to run on Azure Spot VMs for cost-effective testing. For production environments, provision a regular (non-spot) GPU node pool to avoid eviction-related downtime.
+
 ```mermaid
 %%{init: {
   'theme': 'base',
