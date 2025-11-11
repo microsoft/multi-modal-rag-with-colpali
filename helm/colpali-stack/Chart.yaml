@@ -7,7 +7,7 @@ version: 0.1.0
 
 dependencies:
   - name: qdrant
-    version: "0.8.5"
+    version: "1.15.5"
     repository: "https://qdrant.github.io/qdrant-helm"
     condition: qdrant.enabled
   - name: ingress-nginx

@@ -38,7 +38,7 @@ except ImportError:
         "azure-monitor-opentelemetry not available - Application Insights telemetry disabled"
     )
 except Exception as e:
-    logger.error(f"Failed to configure Application Insights telemetry: {e}")
+    logger.error("Failed to configure Application Insights telemetry: %s", e)
 
 
 @trace_operation(operation_name="consumer_mode", new_root=True)
@@ -53,7 +53,7 @@ async def consumer_mode():
     except KeyboardInterrupt:
         logger.info("Consumer stopped by user")
     except Exception as e:
-        logger.error(f"Consumer error: {e}")
+        logger.error("Consumer error: %s", e)
         raise
 
 

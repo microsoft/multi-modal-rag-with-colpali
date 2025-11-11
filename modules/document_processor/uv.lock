@@ -570,7 +570,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pymupdf", specifier = ">=1.23.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "qdrant-client", specifier = ">=1.7.0" },
+    { name = "qdrant-client", specifier = "==1.15.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "tenacity", specifier = ">=9.1.2" },
 ]
@@ -1650,14 +1650,14 @@ wheels = [
 
 [[package]]
 name = "portalocker"
-version = "3.2.0"
+version = "2.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5e/77/65b857a69ed876e1951e88aaba60f5ce6120c33703f7cb61a3c894b8c1b6/portalocker-3.2.0.tar.gz", hash = "sha256:1f3002956a54a8c3730586c5c77bf18fae4149e07eaf1c29fc3faf4d5a3f89ac", size = 95644, upload-time = "2025-06-14T13:20:40.03Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/d3/c6c64067759e87af98cc668c1cc75171347d0f1577fab7ca3749134e3cd4/portalocker-2.10.1.tar.gz", hash = "sha256:ef1bf844e878ab08aee7e40184156e1151f228f103aa5c6bd0724cc330960f8f", size = 40891, upload-time = "2024-07-13T23:15:34.86Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/a6/38c8e2f318bf67d338f4d629e93b0b4b9af331f455f0390ea8ce4a099b26/portalocker-3.2.0-py3-none-any.whl", hash = "sha256:3cdc5f565312224bc570c49337bd21428bba0ef363bbcf58b9ef4a9f11779968", size = 22424, upload-time = "2025-06-14T13:20:38.083Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/fb/a70a4214956182e0d7a9099ab17d50bfcba1056188e9b14f35b9e2b62a0d/portalocker-2.10.1-py3-none-any.whl", hash = "sha256:53a5984ebc86a025552264b459b46a2086e269b21823cb572f8f28ee759e45bf", size = 18423, upload-time = "2024-07-13T23:15:32.602Z" },
 ]
 
 [[package]]
@@ -2042,7 +2042,7 @@ wheels = [
 
 [[package]]
 name = "qdrant-client"
-version = "1.15.1"
+version = "1.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
@@ -2054,9 +2054,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/79/8b/76c7d325e11d97cb8eb5e261c3759e9ed6664735afbf32fdded5b580690c/qdrant_client-1.15.1.tar.gz", hash = "sha256:631f1f3caebfad0fd0c1fba98f41be81d9962b7bf3ca653bed3b727c0e0cbe0e", size = 295297, upload-time = "2025-07-31T19:35:19.627Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/77/350f01040a8eadb3909bb98ef73b0edb9c3d2d046931898044fb1ad93336/qdrant_client-1.15.0.tar.gz", hash = "sha256:475433b0acec51b66a132e91b631abe922accc64744bbb3180a04fe1fe889843", size = 295245, upload-time = "2025-07-18T11:01:47.062Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ef/33/d8df6a2b214ffbe4138db9a1efe3248f67dc3c671f82308bea1582ecbbb7/qdrant_client-1.15.1-py3-none-any.whl", hash = "sha256:2b975099b378382f6ca1cfb43f0d59e541be6e16a5892f282a4b8de7eff5cb63", size = 337331, upload-time = "2025-07-31T19:35:17.539Z" },
+    { url = "https://files.pythonhosted.org/packages/87/cd/ecd694b21b800f3b100d38a8e67078f62d0a24378bd2c03c4c91413ed6fc/qdrant_client-1.15.0-py3-none-any.whl", hash = "sha256:f18bb311543de7e256ffa831be0d8a9d0729aaf549db7bcf95a5d356b48143f2", size = 337269, upload-time = "2025-07-18T11:01:45.35Z" },
 ]
 
 [[package]]

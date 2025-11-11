@@ -651,16 +651,12 @@ class ColQwen2Inference:
                         for tensor in pooled_cols_tensors
                     ]
 
-                    response["mean_row_pooled_embeddings"] = {
-                        "mean_pooling": pooled_by_rows_batch
-                    }
-                    response["mean_column_pooled_embeddings"] = {
-                        "mean_pooling": pooled_by_columns_batch
-                    }
+                    response["mean_row_pooled_embeddings"] = pooled_by_rows_batch
+                    response["mean_column_pooled_embeddings"] = pooled_by_columns_batch
 
                     logger.debug("Mean pooling completed")
 
-                elif pooling_type == PoolingType.HIERARCHICAL:
+                elif pooling_type == PoolingType.HIERARCHICAL_POOLING:
                     # Apply hierarchical pooling to existing embeddings
                     logger.debug("Applying hierarchical pooling...")
 
@@ -670,9 +666,7 @@ class ColQwen2Inference:
                     # Convert once after pooling is complete
                     final_embeddings = pooled_embeddings.cpu().float().numpy().tolist()
 
-                    response["hierarchical_pooled_embeddings"] = {
-                        "hierarchical": final_embeddings
-                    }
+                    response["hierarchical_pooled_embeddings"] = final_embeddings
 
                     logger.debug("Hierarchical pooling completed")
 

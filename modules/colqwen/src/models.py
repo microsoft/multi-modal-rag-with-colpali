@@ -16,7 +16,7 @@ class PoolingType(str, Enum):
     """Enumeration for different pooling types."""
 
     NONE = "none"
-    HIERARCHICAL = "hierarchical"
+    HIERARCHICAL_POOLING = "hierarchical_pooling"
     MEAN_POOLING = "mean_pooling"
 
 
@@ -118,15 +118,17 @@ class EmbedResponse(BaseModel):
         description="Generated embeddings (batch x patches x embedding_dim)",
     )
 
-    # Hierarchical structure for different pooling types
-    hierarchical_pooled_embeddings: Optional[Dict[str, List[List[List[float]]]]] = (
-        Field(default=None, description="Hierarchical embeddings by pooling type")
+    hierarchical_pooled_embeddings: Optional[List[List[List[float]]]] = Field(
+        default=None,
+        description="Hierarchical embeddings by pooling type (batch x hierarchical patches x embedding_dim)",
     )
 
-    mean_row_pooled_embeddings: Optional[Dict[str, List[List[List[float]]]]] = Field(
-        default=None, description="Mean row pooled embeddings"
+    mean_row_pooled_embeddings: Optional[List[List[List[float]]]] = Field(
+        default=None,
+        description="Mean row pooled embeddings (batch x row patches x embedding_dim)",
     )
 
-    mean_column_pooled_embeddings: Optional[Dict[str, List[List[List[float]]]]] = Field(
-        default=None, description="Mean column pooled embeddings"
+    mean_column_pooled_embeddings: Optional[List[List[List[float]]]] = Field(
+        default=None,
+        description="Mean column pooled embeddings (batch x column patches x embedding_dim)",
     )

@@ -6,14 +6,17 @@ Replaces dictionary-based data passing with strongly-typed models.
 """
 
 import base64
+import hashlib
 import logging
+import uuid
 from datetime import datetime
+from enum import Enum
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Union
 
 from PIL import Image
 from PIL.ImageFile import ImageFile
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -23,140 +26,69 @@ class DocumentPage(BaseModel):
 
     page_number: int = Field(..., description="Page number (1-based)")
     text_content: str = Field(default="", description="Extracted text from the page")
-    images: Sequence[Union[Image.Image, ImageFile, bytes]] = Field(
-        default_factory=list, description="Page images"
+    image_content: Union[Image.Image, ImageFile, bytes] = Field(
+        ..., description="Single page image"
     )
 
     class Config:
         arbitrary_types_allowed = True
-
-    @validator("page_number")
-    def validate_page_number(cls, v):
-        if v < 1:
-            raise ValueError("Page number must be >= 1")
-        return v
-
-
-class EmbeddingData(BaseModel):
-    """Container for ColPali/ColQwen2 embeddings with multiple pooling types."""
-
-    embeddings: Union[List[List[float]], Dict[str, List[List[float]]]] = Field(
-        default_factory=list,
-        description="Embedding vectors - either single list or dict by pooling type",
-    )
-    num_patches: int = Field(default=0, description="Number of embedding patches")
-    patch_dimensions: int = Field(default=0, description="Dimensionality of each patch")
 
 
 class ProcessedPage(BaseModel):
-    """Complete processed page with embeddings ready for indexing."""
+    """Processed page that matches exactly what we need for Qdrant points."""
 
-    document_id: str = Field(..., description="Unique document identifier")
-    page_number: int = Field(..., description="Page number within document (1-based)")
-    text_content: str = Field(default="", description="Extracted text content")
-    images: Sequence[Union[Image.Image, ImageFile, bytes]] = Field(
-        default_factory=list, description="Page images"
+    document_id: str = Field(..., description="Document identifier")
+    page_number: int = Field(..., description="Page number within document")
+    text_content: str = Field(default="", description="Page text content")
+    image_content: str = Field(default="", description="Base64-encoded page image")
+    filename: str = Field(..., description="Original filename of the document")
+    file_extension: str = Field(..., description="File extension (e.g., '.pdf')")
+    blob_url: Optional[str] = Field(
+        None, description="Full blob URL including storage account"
     )
-    embeddings: EmbeddingData = Field(
-        default_factory=EmbeddingData, description="Generated embeddings"
+    embeddings: Dict[str, List[List[float]]] = Field(
+        default_factory=dict, description="Dictionary of embedding vectors by type"
     )
-    source_file: str = Field(..., description="Original source filename")
-
-    class Config:
-        arbitrary_types_allowed = True
+    indexed_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Indexing timestamp"
+    )
 
     @property
     def page_id(self) -> str:
-        """Generate consistent page ID for QDRANT indexing."""
-        return f"{self.document_id}_page_{self.page_number}"
-
-    def to_base64_images(self) -> List[str]:
-        """Convert images to base64 strings for serialization."""
-        base64_images = []
-        for img in self.images:
-            if isinstance(img, (Image.Image, ImageFile)):
-                buffer = BytesIO()
-                img.save(buffer, format="PNG")
-                image_base64 = base64.b64encode(buffer.getvalue()).decode()
-            else:
-                image_base64 = base64.b64encode(img).decode()
-            base64_images.append(image_base64)
-        return base64_images
-
-
-class QdrantPoint(BaseModel):
-    """QDRANT point structure for vector database operations with multiple embedding types."""
-
-    page_id: str = Field(..., description="Unique page identifier")
-    document_id: str = Field(..., description="Document identifier")
-    page_number: int = Field(..., description="Page number within document")
-    embeddings_dict: Dict[str, List[List[float]]] = Field(
-        ...,
-        description="Dictionary of embedding vectors by type (original, mean_pooling_rows, mean_pooling_columns)",
-    )
-    text_content: str = Field(default="", description="Page text content")
-    images_base64: List[str] = Field(
-        default_factory=list, description="Base64-encoded images"
-    )
-    indexed_at: datetime = Field(
-        default_factory=lambda: datetime.utcnow(), description="Indexing timestamp"
-    )
+        """Generate consistent UUID for QDRANT indexing."""
+        page_string = f"{self.document_id}_page_{self.page_number}"
+        hash_bytes = hashlib.sha256(page_string.encode("utf-8")).digest()[:16]
+        return str(uuid.UUID(bytes=hash_bytes))
 
     @classmethod
-    def from_processed_page(cls, page: ProcessedPage) -> "QdrantPoint":
-        """Create QdrantPoint from ProcessedPage."""
-        # Handle both old and new embedding formats
-        if hasattr(page.embeddings, "embeddings") and isinstance(
-            page.embeddings.embeddings, list
-        ):
-            # Old format - single embedding list
-            embeddings_dict = {"original": page.embeddings.embeddings}
-        elif hasattr(page.embeddings, "embeddings") and isinstance(
-            page.embeddings.embeddings, dict
-        ):
-            # New format - dictionary of embedding types
-            embeddings_dict = page.embeddings.embeddings
-        else:
-            # Fallback
-            embeddings_dict = {"original": []}
+    def from_document_page(
+        cls,
+        document_page: "DocumentPage",
+        document_id: str,
+        filename: str,
+        file_extension: str,
+        blob_url: Optional[str] = None,
+    ) -> "ProcessedPage":
+        """Create ProcessedPage from DocumentPage."""
+        # Convert image to base64
+        image_b64 = ""
+        if isinstance(document_page.image_content, (Image.Image, ImageFile)):
+            buffer = BytesIO()
+            document_page.image_content.save(buffer, format="PNG")
+            image_b64 = base64.b64encode(buffer.getvalue()).decode()
+        elif isinstance(document_page.image_content, bytes):
+            image_b64 = base64.b64encode(document_page.image_content).decode()
 
         return cls(
-            page_id=page.page_id,
-            document_id=page.document_id,
-            page_number=page.page_number,
-            embeddings_dict=embeddings_dict,
-            text_content=page.text_content,
-            images_base64=page.to_base64_images(),
+            document_id=document_id,
+            page_number=document_page.page_number,
+            text_content=document_page.text_content,
+            image_content=image_b64,
+            filename=filename,
+            file_extension=file_extension,
+            blob_url=blob_url,
+            embeddings={},  # Will be filled after embedding generation
         )
-
-
-class SearchResult(BaseModel):
-    """Search result from QDRANT with score and metadata."""
-
-    page_id: str = Field(..., description="Unique page identifier")
-    score: float = Field(..., description="Similarity score")
-    document_id: str = Field(..., description="Document identifier")
-    page_number: int = Field(..., description="Page number within document")
-    text_content: str = Field(default="", description="Page text content")
-    images_base64: List[str] = Field(
-        default_factory=list, description="Base64-encoded images"
-    )
-    indexed_at: Optional[str] = Field(None, description="Indexing timestamp")
-    original_embeddings: Optional[List[List[float]]] = Field(
-        None, description="Original embeddings for reranking"
-    )
-
-
-class CollectionInfo(BaseModel):
-    """QDRANT collection information."""
-
-    name: str = Field(..., description="Collection name")
-    status: str = Field(..., description="Collection status")
-    points_count: int = Field(..., description="Number of points in collection")
-    segments_count: int = Field(..., description="Number of segments")
-    vectors_config: Dict[str, Any] = Field(
-        default_factory=dict, description="Vector configuration"
-    )
 
 
 class BlobEvent(BaseModel):
@@ -252,6 +184,14 @@ class EmbedHealthResponse(BaseModel):
     error: Optional[str] = None
 
 
+class PoolingType(str, Enum):
+    """Enumeration for different pooling types."""
+
+    NONE = "none"
+    HIERARCHICAL_POOLING = "hierarchical_pooling"
+    MEAN_POOLING = "mean_pooling"
+
+
 class EmbedRequest(BaseModel):
     """Request model for embedding API."""
 
@@ -263,9 +203,10 @@ class EmbedRequest(BaseModel):
         description="List of base64-encoded images or data URIs (e.g., 'data:image/png;base64,iVBORw...')",
     )
 
-    pooling_type: List[str] = Field(
-        default=["hierarchical"],
-        description="List of pooling types: 'none', 'hierarchical', 'mean_pooling'",
+    pooling_type: List[PoolingType] = Field(
+        default=[PoolingType.NONE],
+        description="List of pooling types. Note: Only 'none' is supported for text queries.",
+        validate_default=True,
     )
     pooling_config: Optional[Dict[str, Any]] = Field(
         default=None, description="Optional pooling configuration"

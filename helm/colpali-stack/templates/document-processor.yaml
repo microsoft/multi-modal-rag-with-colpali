@@ -26,7 +26,7 @@ spec:
       - name: document-processor
         image: "{{ .Values.acrServer }}/document-processor:{{ .Values.documentProcessor.imageTag }}"
         env:
-        - name: COLQWEN_SERVICE_URL
+        - name: COLPALI_ENDPOINT
           value: "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}"
         - name: DATA_STORAGE_ACCOUNT_NAME
           value: {{ .Values.storageAccountName }}

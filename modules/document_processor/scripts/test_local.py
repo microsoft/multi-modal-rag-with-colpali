@@ -17,8 +17,10 @@ from dotenv import find_dotenv, load_dotenv
 # Find and load .env file from the project root
 load_dotenv(find_dotenv())
 
-# Add the src directory to the path so we can import the processing modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Add the parent directory to Python path to make 'src' importable as a package
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 
 def setup_logging():
@@ -59,8 +61,8 @@ async def process_file_local(file_path: str) -> bool:
     start_time = time.time()
 
     try:
-        # Import the consolidated DocumentProcessor
-        from document_processor import DocumentProcessor
+        # Import the DocumentProcessor from the src package
+        from src.document_processor import DocumentProcessor
 
         # Read the file
         with open(file_path, "rb") as f:

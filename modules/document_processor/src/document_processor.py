@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import fitz  # PyMuPDF
 from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
@@ -25,7 +25,6 @@ from .logging import trace_operation
 from .models import (
     BlobEvent,
     DocumentPage,
-    EmbeddingData,
     ProcessedPage,
     ProcessingResult,
     ServiceBusEvent,
@@ -79,9 +78,9 @@ class DocumentProcessor:
         # Service Bus client (initialized later)
         self.service_bus_client = None
 
-        logging.info(f"DocumentProcessor initialized - DPI: {self.pdf_image_dpi}")
-        logging.info(f"Service Bus namespace: {self.service_bus_namespace}")
-        logging.info(f"Service Bus queue: {self.queue_name}")
+        logging.info("DocumentProcessor initialized - DPI: %s", self.pdf_image_dpi)
+        logging.info("Service Bus namespace: %s", self.service_bus_namespace)
+        logging.info("Service Bus queue: %s", self.queue_name)
 
     @trace_operation("process_document")
     def process_document(
@@ -98,25 +97,25 @@ class DocumentProcessor:
         Returns:
             List of document chunks with metadata
         """
-        logging.info(f"Processing {file_type} document: {filename}")
+        logging.info("Processing %s document: %s", file_type, filename)
 
         if file_type not in self.supported_formats:
             raise ValueError(f"Unsupported file format: {file_type}")
 
-        chunks = []
+        pages = []
 
         try:
             if file_type == ".pdf":
-                chunks = self._process_pdf(content, filename)
+                pages = self._process_pdf(content, filename)
             else:
                 raise ValueError(f"Only PDF files are supported, got: {file_type}")
 
         except Exception as e:
-            logging.error(f"Error processing document {filename}: {str(e)}")
+            logging.error("Error processing document %s: %s", filename, str(e))
             raise
 
-        logging.info(f"Successfully processed {filename} into {len(chunks)} chunks")
-        return chunks
+        logging.info("Successfully processed %s into %s pages", filename, len(pages))
+        return pages
 
     @trace_operation("process_pdf")
     def _process_pdf(self, content: bytes, filename: str) -> List[DocumentPage]:
@@ -128,7 +127,7 @@ class DocumentProcessor:
 
         # Process all pages - no artificial limits
         total_pages = len(pdf_document)
-        logging.info(f"Processing PDF with {total_pages} pages")
+        logging.info("Processing PDF with %s pages", total_pages)
 
         for page_num in range(total_pages):
             page = pdf_document.load_page(page_num)
@@ -136,36 +135,16 @@ class DocumentProcessor:
             # Extract text from page
             text = str(page.get_text())
 
-            # Extract images from page
-            page_images = []
-            image_list = page.get_images()
-
-            for img_index, img in enumerate(image_list):
-                try:
-                    # Get image data
-                    xref = img[0]
-                    base_image = pdf_document.extract_image(xref)
-                    image_bytes = base_image["image"]
-
-                    # Convert to PIL Image for processing
-                    image = Image.open(io.BytesIO(image_bytes))
-                    page_images.append(image)
-                except Exception as e:
-                    logging.warning(
-                        f"Could not extract image {img_index} from page {page_num}: {e}"
-                    )
-
             # Render page as image for ColQwen2 processing using configured DPI
             zoom_factor = self.pdf_image_dpi / 72.0  # 72 DPI is default
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom_factor, zoom_factor))
             page_image = Image.open(io.BytesIO(pix.tobytes("png")))
 
-            # Create DocumentPage model
-            all_images = [page_image] + page_images  # Type will be inferred correctly
+            # Create DocumentPage model with single image
             document_page = DocumentPage(
                 page_number=page_num + 1,
                 text_content=text,
-                images=all_images,  # Main page image + extracted images
+                image_content=page_image,
             )
 
             pages.append(document_page)
@@ -189,11 +168,12 @@ class DocumentProcessor:
             )
 
             logging.info(
-                f"Service Bus client initialized for namespace: {self.service_bus_namespace}"
+                "Service Bus client initialized for namespace: %s",
+                self.service_bus_namespace,
             )
 
         except Exception as e:
-            logging.error(f"Failed to initialize Service Bus client: {e}")
+            logging.error("Failed to initialize Service Bus client: %s", e)
             raise
 
     async def start_message_consumption(self):
@@ -214,7 +194,7 @@ class DocumentProcessor:
                 )
 
                 logging.info(
-                    f"Starting to consume messages from queue: {self.queue_name}"
+                    "Starting to consume messages from queue: %s", self.queue_name
                 )
 
                 async with receiver:
@@ -231,12 +211,15 @@ class DocumentProcessor:
                                     # Complete the message to remove it from queue
                                     await receiver.complete_message(msg)
                                     logging.info(
-                                        f"Message {msg.message_id} completed successfully"
+                                        "Message %s completed successfully",
+                                        msg.message_id,
                                     )
 
                                 except Exception as e:
                                     logging.error(
-                                        f"Error processing message {msg.message_id}: {e}"
+                                        "Error processing message %s: %s",
+                                        msg.message_id,
+                                        e,
                                     )
                                     # Dead letter the message after max retries
                                     await receiver.dead_letter_message(
@@ -246,11 +229,11 @@ class DocumentProcessor:
                                     )
 
                         except Exception as e:
-                            logging.error(f"Error receiving messages: {e}")
+                            logging.error("Error receiving messages: %s", e)
                             await asyncio.sleep(5)  # Wait before retrying
 
         except Exception as e:
-            logging.error(f"Failed to start consuming messages: {e}")
+            logging.error("Failed to start consuming messages: %s", e)
             raise
 
     async def _process_service_bus_message(self, message: ServiceBusMessage):
@@ -260,8 +243,8 @@ class DocumentProcessor:
             message_body = str(message)
             event_data = json.loads(message_body)
 
-            logging.info(f"Processing message: {message.message_id}")
-            logging.debug(f"Message content: {event_data}")
+            logging.info("Processing message: %s", message.message_id)
+            logging.debug("Message content: %s", event_data)
 
             # Event Grid events come as arrays
             if isinstance(event_data, list):
@@ -274,10 +257,10 @@ class DocumentProcessor:
                 await self._process_event(event)
 
         except json.JSONDecodeError as e:
-            logging.error(f"Failed to parse message as JSON: {e}")
+            logging.error("Failed to parse message as JSON: %s", e)
             raise
         except Exception as e:
-            logging.error(f"Error processing message: {e}")
+            logging.error("Error processing message: %s", e)
             raise
 
     async def _process_event(self, event_dict: Dict[str, Any]):
@@ -286,28 +269,28 @@ class DocumentProcessor:
             # Parse into structured model
             event = ServiceBusEvent.from_message_body(event_dict)
 
-            logging.info(f"Processing event type: {event.event_type}")
+            logging.info("Processing event type: %s", event.event_type)
 
             if event.event_type == "Microsoft.Storage.BlobCreated":
                 await self._handle_blob_created(event.data)
             elif event.event_type == "Microsoft.Storage.BlobDeleted":
                 await self._handle_blob_deleted(event.data)
             else:
-                logging.warning(f"Unknown event type: {event.event_type}")
+                logging.warning("Unknown event type: %s", event.event_type)
 
         except Exception as e:
-            logging.error(f"Error processing event: {e}")
+            logging.error("Error processing event: %s", e)
             raise
 
     @trace_operation("handle_blob_created", new_root=True)
     async def _handle_blob_created(self, event_data: BlobEvent):
         """Handle blob created event"""
         try:
-            logging.info(f"Processing blob created: {event_data.blob_url}")
+            logging.info("Processing blob created: %s", event_data.blob_url)
 
             # Only process PDF files
             if not event_data.is_pdf:
-                logging.info(f"Skipping non-PDF file: {event_data.blob_url}")
+                logging.info("Skipping non-PDF file: %s", event_data.blob_url)
                 return
 
             # Parse blob URL to get container and blob name
@@ -317,10 +300,10 @@ class DocumentProcessor:
 
             # Skip if not in documents container
             if container_name != "documents":
-                logging.info(f"Skipping blob in container: {container_name}")
+                logging.info("Skipping blob in container: %s", container_name)
                 return
 
-            logging.info(f"Processing document: {container_name}/{blob_name}")
+            logging.info("Processing document: %s/%s", container_name, blob_name)
 
             # Download and process the document
             storage_account_name = os.getenv("DATA_STORAGE_ACCOUNT_NAME")
@@ -344,54 +327,65 @@ class DocumentProcessor:
                 blob_content = await download_stream.readall()
 
             logging.info(
-                f"Downloaded blob: {blob_name}, size: {len(blob_content)} bytes"
+                "Downloaded blob: %s, size: %s bytes", blob_name, len(blob_content)
             )
 
             # Process the document through full pipeline
             result = await self.process_document_complete(
-                blob_content=blob_content, blob_name=blob_name, file_extension=".pdf"
+                blob_content=blob_content,
+                blob_name=blob_name,
+                file_extension=".pdf",
+                blob_url=event_data.blob_url,
             )
 
             if result.success:
                 logging.info(
-                    f"Successfully processed document: {blob_name} ({result.success_rate:.1f}% success rate)"
+                    "Successfully processed document: %s (%.1f%% success rate)",
+                    blob_name,
+                    result.success_rate,
                 )
             else:
                 logging.error(
-                    f"Failed to process document: {blob_name} - {result.error_message}"
+                    "Failed to process document: %s - %s",
+                    blob_name,
+                    result.error_message,
                 )
 
         except Exception as e:
-            logging.error(f"Error handling blob created event: {e}")
+            logging.error("Error handling blob created event: %s", e)
             raise
 
     @trace_operation("handle_blob_deleted", new_root=True)
     async def _handle_blob_deleted(self, event_data: BlobEvent):
         """Handle blob deleted event"""
         try:
-            logging.info(f"Processing blob deleted: {event_data.blob_url}")
+            logging.info("Processing blob deleted: %s", event_data.blob_url)
 
             # Only process PDF files
             if not event_data.is_pdf:
-                logging.info(f"Skipping non-PDF file: {event_data.blob_url}")
+                logging.info("Skipping non-PDF file: %s", event_data.blob_url)
                 return
 
             # Delete from search index
             await self.qdrant_index.delete_document_pages(event_data.document_id)
 
             logging.info(
-                f"Successfully deleted document from index: {event_data.document_id}"
+                "Successfully deleted document from index: %s", event_data.document_id
             )
 
         except Exception as e:
-            logging.error(f"Error handling blob deleted event: {e}")
+            logging.error("Error handling blob deleted event: %s", e)
             raise
 
     # ==== COMPLETE PROCESSING PIPELINE ====
 
     @trace_operation("process_document_complete", new_root=True)
     async def process_document_complete(
-        self, blob_content: bytes, blob_name: str, file_extension: str
+        self,
+        blob_content: bytes,
+        blob_name: str,
+        file_extension: str,
+        blob_url: Optional[str] = None,
     ) -> ProcessingResult:
         """
         Complete document processing pipeline: PDF -> Pages -> Embeddings -> Index
@@ -400,7 +394,12 @@ class DocumentProcessor:
         document_id = blob_name.replace(".pdf", "")
 
         try:
-            logging.info(f"Starting complete processing pipeline for: {blob_name}")
+            logging.info("Starting complete processing pipeline for: %s", blob_name)
+
+            # Construct blob URL if not provided (for cases where we have the blob_name but not full URL)
+            if not blob_url and self.data_storage_account:
+                blob_url = f"https://{self.data_storage_account}.blob.core.windows.net/documents/{blob_name}"
+                logging.info("Constructed blob URL: %s", blob_url)
 
             # Initialize QDRANT index if not already done
             if not await self.qdrant_index.initialize():
@@ -415,10 +414,11 @@ class DocumentProcessor:
             # Delete existing pages for this document to handle re-indexing scenarios
             delete_success = await self.qdrant_index.delete_document_pages(blob_name)
             if delete_success:
-                logging.info(f"Cleared existing pages for document: {blob_name}")
+                logging.info("Cleared existing pages for document: %s", blob_name)
             else:
                 logging.warning(
-                    f"Could not clear existing pages for document: {blob_name}, continuing anyway"
+                    "Could not clear existing pages for document: %s, continuing anyway",
+                    blob_name,
                 )
 
             # Step 1: Process document into page chunks
@@ -426,7 +426,7 @@ class DocumentProcessor:
                 content=blob_content, filename=blob_name, file_type=file_extension
             )
 
-            logging.info(f"PDF split into {len(document_pages)} pages")
+            logging.info("PDF split into %s pages", len(document_pages))
 
             # Free memory
             del blob_content
@@ -437,73 +437,50 @@ class DocumentProcessor:
 
             for i, document_page in enumerate(document_pages):
                 try:
-                    logging.info(f"Processing page {i + 1} of {len(document_pages)}")
+                    logging.info("Processing page %s of %s", i + 1, len(document_pages))
+
+                    # Create ProcessedPage from DocumentPage
+                    processed_page = ProcessedPage.from_document_page(
+                        document_page=document_page,
+                        document_id=document_id,
+                        filename=blob_name,
+                        file_extension=file_extension,
+                        blob_url=blob_url,
+                    )
 
                     # Step 3: Generate embeddings using ColQwen2
-                    embeddings = await self.colpali_client.generate_embeddings(
+                    embeddings_response = await self.colpali_client.generate_embeddings(
                         document_page
                     )
 
-                    # Clear page images from memory after embedding generation
-                    if document_page.images:
-                        for img in document_page.images:
-                            try:
-                                if hasattr(img, "close") and callable(
-                                    getattr(img, "close", None)
-                                ):
-                                    img.close()  # type: ignore[attr-defined]
-                            except Exception:
-                                pass  # Ignore errors when closing images
-
-                    if embeddings:
-                        # Handle multi-pooling embedding format from ColQwen2
-                        embeddings_dict = embeddings.get("embeddings", {})
-                        patch_count = embeddings.get("patch_count", 0)
-
-                        # Calculate dimensions from first available embedding type
-                        patch_dimensions = 0
-                        if embeddings_dict:
-                            first_emb_type = next(iter(embeddings_dict))
-                            first_embeddings = embeddings_dict[first_emb_type]
-                            if first_embeddings and len(first_embeddings) > 0:
-                                patch_dimensions = len(first_embeddings[0])
-
-                        embedding_data = EmbeddingData(
-                            embeddings=embeddings_dict,  # Dictionary mapping pooling types to embeddings
-                            num_patches=patch_count,
-                            patch_dimensions=patch_dimensions,
-                        )
-
-                        # Create ProcessedPage model
-                        processed_page = ProcessedPage(
-                            document_id=document_id,
-                            page_number=document_page.page_number,
-                            text_content=document_page.text_content,
-                            images=document_page.images,
-                            embeddings=embedding_data,
-                            source_file=blob_name,
-                        )
+                    if embeddings_response:
+                        # Store embeddings directly in ProcessedPage
+                        processed_page.embeddings = embeddings_response
 
                         # Step 4: Index in QDRANT
                         index_success = await self.qdrant_index.index_embeddings(
                             [processed_page]
                         )
+
                         if index_success:
                             processed_count += 1
                             logging.info(
-                                f"Successfully processed and indexed page {i + 1}: {embedding_data.num_patches} patches, {embedding_data.patch_dimensions} dimensions"
+                                "Successfully processed and indexed page %s",
+                                i + 1,
                             )
                         else:
-                            logging.warning(f"Failed to index page {i + 1}")
+                            logging.warning("Failed to index page %s", i + 1)
                     else:
-                        logging.warning(f"No embeddings generated for page {i + 1}")
+                        logging.warning("No embeddings generated for page %s", i + 1)
 
                 except Exception as e:
-                    logging.error(f"Error processing page {i + 1}: {e}")
+                    logging.error("Error processing page %s: %s", i + 1, e)
                     continue
 
             logging.info(
-                f"Complete processing finished: {processed_count}/{len(document_pages)} pages processed successfully"
+                "Complete processing finished: %s/%s pages processed successfully",
+                processed_count,
+                len(document_pages),
             )
 
             return ProcessingResult(
@@ -518,7 +495,9 @@ class DocumentProcessor:
             )
 
         except Exception as e:
-            logging.error(f"Error in complete document processing for {blob_name}: {e}")
+            logging.error(
+                "Error in complete document processing for %s: %s", blob_name, e
+            )
             return ProcessingResult(
                 success=False,
                 document_id=document_id,

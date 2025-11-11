@@ -1,9 +1,9 @@
 dependencies:
 - name: qdrant
   repository: https://qdrant.github.io/qdrant-helm
-  version: 0.8.5
+  version: 1.15.5
 - name: ingress-nginx
   repository: https://kubernetes.github.io/ingress-nginx
   version: 4.8.3
-digest: sha256:ed7a7694f893412bc6be12b11260d4dfe569547eb422c8625f2c0c3c727ce3bc
-generated: "2025-11-04T23:03:21.1679292Z"
+digest: sha256:87d037a126e018bb01613b57a6dc39de065b1a25f58b0727d3bcd7922f67ae6c
+generated: "2025-11-11T15:20:39.3872506Z"

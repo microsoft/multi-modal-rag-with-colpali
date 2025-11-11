@@ -16,7 +16,7 @@ dependencies = [
     # Azure AI Search
     "azure-search-documents>=11.4.0",
     # QDRANT vector database
-    "qdrant-client>=1.7.0",
+    "qdrant-client==1.15.0",
     # HTTP and API requests
     "requests>=2.31.0",
     # Image processing

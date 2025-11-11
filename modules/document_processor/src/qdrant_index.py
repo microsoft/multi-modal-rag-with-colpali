@@ -22,10 +22,11 @@ import logging
 import os
 from typing import List, Optional
 
+import numpy as np
 from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
 from qdrant_client import AsyncQdrantClient, models
 
-from .models import ProcessedPage, QdrantPoint
+from .models import ProcessedPage
 
 
 class QdrantIndex:
@@ -100,14 +101,16 @@ class QdrantIndex:
                     timeout=120,  # 2 minute timeout for large operations
                     api_key=qdrant_api_key,
                 )
-                logging.info(f"Async Qdrant client initialized: {self.qdrant_endpoint}")
+                logging.info(
+                    "Async Qdrant client initialized: %s", self.qdrant_endpoint
+                )
             except Exception as e:
                 if require_endpoint:
-                    logging.error(f"Failed to initialize Qdrant client: {e}")
+                    logging.error("Failed to initialize Qdrant client: %s", e)
                     raise ValueError(f"Failed to initialize Qdrant client: {e}")
                 else:
                     logging.warning(
-                        f"Qdrant client initialization skipped in local mode: {e}"
+                        "Qdrant client initialization skipped in local mode: %s", e
                     )
         else:
             logging.info("Qdrant client initialization skipped (local mode)")
@@ -148,7 +151,7 @@ class QdrantIndex:
 
             if self.collection_name in existing_collections:
                 logging.info(
-                    f"Qdrant collection '{self.collection_name}' already exists"
+                    "Qdrant collection '%s' already exists", self.collection_name
                 )
                 return True
 
@@ -157,8 +160,8 @@ class QdrantIndex:
             await self.qdrant_client.create_collection(  # type: ignore[union-attr]
                 collection_name=self.collection_name,
                 vectors_config={
-                    # Original patch embeddings - HNSW disabled for exact search on hierarchical patches
-                    "original": models.VectorParams(
+                    # Hierarchical patch embeddings - HNSW disabled for exact search on hierarchical patches
+                    "hierarchical_pooled": models.VectorParams(
                         size=128,  # ColPali embedding dimension
                         distance=models.Distance.COSINE,
                         multivector_config=models.MultiVectorConfig(
@@ -169,7 +172,7 @@ class QdrantIndex:
                         ),
                     ),
                     # Column-wise aggregated embeddings for column-based retrieval
-                    "mean_pooling_columns": models.VectorParams(
+                    "mean_pooled_columns": models.VectorParams(
                         size=128,
                         distance=models.Distance.COSINE,
                         multivector_config=models.MultiVectorConfig(
@@ -177,7 +180,7 @@ class QdrantIndex:
                         ),
                     ),
                     # Row-wise aggregated embeddings for row-based retrieval
-                    "mean_pooling_rows": models.VectorParams(
+                    "mean_pooled_rows": models.VectorParams(
                         size=128,
                         distance=models.Distance.COSINE,
                         multivector_config=models.MultiVectorConfig(
@@ -203,12 +206,12 @@ class QdrantIndex:
             )
 
             logging.info(
-                f"Qdrant collection '{self.collection_name}' created successfully"
+                "Qdrant collection '%s' created successfully", self.collection_name
             )
             return True
 
         except Exception as e:
-            logging.error(f"Failed to ensure Qdrant collection exists: {e}")
+            logging.error("Failed to ensure Qdrant collection exists: %s", e)
             return False
 
     async def index_embeddings(self, processed_pages: List[ProcessedPage]) -> bool:
@@ -237,14 +240,12 @@ class QdrantIndex:
         try:
             points = []
             for processed_page in processed_pages:
-                # Convert ProcessedPage to QdrantPoint format
-                qdrant_point = QdrantPoint.from_processed_page(processed_page)
-
                 # Validate embeddings exist
-                if not qdrant_point.embeddings_dict:
+                if not processed_page.embeddings:
                     logging.error(
-                        f"Missing embeddings for page {qdrant_point.page_id}: "
-                        f"embeddings_dict={qdrant_point.embeddings_dict}"
+                        "Missing embeddings for page %s: embeddings=%s",
+                        processed_page.page_id,
+                        processed_page.embeddings,
                     )
                     continue
 
@@ -252,39 +253,55 @@ class QdrantIndex:
                 # Map embeddings to the collection's vector configuration
                 vector_dict = {}
 
-                # Map hierarchical patch embeddings to "original" vector
-                if "original" in qdrant_point.embeddings_dict:
-                    vector_dict["original"] = qdrant_point.embeddings_dict["original"]
+                # Map hierarchical patch embeddings to "hierarchical_pooling" vector
+                if "hierarchical_pooled_embeddings" in processed_page.embeddings:
+                    # Convert to numpy array with float32 dtype for Qdrant
+                    vector_dict["hierarchical_pooled"] = np.asarray(
+                        processed_page.embeddings["hierarchical_pooled_embeddings"],
+                        dtype=np.float32,
+                    )
 
                 # Map pooled embeddings to their respective vectors
-                if "mean_pooling_rows" in qdrant_point.embeddings_dict:
-                    vector_dict["mean_pooling_rows"] = qdrant_point.embeddings_dict[
-                        "mean_pooling_rows"
-                    ]
+                if "mean_row_pooled_embeddings" in processed_page.embeddings:
+                    # Convert to numpy array with float32 dtype for Qdrant
+                    vector_dict["mean_pooled_rows"] = np.asarray(
+                        processed_page.embeddings["mean_row_pooled_embeddings"],
+                        dtype=np.float32,
+                    )
 
-                if "mean_pooling_columns" in qdrant_point.embeddings_dict:
-                    vector_dict["mean_pooling_columns"] = qdrant_point.embeddings_dict[
-                        "mean_pooling_columns"
-                    ]
+                if "mean_column_pooled_embeddings" in processed_page.embeddings:
+                    # Convert to numpy array with float32 dtype for Qdrant
+                    vector_dict["mean_pooled_columns"] = np.asarray(
+                        processed_page.embeddings["mean_column_pooled_embeddings"],
+                        dtype=np.float32,
+                    )
 
                 if not vector_dict:
                     logging.error(
-                        f"No valid embeddings found for page {qdrant_point.page_id}"
+                        "No valid embeddings found for page %s", processed_page.page_id
                     )
                     continue
 
                 # Create Qdrant point with multi-vector embeddings and metadata
+                payload = {
+                    "document_id": processed_page.document_id,
+                    "page_number": processed_page.page_number,
+                    "filename": processed_page.filename,  # Original filename
+                    "file_extension": processed_page.file_extension,  # File extension
+                    "image_content": processed_page.image_content,  # Base64 encoded page image
+                    "text_content": processed_page.text_content,  # Extracted text content
+                    "indexed_at": processed_page.indexed_at.isoformat(),
+                    "page_id": processed_page.page_id,
+                }
+
+                # Add blob_url to payload if available
+                if processed_page.blob_url:
+                    payload["blob_url"] = processed_page.blob_url
+
                 point = models.PointStruct(
-                    id=qdrant_point.page_id,
+                    id=processed_page.page_id,
                     vector=vector_dict,  # Named vectors for different embedding strategies
-                    payload={
-                        "document_id": qdrant_point.document_id,
-                        "page_number": qdrant_point.page_number,
-                        "images": qdrant_point.images_base64,  # Base64 encoded page images
-                        "text_content": qdrant_point.text_content,  # Extracted text content
-                        "indexed_at": qdrant_point.indexed_at.isoformat(),
-                        "page_id": qdrant_point.page_id,
-                    },
+                    payload=payload,
                 )
                 points.append(point)
 
@@ -295,12 +312,12 @@ class QdrantIndex:
                     points=points,
                     wait=True,  # Wait for indexing to complete before returning
                 )
-                logging.info(f"Indexed {len(points)} embeddings to Qdrant")
+                logging.info("Indexed %s embeddings to Qdrant", len(points))
 
             return True
 
         except Exception as e:
-            logging.error(f"Failed to index embeddings to Qdrant: {e}")
+            logging.error("Failed to index embeddings to Qdrant: %s", e)
             return False
 
     async def delete_document_pages(self, document_id: str) -> bool:
@@ -341,11 +358,13 @@ class QdrantIndex:
                 wait=True,  # Wait for deletion to complete
             )
 
-            logging.info(f"Deleted pages for document '{document_id}' from Qdrant")
+            logging.info("Deleted pages for document '%s' from Qdrant", document_id)
             return True
 
         except Exception as e:
-            logging.error(f"Failed to delete pages for document '{document_id}': {e}")
+            logging.error(
+                "Failed to delete pages for document '%s': %s", document_id, e
+            )
             return False
 
     async def close(self):
