@@ -27,28 +27,25 @@ qdrant:
     storageClass: "managed-premium"
   resources:
     requests:
-      memory: "2Gi"
-      cpu: "1000m"
+      memory: "8Gi"
+      cpu: "2"
     limits:
-      memory: "4Gi"
-      cpu: "2000m"
+      memory: "16Gi"
+      cpu: "4"
   # Schedule on CPU pool nodes (no taints on cpupool)
   nodeSelector:
     kubernetes.azure.com/agentpool: cpupool
 
-  # Security Configuration - API keys from Key Vault
-  # Note: These will be injected via Secret Provider Class
-  extraEnv:
-    - name: QDRANT__SERVICE__API_KEY
-      valueFrom:
-        secretKeyRef:
-          name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
-          key: api-key
-    - name: QDRANT__SERVICE__READ_ONLY_API_KEY
-      valueFrom:
-        secretKeyRef:
-          name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
-          key: readonly-api-key
+  apiKey:
+    valueFrom:
+      secretKeyRef:
+        name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
+        key: api-key
+  readOnlyApiKey:
+    valueFrom:
+      secretKeyRef:
+        name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
+        key: readonly-api-key
 
 # Document Processor - TEMPORARILY DISABLED FOR TESTING
 documentProcessor:

@@ -104,7 +104,7 @@ resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     osDiskType: 'Managed'
     enableAutoScaling: true
     minCount: 0
-    maxCount: 2
+    maxCount: 5
     nodeLabels: {
       agentpool: cpuNodePoolName
       workload: 'cpu'
