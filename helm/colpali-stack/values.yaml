@@ -1,26 +1,21 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# Values passed from deploy script
-acrServer: "" # ACR login server
-aksIdentityClientId: "" # Workload identity
-aksKubeletIdentityClientId: "" # AKS kubelet identity for storage access
-tenantId: "" # Azure tenant ID for Key Vault access
-storageAccountName: "" # Storage account
-serviceBusNamespace: "" # Service Bus namespace for message queuing
-serviceBusQueueName: "document-processing" # Service Bus queue name
-
-# Key Vault configuration for secrets
+acrServer: ""
+aksIdentityClientId: ""
+aksKubeletIdentityClientId: ""
+tenantId: ""
+storageAccountName: ""
+serviceBusNamespace: ""
+serviceBusQueueName: "document-processing"
 keyVault:
-  name: "" # Key Vault name (passed from deploy script)
-  qdrantApiKeySecretName: "qdrant-api-key" # Secret name for Qdrant API key
-  qdrantReadOnlyApiKeySecretName: "qdrant-readonly-api-key" # Secret name for Qdrant read-only API key
-  applicationInsightsConnectionStringSecretName: "appinsights-connection-string" # Secret name for Application Insights connection string
+  name: ""
+  qdrantApiKeySecretName: "qdrant-api-key"
+  qdrantReadOnlyApiKeySecretName: "qdrant-readonly-api-key"
+  applicationInsightsConnectionStringSecretName: "appinsights-connection-string"
 
-# Qdrant (dependency configuration)
 qdrant:
   enabled: true
-  # Configure Qdrant subchart
   persistence:
     enabled: true
     size: 10Gi
@@ -32,62 +27,99 @@ qdrant:
     limits:
       memory: "16Gi"
       cpu: "4"
-  # Schedule on CPU pool nodes (no taints on cpupool)
   nodeSelector:
     kubernetes.azure.com/agentpool: cpupool
 
   apiKey:
     valueFrom:
       secretKeyRef:
-        name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
-        key: api-key
+        name: "colpali-stack-app-secrets"
+        key: qdrant-api-key
   readOnlyApiKey:
     valueFrom:
       secretKeyRef:
-        name: "colpali-stack-app-secrets" # Populated by Key Vault CSI driver
-        key: readonly-api-key
+        name: "colpali-stack-app-secrets"
+        key: qdrant-readonly-api-key
 
-# Document Processor - TEMPORARILY DISABLED FOR TESTING
 documentProcessor:
+  enabled: true
+  replicaCount: 2
+  imageTag: "latest"
+
+  processing:
+    maxConcurrentServiceBusMessages: 3
+    pageProcessingBatchSize: 4
+    maxConcurrentPageBatches: 8
+    colpaliMaxConcurrentRequests: 5
+
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "1"
+    limits:
+      memory: "8Gi"
+      cpu: "2"
+
+  healthcheck:
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 3
+
+  deployment:
+    strategy:
+      maxSurge: 1
+      maxUnavailable: 0
+    terminationGracePeriodSeconds: 120
+
+  dependencies:
+    waitForColqwen: true
+    waitForQdrant: true
+    initContainer:
+      image: "curlimages/curl:8.5.0"
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+
+colqwenInference:
   enabled: true
   replicaCount: 1
   imageTag: "latest"
 
-colqwenInference:
-  enabled: true
-  replicaCount: 1  # Start with 1 replica for testing
-  imageTag: "latest"
-
-  # Model configuration
   model:
     modelDirectory: "/tmp/model-directory"
-    storageSize: "30Gi"  # Size of the Premium SSD for model storage per replica
+    storageSize: "30Gi"
 
   resources:
     requests:
-      memory: "32Gi"
-      cpu: "4"
-    limits:
       memory: "64Gi"
-      cpu: "6"
+      cpu: "8"
+    limits:
+      memory: "128Gi"
+      cpu: "12"
 
-  # Service configuration
   service:
     type: ClusterIP
     port: 80
     targetPort: 8080
 
-  # Health check configuration
   healthcheck:
-    initialDelaySeconds: 600  # Allow time for model download + loading (10 minutes)
+    initialDelaySeconds: 600
     periodSeconds: 30
     timeoutSeconds: 10
-    failureThreshold: 5  # More retries during startup
+    failureThreshold: 5
 
-# Ingress Controller (for Qdrant access only)
+  statefulSet:
+    updateStrategy:
+      type: RollingUpdate
+      partition: 0
+    terminationGracePeriodSeconds: 300
 ingress-nginx:
   enabled: false
-  # Configure ingress-nginx subchart
   controller:
     service:
       type: LoadBalancer

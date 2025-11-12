@@ -29,6 +29,10 @@ class DocumentPage(BaseModel):
     image_content: Union[Image.Image, ImageFile, bytes] = Field(
         ..., description="Single page image"
     )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Document metadata (PDF metadata, custom fields, etc.)",
+    )
 
     class Config:
         arbitrary_types_allowed = True
@@ -49,6 +53,10 @@ class ProcessedPage(BaseModel):
     embeddings: Dict[str, List[List[float]]] = Field(
         default_factory=dict, description="Dictionary of embedding vectors by type"
     )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Document and blob metadata (PDF metadata, blob properties, custom fields, etc.)",
+    )
     indexed_at: datetime = Field(
         default_factory=datetime.utcnow, description="Indexing timestamp"
     )
@@ -68,6 +76,7 @@ class ProcessedPage(BaseModel):
         filename: str,
         file_extension: str,
         blob_url: Optional[str] = None,
+        additional_metadata: Optional[Dict[str, Any]] = None,
     ) -> "ProcessedPage":
         """Create ProcessedPage from DocumentPage."""
         # Convert image to base64
@@ -79,6 +88,11 @@ class ProcessedPage(BaseModel):
         elif isinstance(document_page.image_content, bytes):
             image_b64 = base64.b64encode(document_page.image_content).decode()
 
+        # Merge document page metadata with additional metadata
+        merged_metadata = document_page.metadata.copy()
+        if additional_metadata:
+            merged_metadata.update(additional_metadata)
+
         return cls(
             document_id=document_id,
             page_number=document_page.page_number,
@@ -88,6 +102,7 @@ class ProcessedPage(BaseModel):
             file_extension=file_extension,
             blob_url=blob_url,
             embeddings={},  # Will be filled after embedding generation
+            metadata=merged_metadata,
         )
 
 

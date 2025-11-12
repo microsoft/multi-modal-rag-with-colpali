@@ -125,6 +125,26 @@ class DocumentProcessor:
         # Use PyMuPDF for better image extraction and text handling
         pdf_document = fitz.open(stream=content, filetype="pdf")
 
+        # Extract PDF document metadata
+        pdf_metadata = pdf_document.metadata
+        logging.info("PDF metadata: %s", pdf_metadata)
+
+        # Clean and process metadata to ensure JSON serializable values
+        clean_metadata = {}
+        if pdf_metadata:
+            for key, value in pdf_metadata.items():
+                if value is not None:
+                    # Convert to string and handle encoding issues
+                    try:
+                        # Ensure the value is JSON serializable
+                        if isinstance(value, (str, int, float, bool)):
+                            clean_metadata[key.lower().replace(" ", "_")] = value
+                        else:
+                            clean_metadata[key.lower().replace(" ", "_")] = str(value)
+                    except Exception as e:
+                        logging.warning("Could not process metadata key %s: %s", key, e)
+                        clean_metadata[key.lower().replace(" ", "_")] = str(value)
+
         # Process all pages - no artificial limits
         total_pages = len(pdf_document)
         logging.info("Processing PDF with %s pages", total_pages)
@@ -140,11 +160,12 @@ class DocumentProcessor:
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom_factor, zoom_factor))
             page_image = Image.open(io.BytesIO(pix.tobytes("png")))
 
-            # Create DocumentPage model with single image
+            # Create DocumentPage model with single image and metadata
             document_page = DocumentPage(
                 page_number=page_num + 1,
                 text_content=text,
                 image_content=page_image,
+                metadata=clean_metadata,
             )
 
             pages.append(document_page)
@@ -200,33 +221,28 @@ class DocumentProcessor:
                 async with receiver:
                     while True:
                         try:
-                            # Receive messages (batch of 1 for sequential processing)
-                            received_msgs = await receiver.receive_messages(
-                                max_message_count=1, max_wait_time=30
+                            # Configure concurrent message processing
+                            max_concurrent_messages = int(
+                                os.getenv("MAX_CONCURRENT_SERVICE_BUS_MESSAGES", "3")
                             )
 
-                            for msg in received_msgs:
-                                try:
-                                    await self._process_service_bus_message(msg)
-                                    # Complete the message to remove it from queue
-                                    await receiver.complete_message(msg)
-                                    logging.info(
-                                        "Message %s completed successfully",
-                                        msg.message_id,
-                                    )
+                            # Receive messages in batches for concurrent processing
+                            received_msgs = await receiver.receive_messages(
+                                max_message_count=max_concurrent_messages,
+                                max_wait_time=30,
+                            )
 
-                                except Exception as e:
-                                    logging.error(
-                                        "Error processing message %s: %s",
-                                        msg.message_id,
-                                        e,
+                            if received_msgs:
+                                # Process messages concurrently using asyncio.gather
+                                tasks = [
+                                    self._process_service_bus_message_safe(
+                                        msg, receiver
                                     )
-                                    # Dead letter the message after max retries
-                                    await receiver.dead_letter_message(
-                                        msg,
-                                        reason="ProcessingError",
-                                        error_description=str(e),
-                                    )
+                                    for msg in received_msgs
+                                ]
+
+                                # Wait for all messages to complete
+                                await asyncio.gather(*tasks, return_exceptions=True)
 
                         except Exception as e:
                             logging.error("Error receiving messages: %s", e)
@@ -235,6 +251,35 @@ class DocumentProcessor:
         except Exception as e:
             logging.error("Failed to start consuming messages: %s", e)
             raise
+
+    async def _process_service_bus_message_safe(
+        self, message: ServiceBusMessage, receiver
+    ):
+        """Safely process Service Bus message with proper completion or dead-lettering."""
+        try:
+            await self._process_service_bus_message(message)
+            # Complete the message to remove it from queue
+            await receiver.complete_message(message)
+            logging.info("Message %s completed successfully", message.message_id)
+        except Exception as e:
+            logging.error("Error processing message %s: %s", message.message_id, e)
+            try:
+                # Dead letter the message after max retries
+                await receiver.dead_letter_message(
+                    message,
+                    reason="ProcessingError",
+                    error_description=str(e),
+                )
+                logging.info(
+                    "Message %s dead-lettered due to processing error",
+                    message.message_id,
+                )
+            except Exception as dead_letter_error:
+                logging.error(
+                    "Failed to dead-letter message %s: %s",
+                    message.message_id,
+                    dead_letter_error,
+                )
 
     async def _process_service_bus_message(self, message: ServiceBusMessage):
         """Process a single message from Service Bus"""
@@ -317,17 +362,45 @@ class DocumentProcessor:
                 credential=self.credential,
             )
 
-            # Download blob content
+            # Download blob content and get blob metadata
+            blob_metadata = {}
             async with blob_service_client:
                 blob_client = blob_service_client.get_blob_client(
                     container=container_name, blob=blob_name
                 )
 
+                # Get blob properties and metadata first
+                blob_properties = await blob_client.get_blob_properties()
+
+                # Extract relevant blob metadata
+                blob_metadata.update(
+                    {
+                        "blob_size_bytes": blob_properties.size,
+                        "blob_content_type": blob_properties.content_settings.content_type,
+                        "blob_last_modified": blob_properties.last_modified.isoformat()
+                        if blob_properties.last_modified
+                        else None,
+                        "blob_etag": blob_properties.etag,
+                        "blob_creation_time": blob_properties.creation_time.isoformat()
+                        if blob_properties.creation_time
+                        else None,
+                    }
+                )
+
+                # Add custom metadata if present
+                if blob_properties.metadata:
+                    for key, value in blob_properties.metadata.items():
+                        # Add custom metadata directly without prefix
+                        blob_metadata[key.lower()] = value
+
                 download_stream = await blob_client.download_blob()
                 blob_content = await download_stream.readall()
 
             logging.info(
-                "Downloaded blob: %s, size: %s bytes", blob_name, len(blob_content)
+                "Downloaded blob: %s, size: %s bytes, metadata: %s",
+                blob_name,
+                len(blob_content),
+                blob_metadata,
             )
 
             # Process the document through full pipeline
@@ -336,6 +409,7 @@ class DocumentProcessor:
                 blob_name=blob_name,
                 file_extension=".pdf",
                 blob_url=event_data.blob_url,
+                blob_metadata=blob_metadata,
             )
 
             if result.success:
@@ -386,6 +460,7 @@ class DocumentProcessor:
         blob_name: str,
         file_extension: str,
         blob_url: Optional[str] = None,
+        blob_metadata: Optional[Dict[str, Any]] = None,
     ) -> ProcessingResult:
         """
         Complete document processing pipeline: PDF -> Pages -> Embeddings -> Index
@@ -431,51 +506,39 @@ class DocumentProcessor:
             # Free memory
             del blob_content
 
-            # Step 2: Process pages sequentially for reliable processing
+            # Process pages with concurrent batching
             processed_count = 0
             document_id = blob_name.replace(".pdf", "")
 
-            for i, document_page in enumerate(document_pages):
-                try:
-                    logging.info("Processing page %s of %s", i + 1, len(document_pages))
+            batch_size = int(os.getenv("PAGE_PROCESSING_BATCH_SIZE", "4"))
+            max_concurrent_batches = int(os.getenv("MAX_CONCURRENT_PAGE_BATCHES", "8"))
 
-                    # Create ProcessedPage from DocumentPage
-                    processed_page = ProcessedPage.from_document_page(
-                        document_page=document_page,
-                        document_id=document_id,
-                        filename=blob_name,
-                        file_extension=file_extension,
-                        blob_url=blob_url,
-                    )
+            logging.info(
+                "Processing %s pages with batch_size=%s, max_concurrent_batches=%s",
+                len(document_pages),
+                batch_size,
+                max_concurrent_batches,
+            )
 
-                    # Step 3: Generate embeddings using ColQwen2
-                    embeddings_response = await self.colpali_client.generate_embeddings(
-                        document_page
-                    )
+            # Create batches of pages
+            page_batches = []
+            for batch_start in range(0, len(document_pages), batch_size):
+                batch_end = min(batch_start + batch_size, len(document_pages))
+                page_batch = document_pages[batch_start:batch_end]
+                page_batches.append((batch_start, page_batch))
 
-                    if embeddings_response:
-                        # Store embeddings directly in ProcessedPage
-                        processed_page.embeddings = embeddings_response
+            logging.info("Created %s batches for processing", len(page_batches))
 
-                        # Step 4: Index in QDRANT
-                        index_success = await self.qdrant_index.index_embeddings(
-                            [processed_page]
-                        )
-
-                        if index_success:
-                            processed_count += 1
-                            logging.info(
-                                "Successfully processed and indexed page %s",
-                                i + 1,
-                            )
-                        else:
-                            logging.warning("Failed to index page %s", i + 1)
-                    else:
-                        logging.warning("No embeddings generated for page %s", i + 1)
-
-                except Exception as e:
-                    logging.error("Error processing page %s: %s", i + 1, e)
-                    continue
+            # Process batches concurrently using asyncio.gather with concurrency control
+            processed_count = await self._process_batches_concurrently(
+                page_batches=page_batches,
+                document_id=document_id,
+                blob_name=blob_name,
+                file_extension=file_extension,
+                blob_url=blob_url,
+                blob_metadata=blob_metadata or {},
+                max_concurrent_batches=max_concurrent_batches,
+            )
 
             logging.info(
                 "Complete processing finished: %s/%s pages processed successfully",
@@ -504,3 +567,148 @@ class DocumentProcessor:
                 error_message=str(e),
                 processing_time_seconds=time.time() - start_time,
             )
+
+    @trace_operation("process_batches_concurrently")
+    async def _process_batches_concurrently(
+        self,
+        page_batches: List[tuple],
+        document_id: str,
+        blob_name: str,
+        file_extension: str,
+        blob_url: Optional[str],
+        blob_metadata: Dict[str, Any],
+        max_concurrent_batches: int,
+    ) -> int:
+        """Process page batches concurrently with controlled concurrency."""
+        processed_count = 0
+
+        # Create semaphore to control concurrency at the batch level
+        batch_semaphore = asyncio.Semaphore(max_concurrent_batches)
+
+        async def process_single_batch(batch_info: tuple) -> int:
+            """Process a single batch of pages."""
+            batch_start, page_batch = batch_info
+            batch_processed_count = 0
+
+            async with batch_semaphore:
+                try:
+                    batch_end = batch_start + len(page_batch)
+                    logging.info(
+                        "Processing batch: pages %s-%s of %s total pages",
+                        batch_start + 1,
+                        batch_end,
+                        sum(len(batch[1]) for batch in page_batches),
+                    )
+
+                    # Generate embeddings for batch
+                    embeddings_response = await self.colpali_client.generate_embeddings(
+                        page_batch
+                    )
+
+                    if embeddings_response:
+                        # Process each page in the batch with its corresponding embeddings
+                        processed_pages = []
+
+                        for i, document_page in enumerate(page_batch):
+                            try:
+                                # Create ProcessedPage from DocumentPage
+                                processed_page = ProcessedPage.from_document_page(
+                                    document_page=document_page,
+                                    document_id=document_id,
+                                    filename=blob_name,
+                                    file_extension=file_extension,
+                                    blob_url=blob_url,
+                                    additional_metadata=blob_metadata,
+                                )
+
+                                # Extract embeddings for this specific page from batch response
+                                page_embeddings = {}
+                                for key in [
+                                    "embeddings",
+                                    "hierarchical_pooled_embeddings",
+                                    "mean_row_pooled_embeddings",
+                                    "mean_column_pooled_embeddings",
+                                ]:
+                                    if key in embeddings_response and isinstance(
+                                        embeddings_response[key], list
+                                    ):
+                                        if i < len(embeddings_response[key]):
+                                            page_embeddings[key] = embeddings_response[
+                                                key
+                                            ][i]
+
+                                processed_page.embeddings = page_embeddings
+                                processed_pages.append(processed_page)
+
+                            except Exception as e:
+                                logging.error(
+                                    "Error preparing page %s for indexing: %s",
+                                    batch_start + i + 1,
+                                    e,
+                                )
+                                continue
+
+                        # Index processed pages
+                        if processed_pages:
+                            index_success = await self.qdrant_index.index_embeddings(
+                                processed_pages
+                            )
+
+                            if index_success:
+                                batch_processed_count = len(processed_pages)
+                                logging.info(
+                                    "Successfully processed and indexed batch: %s pages (pages %s-%s)",
+                                    batch_processed_count,
+                                    batch_start + 1,
+                                    batch_end,
+                                )
+                            else:
+                                logging.warning(
+                                    "Failed to index batch of %s pages (pages %s-%s)",
+                                    len(processed_pages),
+                                    batch_start + 1,
+                                    batch_end,
+                                )
+                    else:
+                        logging.warning(
+                            "No embeddings generated for batch: pages %s-%s",
+                            batch_start + 1,
+                            batch_end,
+                        )
+
+                except Exception as e:
+                    logging.error(
+                        "Error processing batch (pages %s-%s): %s",
+                        batch_start + 1,
+                        batch_start + len(page_batch),
+                        e,
+                    )
+
+            return batch_processed_count
+
+        # Execute all batches concurrently with controlled concurrency
+        logging.info(
+            "Starting concurrent batch processing with max_concurrent_batches=%s",
+            max_concurrent_batches,
+        )
+
+        # Use asyncio.gather to process all batches concurrently
+        batch_results = await asyncio.gather(
+            *[process_single_batch(batch_info) for batch_info in page_batches],
+            return_exceptions=True,
+        )
+
+        # Count successful results
+        for result in batch_results:
+            if isinstance(result, int):
+                processed_count += result
+            else:
+                logging.error("Batch processing failed: %s", result)
+
+        logging.info(
+            "Concurrent batch processing completed: %s/%s pages processed successfully",
+            processed_count,
+            sum(len(batch[1]) for batch in page_batches),
+        )
+
+        return processed_count

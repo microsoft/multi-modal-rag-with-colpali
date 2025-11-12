@@ -12,6 +12,9 @@ param containerRegistryName string
 @description('The resource ID of the centralized Log Analytics workspace')
 param logAnalyticsWorkspaceId string
 
+@description('The resource ID of the Azure Monitor workspace for Prometheus')
+param azureMonitorWorkspaceId string
+
 @description('The Kubernetes version for AKS')
 param kubernetesVersion string = '1.34.0'
 
@@ -76,6 +79,15 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
     azureMonitorProfile: {
       metrics: {
         enabled: true
+        kubeStateMetrics: {
+          metricLabelsAllowlist: ''
+          metricAnnotationsAllowList: ''
+        }
+      }
+    }
+    metricsProfile: {
+      costAnalysis: {
+        enabled: false
       }
     }
     workloadAutoScalerProfile: {
@@ -120,7 +132,7 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
   name: gpuNodePoolName
   properties: {
     count: 1
-    vmSize: 'standard_nv12ads_a10_v5'
+    vmSize: 'standard_nv18ads_a10_v5'
     osType: 'Linux'
     mode: 'User'
     osSKU: 'Ubuntu'
@@ -139,6 +151,114 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     }
     nodeTaints: [
       'sku=gpu:NoSchedule' // Ensure only GPU workloads get scheduled here
+    ]
+  }
+}
+
+// Data Collection Rule for Prometheus metrics (Azure Monitor managed Prometheus)
+resource prometheusDataCollectionRule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
+  name: replace('dcr-${aksClusterName}', 'aks-', '')
+  location: location
+  kind: 'Linux'
+  properties: {
+    dataSources: {
+      prometheusForwarder: [
+        {
+          name: 'PrometheusDataSource'
+          streams: [
+            'Microsoft-PrometheusMetrics'
+          ]
+          labelIncludeFilter: {}
+        }
+      ]
+    }
+    destinations: {
+      monitoringAccounts: [
+        {
+          accountResourceId: azureMonitorWorkspaceId
+          name: 'MonitoringAccount1'
+        }
+      ]
+    }
+    dataFlows: [
+      {
+        streams: [
+          'Microsoft-PrometheusMetrics'
+        ]
+        destinations: [
+          'MonitoringAccount1'
+        ]
+      }
+    ]
+  }
+}
+
+// Data Collection Rule Association for Prometheus
+resource prometheusDataCollectionRuleAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2023-03-11' = {
+  name: replace('dcra-${aksClusterName}', 'aks-', '')
+  scope: aksCluster
+  properties: {
+    dataCollectionRuleId: prometheusDataCollectionRule.id
+  }
+}
+
+// Diagnostic settings for AKS control plane logs
+resource aksControlPlaneDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: replace('diag-${aksClusterName}', 'aks-', '')
+  scope: aksCluster
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      {
+        category: 'kube-apiserver'
+        enabled: true
+      }
+      {
+        category: 'kube-audit'
+        enabled: true
+      }
+      {
+        category: 'kube-audit-admin'
+        enabled: true
+      }
+      {
+        category: 'kube-controller-manager'
+        enabled: true
+      }
+      {
+        category: 'kube-scheduler'
+        enabled: true
+      }
+      {
+        category: 'cluster-autoscaler'
+        enabled: true
+      }
+      {
+        category: 'cloud-controller-manager'
+        enabled: true
+      }
+      {
+        category: 'guard'
+        enabled: true
+      }
+      {
+        category: 'csi-azuredisk-controller'
+        enabled: true
+      }
+      {
+        category: 'csi-azurefile-controller'
+        enabled: true
+      }
+      {
+        category: 'csi-snapshot-controller'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
     ]
   }
 }

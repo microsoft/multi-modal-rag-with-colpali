@@ -18,6 +18,7 @@ Environment Variables:
     QDRANT_API_KEY: Optional API key for Qdrant authentication
 """
 
+import json
 import logging
 import os
 from typing import List, Optional
@@ -297,6 +298,26 @@ class QdrantIndex:
                 # Add blob_url to payload if available
                 if processed_page.blob_url:
                     payload["blob_url"] = processed_page.blob_url
+
+                # Automatically add all metadata fields as top-level fields in the payload
+                if processed_page.metadata:
+                    for key, value in processed_page.metadata.items():
+                        # Ensure field name is valid for Qdrant (no spaces, special characters)
+                        field_name = key.lower().replace(" ", "_").replace("-", "_")
+                        # Only add if not already present and value is not None
+                        if field_name not in payload and value is not None:
+                            # Ensure value is JSON serializable
+                            try:
+                                json.dumps(value)  # Test serialization
+                                payload[field_name] = value
+                            except (TypeError, ValueError):
+                                # Convert to string if not serializable
+                                payload[field_name] = str(value)
+                                logging.debug(
+                                    "Converted metadata field '%s' to string for page %s",
+                                    field_name,
+                                    processed_page.page_id,
+                                )
 
                 point = models.PointStruct(
                     id=processed_page.page_id,

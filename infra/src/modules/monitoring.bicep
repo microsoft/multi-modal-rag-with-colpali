@@ -35,6 +35,14 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09
   }
 }
 
+// Azure Monitor Workspace for Prometheus metrics
+resource azureMonitorWorkspace 'Microsoft.Monitor/accounts@2023-04-03' = {
+  name: replace('amw-${logAnalyticsWorkspaceName}', 'logs-', '')
+  location: location
+  tags: tags
+  properties: {}
+}
+
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: applicationInsightsName
   location: location
@@ -66,3 +74,9 @@ output applicationInsightsInstrumentationKey string = applicationInsights.proper
 
 @description('The connection string for Application Insights')
 output applicationInsightsConnectionString string = applicationInsights.properties.ConnectionString
+
+@description('The resource ID of the Azure Monitor workspace')
+output azureMonitorWorkspaceId string = azureMonitorWorkspace.id
+
+@description('The default ingestion endpoint for Azure Monitor workspace')
+output azureMonitorWorkspaceDefaultIngestionEndpoint string = azureMonitorWorkspace.properties.defaultIngestionSettings.dataCollectionEndpointResourceId

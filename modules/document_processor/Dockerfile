@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     tesseract-ocr \
     curl \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure UV for optimal performance

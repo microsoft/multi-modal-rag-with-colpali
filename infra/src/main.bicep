@@ -95,6 +95,7 @@ module aksModule 'modules/aks.bicep' = {
     location: location
     containerRegistryName: acrName
     logAnalyticsWorkspaceId: monitoringModule.outputs.logAnalyticsWorkspaceId
+    azureMonitorWorkspaceId: monitoringModule.outputs.azureMonitorWorkspaceId
   }
 }
 
@@ -206,3 +207,9 @@ output qdrantReadOnlyApiKeySecretName string = keyVaultModule.outputs.qdrantRead
 
 @description('The Application Insights connection string secret name')
 output applicationInsightsConnectionStringSecretName string = keyVaultModule.outputs.applicationInsightsConnectionStringSecretName
+
+@description('The Azure Monitor workspace resource ID for Prometheus metrics')
+output azureMonitorWorkspaceId string = monitoringModule.outputs.azureMonitorWorkspaceId
+
+@description('The Log Analytics workspace resource ID for container logs')
+output logAnalyticsWorkspaceId string = monitoringModule.outputs.logAnalyticsWorkspaceId

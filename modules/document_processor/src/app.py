@@ -9,6 +9,8 @@ Consumes messages from Azure Service Bus for reliable 1-in-1-out processing
 import asyncio
 import logging
 import os
+import signal
+import sys
 
 from .document_processor import DocumentProcessor
 from .logging import configure_telemetry, trace_operation
@@ -41,10 +43,30 @@ except Exception as e:
     logger.error("Failed to configure Application Insights telemetry: %s", e)
 
 
+class GracefulShutdown:
+    """Handle graceful shutdown for the document processor."""
+
+    def __init__(self):
+        self.shutdown = False
+        self.processor = None
+
+    def exit_gracefully(self, signum, frame):
+        logger.info(
+            "Received shutdown signal %s, initiating graceful shutdown...", signum
+        )
+        self.shutdown = True
+
+
 @trace_operation(operation_name="consumer_mode", new_root=True)
 async def consumer_mode():
     """Run the Service Bus consumer for document processing."""
+    shutdown_handler = GracefulShutdown()
     processor = DocumentProcessor()
+    shutdown_handler.processor = processor
+
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, shutdown_handler.exit_gracefully)
+    signal.signal(signal.SIGINT, shutdown_handler.exit_gracefully)
 
     try:
         logger.info("Starting standalone Service Bus consumer...")
@@ -55,6 +77,10 @@ async def consumer_mode():
     except Exception as e:
         logger.error("Consumer error: %s", e)
         raise
+    finally:
+        if shutdown_handler.shutdown:
+            logger.info("Graceful shutdown completed")
+            sys.exit(0)
 
 
 def main():

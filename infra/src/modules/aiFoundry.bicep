@@ -9,9 +9,10 @@ param aiProjectName string = '${aiFoundryName}-proj'
 @description('The location for the AI Foundry service')
 param location string = resourceGroup().location
 
+// Hard coded to UK South as AI Foundry Agent Service is not available in North Europe yet
 resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   name: aiFoundryName
-  location: location
+  location: 'uksouth'
   identity: {
     type: 'SystemAssigned'
   }

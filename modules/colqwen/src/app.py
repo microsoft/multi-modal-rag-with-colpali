@@ -11,6 +11,8 @@ Provides REST API endpoints for health checks and embedding generation with mult
 import asyncio
 import logging
 import os
+import signal
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -28,6 +30,43 @@ logger = logging.getLogger(__name__)
 # Global inference instance
 inference_service = ColQwen2Inference()
 HEALTH_MODEL_NAME = "vidore/colqwen2"
+
+
+class GracefulShutdown:
+    """Handle graceful shutdown for ColQwen2 inference service."""
+
+    def __init__(self):
+        self.shutdown_event = asyncio.Event()
+        self._setup_signal_handlers()
+
+    def _setup_signal_handlers(self):
+        """Set up signal handlers for graceful shutdown."""
+        if sys.platform != "win32":
+            # Unix signals
+            signal.signal(signal.SIGTERM, self._signal_handler)
+            signal.signal(signal.SIGINT, self._signal_handler)
+        else:
+            # Windows signal handling
+            signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, _frame):
+        """Handle shutdown signals."""
+        logger.info("Received signal %s, initiating graceful shutdown...", signum)
+        self.shutdown_event.set()
+
+    async def wait_for_shutdown(self):
+        """Wait for shutdown signal."""
+        await self.shutdown_event.wait()
+
+    async def cleanup(self):
+        """Perform cleanup operations."""
+        logger.info("Performing graceful shutdown cleanup...")
+        # The inference service cleanup will be handled by FastAPI lifespan
+        logger.info("Graceful shutdown completed")
+
+
+# Global shutdown handler
+shutdown_handler = GracefulShutdown()
 
 
 @asynccontextmanager
@@ -159,7 +198,7 @@ async def global_exception_handler(request, exc):
 
 
 def server_mode():
-    """Start ColQwen2 inference server with Uvicorn for production deployment."""
+    """Start ColQwen2 inference server with Uvicorn and graceful shutdown handling."""
     logger.info("Starting ColQwen2 inference server mode...")
 
     import uvicorn
@@ -175,14 +214,53 @@ def server_mode():
         "Using single worker (required for shared model state and lifespan handlers)"
     )
 
-    uvicorn.run(
-        app,
+    # Create uvicorn server configuration
+    config = uvicorn.Config(
+        app=app,
         host=host,
         port=port,
         log_level=log_level,
         workers=1,  # Single worker required for shared ColQwen2 model state
         reload=False,
     )
+
+    # Run server with graceful shutdown support
+    server = uvicorn.Server(config)
+
+    async def run_server():
+        """Run the server with graceful shutdown monitoring."""
+        # Start the server task
+        server_task = asyncio.create_task(server.serve())
+
+        # Wait for either server completion or shutdown signal
+        shutdown_task = asyncio.create_task(shutdown_handler.wait_for_shutdown())
+
+        try:
+            done, pending = await asyncio.wait(
+                {server_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # If shutdown was triggered, gracefully stop the server
+            if shutdown_task in done:
+                logger.info("Shutdown signal received, stopping server...")
+                server.should_exit = True
+                await server_task
+                await shutdown_handler.cleanup()
+
+            # Cancel any pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        except Exception as e:
+            logger.error(f"Server error: {e}")
+            raise
+
+    # Run the server with asyncio
+    asyncio.run(run_server())
 
 
 @trace_operation("model_download")
@@ -207,8 +285,6 @@ def download_mode():
 
 def main():
     """Main entry point - supports both init container (download) and inference server modes."""
-    import sys
-
     # Check for download mode
     if len(sys.argv) > 1 and sys.argv[1] == "download":
         download_mode()

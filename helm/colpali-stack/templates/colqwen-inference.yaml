@@ -30,6 +30,10 @@ metadata:
 spec:
   replicas: {{ .Values.colqwenInference.replicaCount }}
   serviceName: {{ include "colpali-stack.fullname" . }}-colqwen-inference
+  updateStrategy:
+    type: {{ .Values.colqwenInference.statefulSet.updateStrategy.type | default "RollingUpdate" }}
+    rollingUpdate:
+      partition: {{ .Values.colqwenInference.statefulSet.updateStrategy.partition | default 0 }}
   selector:
     matchLabels:
       app: {{ include "colpali-stack.fullname" . }}-colqwen-inference
@@ -39,6 +43,7 @@ spec:
         app: {{ include "colpali-stack.fullname" . }}-colqwen-inference
     spec:
       serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
+      terminationGracePeriodSeconds: {{ .Values.colqwenInference.statefulSet.terminationGracePeriodSeconds | default 300 }}
       securityContext:
         fsGroup: 1000  # Ensure volume is writable by container user
       nodeSelector:
@@ -70,7 +75,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: {{ include "colpali-stack.fullname" . }}-app-secrets
-              key: connection-string
+              key: appinsights-connection-string
         resources:
           requests:
             memory: "16Gi"
@@ -102,7 +107,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: {{ include "colpali-stack.fullname" . }}-app-secrets
-              key: connection-string
+              key: appinsights-connection-string
         resources:
           requests:
             memory: {{ .Values.colqwenInference.resources.requests.memory }}
@@ -122,6 +127,13 @@ spec:
         - name: app-secrets-store
           mountPath: "/mnt/secrets-store"
           readOnly: true
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "pkill -SIGTERM -f 'python.*' && sleep 30"
         livenessProbe:
           httpGet:
             path: /health
