@@ -1,0 +1,91 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+{{- if .Values.agentUi.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-agent-ui
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-agent-ui
+spec:
+  replicas: {{ .Values.agentUi.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "colpali-stack.fullname" . }}-agent-ui
+  template:
+    metadata:
+      labels:
+        app: {{ include "colpali-stack.fullname" . }}-agent-ui
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
+      # Schedule on CPU pool nodes (no taints on cpupool)
+      nodeSelector:
+        kubernetes.azure.com/agentpool: cpupool
+      containers:
+      - name: agent-ui
+        image: "{{ .Values.acrServer }}/agent-ui:{{ .Values.agentUi.imageTag }}"
+        ports:
+        - containerPort: 8080
+        env:
+        - name: AGENT_API_URL
+          value: "http://{{ include "colpali-stack.fullname" . }}-agent-api:8000"
+
+        # Monitoring
+        - name: LOG_LEVEL
+          value: "INFO"
+
+        volumeMounts:
+        - name: app-secrets-store
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+        resources:
+          requests:
+            memory: {{ .Values.agentUi.resources.requests.memory }}
+            cpu: {{ .Values.agentUi.resources.requests.cpu }}
+          limits:
+            memory: {{ .Values.agentUi.resources.limits.memory }}
+            cpu: {{ .Values.agentUi.resources.limits.cpu }}
+        {{- if .Values.agentUi.healthcheck }}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: {{ .Values.agentUi.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.agentUi.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.agentUi.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.agentUi.healthcheck.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: {{ .Values.agentUi.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.agentUi.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.agentUi.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.agentUi.healthcheck.failureThreshold }}
+        {{- end }}
+      volumes:
+      - name: app-secrets-store
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: {{ include "colpali-stack.fullname" . }}-keyvault
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-agent-ui
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-agent-ui
+spec:
+  type: {{ .Values.agentUi.service.type }}
+  ports:
+  - port: {{ .Values.agentUi.service.port }}
+    targetPort: {{ .Values.agentUi.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ include "colpali-stack.fullname" . }}-agent-ui
+{{- end }}

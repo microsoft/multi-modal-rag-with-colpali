@@ -1,0 +1,50 @@
+[project]
+name = "azure-ai-foundry-agent"
+version = "0.1.0"
+description = "Azure OpenAI Agent for document Q&A using ColQwen embeddings and GPT-5-mini"
+authors = [
+    {name = "Ben Constable", email = "benconstable@microsoft.com"},
+    {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<=3.12"
+dependencies = [
+    "agent-framework==1.0.0b251112.post1",
+    "azure-identity>=1.25.1",
+    "aiohttp>=3.11.11",
+    "chainlit>=1.0.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.28.1",
+    "pillow>=12.0.0",
+    "pydantic>=2.11.0",
+    "python-dotenv>=1.2.1",
+    "qdrant-client>=1.15.1",
+    "requests>=2.32.5",
+    "sse-starlette>=2.0.0",
+    "tenacity>=9.0.0",
+    "uvicorn>=0.32.0",
+    # Azure Monitor OpenTelemetry for Application Insights
+    "azure-monitor-opentelemetry>=1.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I"]
+ignore = ["E501"]
+
+[tool.uv]
+default-groups = ["dev"]

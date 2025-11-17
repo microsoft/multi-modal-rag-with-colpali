@@ -12,8 +12,13 @@ import os
 import signal
 import sys
 
+from dotenv import find_dotenv, load_dotenv
+
 from .document_processor import DocumentProcessor
-from .logging import configure_telemetry, trace_operation
+from .setup_logging import configure_telemetry, trace_operation
+
+# Find and load .env file from the project root
+load_dotenv(find_dotenv())
 
 configure_telemetry()
 

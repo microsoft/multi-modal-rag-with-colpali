@@ -220,3 +220,8 @@ infra/**/*.json
 
 # Compressed archives
 *.tgz
+
+.chainlit/
+
+**/debug_images/
+**/.files/

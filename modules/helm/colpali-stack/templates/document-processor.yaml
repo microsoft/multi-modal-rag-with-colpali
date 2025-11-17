@@ -1,0 +1,160 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+{{- if .Values.documentProcessor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-document-processor
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-document-processor
+spec:
+  replicas: {{ .Values.documentProcessor.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.documentProcessor.deployment.strategy.maxSurge | default 1 }}
+      maxUnavailable: {{ .Values.documentProcessor.deployment.strategy.maxUnavailable | default 0 }}
+  selector:
+    matchLabels:
+      app: {{ include "colpali-stack.fullname" . }}-document-processor
+  template:
+    metadata:
+      labels:
+        app: {{ include "colpali-stack.fullname" . }}-document-processor
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
+      terminationGracePeriodSeconds: {{ .Values.documentProcessor.deployment.terminationGracePeriodSeconds | default 120 }}
+      nodeSelector:
+        kubernetes.azure.com/agentpool: cpupool
+      {{- if or .Values.documentProcessor.dependencies.waitForColqwen .Values.documentProcessor.dependencies.waitForQdrant }}
+      initContainers:
+      {{- if .Values.documentProcessor.dependencies.waitForColqwen }}
+      - name: wait-for-colqwen
+        image: {{ .Values.documentProcessor.dependencies.initContainer.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for ColQwen inference service to be ready..."
+          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}/health"; do
+            echo "ColQwen inference not ready, waiting 10 seconds..."
+            sleep 10
+          done
+          echo "ColQwen inference service is ready!"
+        resources:
+          requests:
+            memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.memory }}
+            cpu: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.cpu }}
+          limits:
+            memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.limits.memory }}
+            cpu: {{ .Values.documentProcessor.dependencies.initContainer.resources.limits.cpu }}
+      {{- end }}
+      {{- if .Values.documentProcessor.dependencies.waitForQdrant }}
+      - name: wait-for-qdrant
+        image: {{ .Values.documentProcessor.dependencies.initContainer.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for Qdrant to be ready..."
+          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"; do
+            echo "Qdrant not ready, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "Qdrant is ready!"
+        resources:
+          requests:
+            memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.memory }}
+            cpu: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.cpu }}
+          limits:
+            memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.limits.memory }}
+            cpu: {{ .Values.documentProcessor.dependencies.initContainer.resources.limits.cpu }}
+      {{- end }}
+      {{- end }}
+      containers:
+      - name: document-processor
+        image: "{{ .Values.acrServer }}/document-processor:{{ .Values.documentProcessor.imageTag }}"
+        env:
+        - name: COLQWEN_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}"
+        - name: DATA_STORAGE_ACCOUNT_NAME
+          value: {{ .Values.storageAccountName }}
+        - name: SERVICE_BUS_NAMESPACE_NAME
+          value: {{ .Values.serviceBusNamespace }}
+        - name: SERVICE_BUS_QUEUE_NAME
+          value: {{ .Values.serviceBusQueueName | default "document-processing" }}
+        - name: AZURE_CLIENT_ID
+          value: {{ .Values.aksIdentityClientId }}
+        - name: QDRANT_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: qdrant-api-key
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: OTEL_SERVICE_NAME
+          value: "document-processor"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: appinsights-connection-string
+        - name: MAX_CONCURRENT_SERVICE_BUS_MESSAGES
+          value: "{{ .Values.documentProcessor.processing.maxConcurrentServiceBusMessages | default 3 }}"
+        - name: PAGE_PROCESSING_BATCH_SIZE
+          value: "{{ .Values.documentProcessor.processing.pageProcessingBatchSize | default 4 }}"
+        - name: MAX_CONCURRENT_PAGE_BATCHES
+          value: "{{ .Values.documentProcessor.processing.maxConcurrentPageBatches | default 8 }}"
+        - name: COLPALI_MAX_CONCURRENT_REQUESTS
+          value: "{{ .Values.documentProcessor.processing.colpaliMaxConcurrentRequests | default 5 }}"
+        volumeMounts:
+        - name: app-secrets-store
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "pkill -SIGTERM -f 'python -m src.app' && sleep 10"
+        resources:
+          requests:
+            memory: {{ .Values.documentProcessor.resources.requests.memory | quote }}
+            cpu: {{ .Values.documentProcessor.resources.requests.cpu | quote }}
+          limits:
+            memory: {{ .Values.documentProcessor.resources.limits.memory | quote }}
+            cpu: {{ .Values.documentProcessor.resources.limits.cpu | quote }}
+        {{- if .Values.documentProcessor.healthcheck }}
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep -f 'python -m src.app' > /dev/null"
+          initialDelaySeconds: {{ .Values.documentProcessor.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.documentProcessor.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.documentProcessor.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.documentProcessor.healthcheck.failureThreshold }}
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep -f 'python -m src.app' > /dev/null"
+          initialDelaySeconds: {{ .Values.documentProcessor.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.documentProcessor.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.documentProcessor.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.documentProcessor.healthcheck.failureThreshold }}
+        {{- end }}
+      volumes:
+      - name: app-secrets-store
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: {{ include "colpali-stack.fullname" . }}-keyvault
+{{- end }}

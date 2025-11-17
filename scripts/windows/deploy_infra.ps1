@@ -3,7 +3,7 @@
 # Licensed under the MIT License.
 # Complete deployment script: deploys Bicep infrastructure
 # Usage: .\deploy_infra.ps1 [-ResourceGroup <resource-group>] [-DeployRoles <true|false>]
-# Note: baseName and location are defined in infra/src/main.bicepparam
+# Note: baseName and location are defined in modules/infra/src/main.bicepparam
 
 [CmdletBinding()]
 param(
@@ -33,7 +33,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Use absolute paths for the Bicep files
-$BicepParamFile = Join-Path $ProjectRoot "infra\src\main.bicepparam"
+$BicepParamFile = Join-Path $ProjectRoot "modules\infra\src\main.bicepparam"
 Write-Host "Using Bicep parameter file: $BicepParamFile"
 
 # Deploy resources with Bicep using the parameter file

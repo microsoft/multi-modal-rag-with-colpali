@@ -2,19 +2,23 @@
   "folders": [
     {
       "name": "Colqwen Inference",
-      "path": "modules/colqwen"
+      "path": "modules/colqwen_inference"
     },
     {
       "name": "Document Processor",
       "path": "modules/document_processor"
     },
     {
+      "name": "Agent",
+      "path": "modules/agent"
+    },
+    {
       "name": "Infrastructure",
-      "path": "infra"
+      "path": "modules/infra"
     },
     {
       "name": "Helm Charts",
-      "path": "helm"
+      "path": "modules/helm"
     },
     {
       "name": "Automation Scripts",

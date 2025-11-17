@@ -92,7 +92,7 @@ Write-Host "Successfully connected to AKS cluster"
 
 # Update Helm dependencies
 Write-Host "Updating Helm chart dependencies"
-Push-Location "helm/colpali-stack"
+Push-Location "modules/helm/colpali-stack"
 try {
     helm dependency update
     if ($LASTEXITCODE -ne 0) {
@@ -111,10 +111,12 @@ Write-Host "This may take several minutes..."
 
 # Get image tags from .env
 $docProcessorImageTag = if ($envVars.ContainsKey('DOCUMENT_PROCESSOR_IMAGE_TAG')) { $envVars['DOCUMENT_PROCESSOR_IMAGE_TAG'] } else { "latest" }
-$colqwenImageTag = if ($envVars.ContainsKey('COLQWEN_IMAGE_TAG')) { $envVars['COLQWEN_IMAGE_TAG'] } else { "latest" }
+$colqwenImageTag = if ($envVars.ContainsKey('COLQWEN_INFERENCE_IMAGE_TAG')) { $envVars['COLQWEN_INFERENCE_IMAGE_TAG'] } else { "latest" }
+$agentApiImageTag = if ($envVars.ContainsKey('AGENT_API_IMAGE_TAG')) { $envVars['AGENT_API_IMAGE_TAG'] } else { "latest" }
+$agentUiImageTag = if ($envVars.ContainsKey('AGENT_UI_IMAGE_TAG')) { $envVars['AGENT_UI_IMAGE_TAG'] } else { "latest" }
 
 # Deploy ColPali stack with pure Kubernetes approach
-helm upgrade --install colpali-stack "./helm/colpali-stack" `
+helm upgrade --install colpali-stack "./modules/helm/colpali-stack" `
     --namespace colpali-stack `
     --create-namespace `
     --set acrServer="$($envVars['ACR_LOGIN_SERVER'])" `
@@ -126,11 +128,17 @@ helm upgrade --install colpali-stack "./helm/colpali-stack" `
     --set serviceBusQueueName="$($envVars['SERVICE_BUS_QUEUE_NAME'])" `
     --set documentProcessor.imageTag="$docProcessorImageTag" `
     --set colqwenInference.imageTag="$colqwenImageTag" `
+    --set agentApi.enabled=true `
+    --set agentApi.imageTag="$agentApiImageTag" `
+    --set aiFoundryOpenAiEndpoint="$($envVars['AI_FOUNDRY_OPEN_AI_ENDPOINT'])" `
+    --set modelName="$($envVars['MODEL_NAME'])" `
+    --set agentUi.enabled=true `
+    --set agentUi.imageTag="$agentUiImageTag" `
     --set keyVault.name="$($envVars['KEY_VAULT_NAME'])" `
     --set keyVault.qdrantApiKeySecretName="$($envVars['QDRANT_API_KEY_SECRET_NAME'])" `
     --set keyVault.qdrantReadOnlyApiKeySecretName="$($envVars['QDRANT_READ_ONLY_API_KEY_SECRET_NAME'])" `
     --set keyVault.applicationInsightsConnectionStringSecretName="$($envVars['APPLICATION_INSIGHTS_CONNECTION_STRING_SECRET_NAME'])" `
-    --wait --timeout 20m
+    --wait --timeout 30m
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Deployment completed successfully"
@@ -200,6 +208,31 @@ if ($LASTEXITCODE -eq 0) {
     }
     else {
         Write-Host "Model Download Job: In progress..." -ForegroundColor Yellow
+    }
+
+    # Check Agent API pods
+    $agentApiStatus = kubectl get pods -l app=colpali-stack-agent-api --no-headers 2>$null
+    if ($agentApiStatus -and $agentApiStatus -match "Running") {
+        Write-Host "Agent API (FastAPI): Running" -ForegroundColor Green
+    }
+    else {
+        Write-Host "Agent API (FastAPI): Starting..." -ForegroundColor Yellow
+    }
+
+    # Check Agent UI pods
+    $agentUiStatus = kubectl get pods -l app=colpali-stack-agent-ui --no-headers 2>$null
+    if ($agentUiStatus -and $agentUiStatus -match "Running") {
+        Write-Host "Agent UI (Chainlit): Running" -ForegroundColor Green
+    }
+    else {
+        Write-Host "Agent UI (Chainlit): Starting..." -ForegroundColor Yellow
+    }
+
+    # Get Agent UI LoadBalancer IP
+    $agentUiIp = kubectl get svc colpali-stack-agent-ui -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    if ($agentUiIp -and $agentUiIp -ne "") {
+        Write-Host ""
+        Write-Host "Agent UI accessible at: http://$agentUiIp" -ForegroundColor Cyan
     }
 
     Write-Host ""

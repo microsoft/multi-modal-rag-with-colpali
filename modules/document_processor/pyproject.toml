@@ -6,7 +6,7 @@ authors = [
     {name = "Ben Constable", email = "benconstable@microsoft.com"},
     {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11,<=3.12"
 dependencies = [
     "pydantic>=2.0.0",
     # Azure services
@@ -44,5 +44,4 @@ ignore = ["E501"]
 [dependency-groups]
 dev = [
     "ruff>=0.1.0",
-    "pytest>=7.0.0"
 ]

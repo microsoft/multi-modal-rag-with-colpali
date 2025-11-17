@@ -1,0 +1,146 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+{{- if .Values.agentApi.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-agent-api
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-agent-api
+spec:
+  replicas: {{ .Values.agentApi.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "colpali-stack.fullname" . }}-agent-api
+  template:
+    metadata:
+      labels:
+        app: {{ include "colpali-stack.fullname" . }}-agent-api
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
+      # Schedule on CPU pool nodes (no taints on cpupool)
+      nodeSelector:
+        kubernetes.azure.com/agentpool: cpupool
+      initContainers:
+      - name: wait-for-colqwen
+        image: {{ .Values.documentProcessor.dependencies.initContainer.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for ColQwen inference service to be ready..."
+          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}/health"; do
+            echo "ColQwen inference not ready, waiting 10 seconds..."
+            sleep 10
+          done
+          echo "ColQwen inference service is ready!"
+        resources:
+          requests:
+            memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.memory }}
+            cpu: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.cpu }}
+          limits:
+            memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.limits.memory }}
+            cpu: {{ .Values.documentProcessor.dependencies.initContainer.resources.limits.cpu }}
+      containers:
+      - name: agent-api
+        image: "{{ .Values.acrServer }}/agent-api:{{ .Values.agentApi.imageTag }}"
+        ports:
+        - containerPort: 8080
+        env:
+        # Azure AI Foundry configuration
+        - name: AI_FOUNDRY_OPEN_AI_ENDPOINT
+          value: {{ .Values.aiFoundryOpenAiEndpoint | quote }}
+        - name: MODEL_NAME
+          value: {{ .Values.modelName | quote }}
+
+        # Azure Identity (workload identity)
+        - name: AZURE_CLIENT_ID
+          value: {{ .Values.aksIdentityClientId | quote }}
+        - name: AZURE_TENANT_ID
+          value: {{ .Values.tenantId | quote }}
+
+        # ColPali Inference endpoint (Kubernetes service)
+        - name: COLQWEN_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}/embeddings"
+        - name: COLPALI_REQUEST_TIMEOUT
+          value: "120"
+
+        # Qdrant configuration (Kubernetes service)
+        - name: QDRANT_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"
+        - name: QDRANT_COLLECTION_NAME
+          value: "colpali-documents"
+
+        # Qdrant API Key from Key Vault
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: qdrant-api-key
+
+        # Monitoring
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: OTEL_SERVICE_NAME
+          value: "agent-api"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: appinsights-connection-string
+
+        volumeMounts:
+        - name: app-secrets-store
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+        resources:
+          requests:
+            memory: {{ .Values.agentApi.resources.requests.memory }}
+            cpu: {{ .Values.agentApi.resources.requests.cpu }}
+          limits:
+            memory: {{ .Values.agentApi.resources.limits.memory }}
+            cpu: {{ .Values.agentApi.resources.limits.cpu }}
+        {{- if .Values.agentApi.healthcheck }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: {{ .Values.agentApi.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.agentApi.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.agentApi.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.agentApi.healthcheck.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: {{ .Values.agentApi.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.agentApi.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.agentApi.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.agentApi.healthcheck.failureThreshold }}
+        {{- end }}
+      volumes:
+      - name: app-secrets-store
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: {{ include "colpali-stack.fullname" . }}-keyvault
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-agent-api
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-agent-api
+spec:
+  type: {{ .Values.agentApi.service.type }}
+  ports:
+  - port: {{ .Values.agentApi.service.port }}
+    targetPort: {{ .Values.agentApi.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ include "colpali-stack.fullname" . }}-agent-api
+{{- end }}

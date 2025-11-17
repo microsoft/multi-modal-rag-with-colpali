@@ -3,7 +3,7 @@
 # Licensed under the MIT License.
 # Complete deployment script: deploys Bicep infrastructure
 # Usage: ./deploy_infra.sh [--resource-group <resource-group>] [--deploy-roles <true|false>]
-# Note: baseName and location are defined in infra/src/main.bicepparam
+# Note: baseName and location are defined in modules/infra/src/main.bicepparam
 
 set -euo pipefail
 
@@ -54,7 +54,7 @@ fi
 
 # Check if online endpoint already exists
 echo "Checking if online endpoint already exists..."
-BICEP_PARAM_CONTENT=$(cat "$PROJECT_ROOT/infra/src/main.bicepparam")
+BICEP_PARAM_CONTENT=$(cat "$PROJECT_ROOT/modules/infra/src/main.bicepparam")
 BASE_NAME=$(echo "$BICEP_PARAM_CONTENT" | grep -oP "param baseName = '\K[^']+")
 if [ -z "$BASE_NAME" ]; then
     echo "Could not find baseName in main.bicepparam" >&2
@@ -78,7 +78,7 @@ fi
 CREATE_ENDPOINT=$( [ "$ENDPOINT_EXISTS" = true ] && echo "false" || echo "true" )
 
 # Use absolute paths for the Bicep files
-BICEP_PARAM_FILE="$PROJECT_ROOT/infra/src/main.bicepparam"
+BICEP_PARAM_FILE="$PROJECT_ROOT/modules/infra/src/main.bicepparam"
 echo "Using Bicep parameter file: $BICEP_PARAM_FILE"
 
 # Deploy resources with Bicep using the parameter file

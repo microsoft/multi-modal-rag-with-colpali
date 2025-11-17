@@ -111,6 +111,8 @@ flowchart TB
             COLQWEN[ColQwen2 Inference<br/>StatefulSet]
             DOCPROC[Document Processor<br/>Deployment]
             QDRANT[Qdrant Vector DB<br/>StatefulSet]
+            AGENT_API[Agent API<br/>Deployment]
+            AGENT_UI[Agent UI<br/>Deployment]
             INGRESS[NGINX Ingress<br/>External Access]
         end
 
@@ -130,17 +132,22 @@ flowchart TB
     subgraph QUERY_LAYER ["Query & Retrieval"]
         direction LR
         QUERY[User Query] --> INGRESS
-        INGRESS --> QDRANT
+        INGRESS --> AGENT_UI
+        AGENT_UI --> AGENT_API
+        AGENT_API --> QDRANT
         QDRANT -->|Vector Search| RESULTS[Relevant Documents]
-        RESULTS --> RAG[AI Foundry<br/>RAG Application]
+        RESULTS --> AGENT_API
     end
 
     %% Infrastructure connections
     ACR -.->|Pull Images| COLQWEN
     ACR -.->|Pull Images| DOCPROC
     ACR -.->|Pull Images| QDRANT
+    ACR -.->|Pull Images| AGENT_API
+    ACR -.->|Pull Images| AGENT_UI
     KV -.->|Secrets & Config| DOCPROC
     KV -.->|Secrets & Config| COLQWEN
+    KV -.->|Secrets & Config| AGENT_API
 
     %% Node Styling
     classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px
@@ -149,14 +156,14 @@ flowchart TB
     classDef query fill:#f8f0ff,stroke:#6f42c1,stroke-width:2px
 
     class INFRA,AKS,STORAGE,EG,SB,KV,ACR azure
-    class INIT,PVC,COLQWEN,DOCPROC,QDRANT,INGRESS k8s
+    class INIT,PVC,COLQWEN,DOCPROC,QDRANT,AGENT_API,AGENT_UI,INGRESS k8s
     class USER,STORAGE,EG,SB,DOCPROC,COLQWEN,QDRANT flow
-    class QUERY,INGRESS,RESULTS,RAG query
+    class QUERY,INGRESS,AGENT_UI,AGENT_API,RESULTS query
 ```
 
 
 
-For detailed component descriptions, deployment topology, and technical specifications, see the **[Infrastructure Guide](infra/README.md)**.
+For detailed component descriptions, deployment topology, and technical specifications, see the **[Infrastructure Guide](modules/infra/README.md)**.
 
 ## Why Qdrant Vector Data + Azure Kubernetes Service?
 
@@ -170,7 +177,7 @@ For detailed component descriptions, deployment topology, and technical specific
 
 ### Why AKS over Azure ML?
 
-- **Shared Compute Costs**: Multiple services (document processor + ColQwen inference) share the same node pool
+- **Shared Compute Costs**: Multiple services (document processor + ColQwen2 inference) share the same node pool
 - **Single Platform**: Document processor and inference unified on same AKS cluster
 
 **Looking for an approach with Azure Machine Learning?** A previous version of this repository, utilised AML for the hosting of the endpoint. You can find the code at in this commit [a5c7c0811e2b596cf6e68905512901ae3bb460a2](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/tree/a5c7c0811e2b596cf6e68905512901ae3bb460a2).
@@ -178,11 +185,12 @@ For detailed component descriptions, deployment topology, and technical specific
 ## Project Structure
 
 ```
-├── infra/              # Bicep infrastructure templates
 ├── modules/
-│   ├── colpali/        # ColPali model setup & deployment
-│   └── document_processor/  # FastAPI document processing service
-├── helm/               # Helm charts for AKS deployment
+│   ├── agent/          # RAG agent application
+│   ├── colqwen_inference/   # ColQwen2 inference service
+│   ├── document_processor/  # FastAPI document processing service
+│   ├── helm/           # Helm charts for AKS deployment
+│   └── infra/          # Bicep infrastructure templates
 └── scripts/            # Deployment automation
 ```
 

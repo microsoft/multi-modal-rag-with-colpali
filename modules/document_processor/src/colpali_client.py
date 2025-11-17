@@ -32,7 +32,7 @@ class ColPaliClient:
         require_endpoint: bool = True,
     ):
         # Configure for Kubernetes ColQwen2 service
-        self.endpoint_url = os.getenv("COLPALI_ENDPOINT")
+        self.endpoint_url = os.getenv("COLQWEN_ENDPOINT")
         self.request_timeout = int(os.getenv("COLPALI_REQUEST_TIMEOUT", "120"))
         self.max_image_size = int(os.getenv("COLPALI_MAX_IMAGE_SIZE", "1536"))
 
@@ -42,18 +42,18 @@ class ColPaliClient:
 
         if require_endpoint and not self.endpoint_url:
             raise ValueError(
-                "COLPALI_ENDPOINT environment variable is required but not set"
+                "COLQWEN_ENDPOINT environment variable is required but not set"
             )
 
         # Ensure endpoint URL has correct format for embedding endpoint
         if self.endpoint_url and not self.endpoint_url.endswith("/embeddings"):
             self.endpoint_url = f"{self.endpoint_url.rstrip('/')}/embeddings"
 
-        logging.info(
+        logging.debug(
             "ColQwen2 client initialized for Kubernetes endpoint: %s", self.endpoint_url
         )
-        logging.info(
-            "Concurrency limit: %s concurrent requests", max_concurrent_requests
+        logging.debug(
+            "Concurrency limit: %d concurrent requests", max_concurrent_requests
         )
 
     async def health_check(self) -> Optional[EmbedHealthResponse]:

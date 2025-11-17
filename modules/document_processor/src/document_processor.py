@@ -21,7 +21,6 @@ from azure.storage.blob.aio import BlobServiceClient
 from PIL import Image
 
 from .colpali_client import ColPaliClient
-from .logging import trace_operation
 from .models import (
     BlobEvent,
     DocumentPage,
@@ -30,6 +29,7 @@ from .models import (
     ServiceBusEvent,
 )
 from .qdrant_index import QdrantIndex
+from .setup_logging import trace_operation
 
 
 class DocumentProcessor:
@@ -78,9 +78,9 @@ class DocumentProcessor:
         # Service Bus client (initialized later)
         self.service_bus_client = None
 
-        logging.info("DocumentProcessor initialized - DPI: %s", self.pdf_image_dpi)
-        logging.info("Service Bus namespace: %s", self.service_bus_namespace)
-        logging.info("Service Bus queue: %s", self.queue_name)
+        logging.debug("DocumentProcessor initialized - DPI: %s", self.pdf_image_dpi)
+        logging.debug("Service Bus namespace: %s", self.service_bus_namespace)
+        logging.debug("Service Bus queue: %s", self.queue_name)
 
     @trace_operation("process_document")
     def process_document(
@@ -114,7 +114,7 @@ class DocumentProcessor:
             logging.error("Error processing document %s: %s", filename, str(e))
             raise
 
-        logging.info("Successfully processed %s into %s pages", filename, len(pages))
+        logging.debug("Successfully processed %s into %d pages", filename, len(pages))
         return pages
 
     @trace_operation("process_pdf")
@@ -127,7 +127,7 @@ class DocumentProcessor:
 
         # Extract PDF document metadata
         pdf_metadata = pdf_document.metadata
-        logging.info("PDF metadata: %s", pdf_metadata)
+        logging.debug("PDF metadata: %s", pdf_metadata)
 
         # Clean and process metadata to ensure JSON serializable values
         clean_metadata = {}
@@ -147,7 +147,7 @@ class DocumentProcessor:
 
         # Process all pages - no artificial limits
         total_pages = len(pdf_document)
-        logging.info("Processing PDF with %s pages", total_pages)
+        logging.debug("Processing PDF with %d pages", total_pages)
 
         for page_num in range(total_pages):
             page = pdf_document.load_page(page_num)
@@ -188,7 +188,7 @@ class DocumentProcessor:
                 logging_enable=True,
             )
 
-            logging.info(
+            logging.debug(
                 "Service Bus client initialized for namespace: %s",
                 self.service_bus_namespace,
             )

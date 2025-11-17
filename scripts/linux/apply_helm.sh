@@ -93,7 +93,7 @@ echo "Successfully connected to AKS cluster"
 
 # Update Helm dependencies
 echo "Updating Helm chart dependencies"
-cd "helm/colpali-stack"
+cd "modules/helm/colpali-stack"
 helm dependency update
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to update Helm dependencies"
@@ -108,10 +108,12 @@ echo "This may take several minutes..."
 
 # Get image tags from .env
 DOC_PROCESSOR_IMAGE_TAG="${DOCUMENT_PROCESSOR_IMAGE_TAG:-latest}"
-COLQWEN_IMAGE_TAG="${COLQWEN_IMAGE_TAG:-latest}"
+COLQWEN_INFERENCE_IMAGE_TAG="${COLQWEN_INFERENCE_IMAGE_TAG:-latest}"
+AGENT_API_IMAGE_TAG="${AGENT_API_IMAGE_TAG:-latest}"
+AGENT_UI_IMAGE_TAG="${AGENT_UI_IMAGE_TAG:-latest}"
 
 # Deploy ColPali stack with pure Kubernetes approach
-helm upgrade --install colpali-stack "./helm/colpali-stack" \
+helm upgrade --install colpali-stack "./modules/helm/colpali-stack" \
     --namespace colpali-stack \
     --create-namespace \
     --set acrServer="$ACR_LOGIN_SERVER" \
@@ -122,12 +124,18 @@ helm upgrade --install colpali-stack "./helm/colpali-stack" \
     --set serviceBusNamespace="$SERVICE_BUS_NAMESPACE_NAME" \
     --set serviceBusQueueName="$SERVICE_BUS_QUEUE_NAME" \
     --set documentProcessor.imageTag="$DOC_PROCESSOR_IMAGE_TAG" \
-    --set colqwenInference.imageTag="$COLQWEN_IMAGE_TAG" \
+    --set colqwenInference.imageTag="$COLQWEN_INFERENCE_IMAGE_TAG" \
+    --set agentApi.enabled=true \
+    --set agentApi.imageTag="$AGENT_API_IMAGE_TAG" \
+    --set aiFoundryOpenAiEndpoint="$AI_FOUNDRY_OPEN_AI_ENDPOINT" \
+    --set modelName="$MODEL_NAME" \
+    --set agentUi.enabled=true \
+    --set agentUi.imageTag="$AGENT_UI_IMAGE_TAG" \
     --set keyVault.name="$KEY_VAULT_NAME" \
     --set keyVault.qdrantApiKeySecretName="$QDRANT_API_KEY_SECRET_NAME" \
     --set keyVault.qdrantReadOnlyApiKeySecretName="$QDRANT_READ_ONLY_API_KEY_SECRET_NAME" \
     --set keyVault.applicationInsightsConnectionStringSecretName="$APPLICATION_INSIGHTS_CONNECTION_STRING_SECRET_NAME" \
-    --wait --timeout 20m
+    --wait --timeout 30m
 
 if [ $? -eq 0 ]; then
     echo "Deployment completed successfully"
@@ -192,6 +200,29 @@ if [ $? -eq 0 ]; then
         echo -e "\033[32mModel Download Job: Completed\033[0m"
     else
         echo -e "\033[33mModel Download Job: In progress...\033[0m"
+    fi
+
+    # Check Agent API pods
+    AGENT_API_STATUS=$(kubectl get pods -l app=colpali-stack-agent-api --no-headers 2>/dev/null || echo "")
+    if [[ "$AGENT_API_STATUS" == *"Running"* ]]; then
+        echo -e "\033[32mAgent API (FastAPI): Running\033[0m"
+    else
+        echo -e "\033[33mAgent API (FastAPI): Starting...\033[0m"
+    fi
+
+    # Check Agent UI pods
+    AGENT_UI_STATUS=$(kubectl get pods -l app=colpali-stack-agent-ui --no-headers 2>/dev/null || echo "")
+    if [[ "$AGENT_UI_STATUS" == *"Running"* ]]; then
+        echo -e "\033[32mAgent UI (Chainlit): Running\033[0m"
+    else
+        echo -e "\033[33mAgent UI (Chainlit): Starting...\033[0m"
+    fi
+
+    # Get Agent UI LoadBalancer IP
+    AGENT_UI_IP=$(kubectl get svc colpali-stack-agent-ui -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+    if [[ -n "$AGENT_UI_IP" ]]; then
+        echo ""
+        echo -e "\033[36mAgent UI accessible at: http://$AGENT_UI_IP\033[0m"
     fi
 
     echo ""
