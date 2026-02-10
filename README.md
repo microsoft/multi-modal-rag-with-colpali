@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml)
 
+> [!NOTE]
+>
+> This is an **accelerator** to help you get started with multi-modal RAG using [ColPali](https://github.com/illuin-tech/colpali). ColPali was created by the research team at [Illuin Technology](https://www.illuin.tech/) — this repository provides Azure infrastructure, deployment scripts, and integration patterns to operationalize their work.
+
 > [!WARNING]
 >
 > This code is provided as an accelerator implementation and should be carefully reviewed and adjusted before being used in your environments. This is a demonstration, and is **not a production ready solution**.
