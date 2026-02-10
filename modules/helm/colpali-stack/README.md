@@ -1,24 +1,46 @@
-# ColQwen2 Stack Helm Chart
+# ColPali/ColQwen Stack Helm Chart
 
-Simple Helm chart that deploys the complete ColQwen2 multi-modal RAG stack using dependencies.
+Helm chart that deploys the complete ColPali/ColQwen multi-modal RAG stack for production use.
 
 ## Components
 
-This chart deploys four main components:
-- **Qdrant** - Vector database for embeddings storage (via dependency)
-- **NGINX Ingress** - Load balancer and ingress controller (via dependency)
-- **ColQwen2 Inference** - AI model service for generating document embeddings
-- **Document Processor** - Service that processes documents and orchestrates embedding creation
+This chart deploys the following components:
+
+### Core Services
+- **ColQwen2/ColQwen3-4B Inference** - AI model service for generating document embeddings (GPU-accelerated StatefulSet)
+- **Document Processor** - Processes documents, creates embeddings, stores vectors in Qdrant and images in Blob Storage
+- **Agent API** - REST API for querying documents using RAG
+- **Agent UI** - Chainlit-based chat interface for interacting with the RAG system
+
+### Infrastructure
+- **Qdrant** - Vector database for embeddings storage (via Helm dependency)
+- **NGINX Ingress Controllers** - Separate ingress controllers for Agent UI, ColPali API, and Qdrant dashboard
+- **NVIDIA Device Plugin** - DaemonSet for GPU discovery and DCGM metrics exporter
+- **Stakater Reloader** - Automatically restarts pods when secrets change (via Helm dependency)
+
+### Configuration & Security
+- **App Secrets** - CSI SecretProviderClass for syncing Azure Key Vault secrets to Kubernetes
+- **Service Account** - Workload Identity-enabled service account for Azure authentication
+- **Namespace Spot Tolerations** - Automatic spot instance toleration injection via namespace annotations
+
+## Spot Instance Support
+
+The `colpali-stack` namespace is configured with a `scheduler.alpha.kubernetes.io/defaultTolerations` annotation that automatically injects the spot instance toleration into all pods. This allows workloads to be scheduled on cost-effective spot instance node pools without requiring individual pod configuration.
+
+```yaml
+annotations:
+  scheduler.alpha.kubernetes.io/defaultTolerations: '[{"Key": "kubernetes.azure.com/scalesetpriority", "Operator": "Equal", "Value": "spot", "Effect": "NoSchedule"}]'
+```
 
 ## Prerequisites
 
-1. Run infrastructure deployment: `.\scripts\windows\deploy_infra.ps1`
+1. Run infrastructure deployment: `.\scripts\deploy_infra.ps1`
 2. Have kubectl and helm installed
 
 ## Deploy Everything
 
 ```powershell
-.\scripts\windows\apply_helm.ps1
+.\scripts\apply_helm.ps1
 ```
 
 This automatically:
@@ -37,8 +59,8 @@ kubectl get ingress
 Access Qdrant dashboard at: `http://<INGRESS-IP>/qdrant`
 
 ## Pods and Services
-- **Document Processor**: Processes documents, creates embeddings via ColQwen2, stores in Qdrant
-- **ColQwen2 Inference**: AI model for generating document embeddings (CPU/GPU optimized)
+- **Document Processor**: Processes documents, creates embeddings via ColPali/ColQwen, stores images in Blob Storage, stores vectors in Qdrant
+- **ColQwen2/ColQwen3-4B Inference**: AI model for generating document embeddings (CPU/GPU optimized)
 - **Qdrant**: Vector database for storing and searching embeddings
 - **NGINX Ingress**: Provides external access to services and Qdrant dashboard
 
@@ -78,7 +100,7 @@ graph TB
             end
 
             subgraph "AI Inference"
-                CI[ColQwen2 Inference Pod<br/>CPU/GPU Optimized]
+                CI[ColQwen2/ColQwen3-4B Inference Pod<br/>CPU/GPU Optimized]
                 HFPV[Model Storage<br/>Persistent Volume<br/>HuggingFace Cache]
             end
 
@@ -119,7 +141,8 @@ graph TB
     DP -->|Read Document| ST
     DP -->|Inference Request| CI
     CI -->|Embeddings| DP
-    DP -->|Store Vectors| QD
+    DP -->|Store Page Images| ST
+    DP -->|Store Vectors + URLs| QD
     USER -->|Query/Dashboard| IG
     IG -->|Route Traffic| QD
 

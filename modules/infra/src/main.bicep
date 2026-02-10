@@ -131,6 +131,7 @@ module roleAssignmentsModule 'modules/roleAssignments.bicep' = {
     deployRoleAssignments: deployRoleAssignments
   }
 }
+
 @description('The name of the resource group')
 output resourceGroup string = resourceGroup().name
 

@@ -64,6 +64,30 @@ resource documentsContainer 'Microsoft.Storage/storageAccounts/blobServices/cont
   }
 }
 
+resource documentsPageImagesContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  parent: dataBlobService
+  name: 'documents-page-images'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource benchmarkDatasetsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  parent: dataBlobService
+  name: 'benchmark-datasets'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource benchmarkDatasetsImagesContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  parent: dataBlobService
+  name: 'benchmark-datasets-images'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 @description('The resource ID of the data storage account')
 output dataStorageAccountId string = dataStorageAccount.id
 
@@ -72,3 +96,6 @@ output dataStorageAccountName string = dataStorageAccount.name
 
 @description('The name of the documents container')
 output documentsContainerName string = documentsContainer.name
+
+@description('The name of the benchmark datasets container')
+output benchmarkDatasetsContainerName string = benchmarkDatasetsContainer.name

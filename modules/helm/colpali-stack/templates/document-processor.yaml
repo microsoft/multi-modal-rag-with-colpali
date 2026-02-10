@@ -22,26 +22,28 @@ spec:
       labels:
         app: {{ include "colpali-stack.fullname" . }}-document-processor
         azure.workload.identity/use: "true"
+      annotations:
+        secret.reloader.stakater.com/reload: "colpali-stack-app-secrets"
     spec:
       serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
       terminationGracePeriodSeconds: {{ .Values.documentProcessor.deployment.terminationGracePeriodSeconds | default 120 }}
       nodeSelector:
         kubernetes.azure.com/agentpool: cpupool
-      {{- if or .Values.documentProcessor.dependencies.waitForColqwen .Values.documentProcessor.dependencies.waitForQdrant }}
+      {{- if or .Values.documentProcessor.dependencies.waitForColPali .Values.documentProcessor.dependencies.waitForQdrant }}
       initContainers:
-      {{- if .Values.documentProcessor.dependencies.waitForColqwen }}
-      - name: wait-for-colqwen
+      {{- if .Values.documentProcessor.dependencies.waitForColPali }}
+      - name: wait-for-colpali
         image: {{ .Values.documentProcessor.dependencies.initContainer.image }}
         command:
         - /bin/sh
         - -c
         - |
-          echo "Waiting for ColQwen inference service to be ready..."
-          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}/health"; do
-            echo "ColQwen inference not ready, waiting 10 seconds..."
+          echo "Waiting for ColPali inference service to be ready..."
+          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-colpali-inference:{{ .Values.colpaliInference.service.port }}/health"; do
+            echo "ColPali inference not ready, waiting 10 seconds..."
             sleep 10
           done
-          echo "ColQwen inference service is ready!"
+          echo "ColPali inference service is ready!"
         resources:
           requests:
             memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.memory }}
@@ -76,8 +78,8 @@ spec:
       - name: document-processor
         image: "{{ .Values.acrServer }}/document-processor:{{ .Values.documentProcessor.imageTag }}"
         env:
-        - name: COLQWEN_ENDPOINT
-          value: "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}"
+        - name: COLPALI_INFERENCE_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-colpali-inference:{{ .Values.colpaliInference.service.port }}"
         - name: DATA_STORAGE_ACCOUNT_NAME
           value: {{ .Values.storageAccountName }}
         - name: SERVICE_BUS_NAMESPACE_NAME
@@ -102,14 +104,18 @@ spec:
             secretKeyRef:
               name: {{ include "colpali-stack.fullname" . }}-app-secrets
               key: appinsights-connection-string
-        - name: MAX_CONCURRENT_SERVICE_BUS_MESSAGES
-          value: "{{ .Values.documentProcessor.processing.maxConcurrentServiceBusMessages | default 3 }}"
-        - name: PAGE_PROCESSING_BATCH_SIZE
-          value: "{{ .Values.documentProcessor.processing.pageProcessingBatchSize | default 4 }}"
-        - name: MAX_CONCURRENT_PAGE_BATCHES
-          value: "{{ .Values.documentProcessor.processing.maxConcurrentPageBatches | default 8 }}"
-        - name: COLPALI_MAX_CONCURRENT_REQUESTS
-          value: "{{ .Values.documentProcessor.processing.colpaliMaxConcurrentRequests | default 5 }}"
+        - name: DOCUMENT_MAX_CONCURRENT
+          value: "{{ .Values.documentProcessor.processing.documentMaxConcurrent | default 3 }}"
+        - name: COLPALI_MAX_CONCURRENT
+          value: "{{ .Values.documentProcessor.processing.colpaliMaxConcurrent | default 5 }}"
+        - name: COLPALI_BATCH_SIZE
+          value: "{{ .Values.documentProcessor.processing.colpaliBatchSize | default 1 }}"
+        - name: BLOB_MAX_CONCURRENT
+          value: "{{ .Values.documentProcessor.processing.blobMaxConcurrent | default 250 }}"
+        - name: QDRANT_MAX_CONCURRENT
+          value: "{{ .Values.documentProcessor.processing.qdrantMaxConcurrent | default 5 }}"
+        - name: QDRANT_BATCH_SIZE
+          value: "{{ .Values.documentProcessor.processing.qdrantBatchSize | default 20 }}"
         volumeMounts:
         - name: app-secrets-store
           mountPath: "/mnt/secrets-store"
@@ -120,7 +126,7 @@ spec:
               command:
               - /bin/sh
               - -c
-              - "pkill -SIGTERM -f 'python -m src.app' && sleep 10"
+              - "pkill -SIGTERM -f 'python -m src.document_processor.app' && sleep 10"
         resources:
           requests:
             memory: {{ .Values.documentProcessor.resources.requests.memory | quote }}
@@ -134,7 +140,7 @@ spec:
             command:
             - /bin/sh
             - -c
-            - "pgrep -f 'python -m src.app' > /dev/null"
+            - "pgrep -f 'python -m src.document_processor.app' > /dev/null"
           initialDelaySeconds: {{ .Values.documentProcessor.healthcheck.initialDelaySeconds }}
           periodSeconds: {{ .Values.documentProcessor.healthcheck.periodSeconds }}
           timeoutSeconds: {{ .Values.documentProcessor.healthcheck.timeoutSeconds }}
@@ -144,7 +150,7 @@ spec:
             command:
             - /bin/sh
             - -c
-            - "pgrep -f 'python -m src.app' > /dev/null"
+            - "pgrep -f 'python -m src.document_processor.app' > /dev/null"
           initialDelaySeconds: {{ .Values.documentProcessor.healthcheck.initialDelaySeconds }}
           periodSeconds: {{ .Values.documentProcessor.healthcheck.periodSeconds }}
           timeoutSeconds: {{ .Values.documentProcessor.healthcheck.timeoutSeconds }}

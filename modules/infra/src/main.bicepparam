@@ -2,6 +2,6 @@
 // Licensed under the MIT License.
 using 'main.bicep'
 
-param baseName = 'colpali-gpu'
+param baseName = 'colpali'
 param deployRoleAssignments = true
 param acrSku = 'Basic'

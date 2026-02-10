@@ -17,24 +17,26 @@ spec:
       labels:
         app: {{ include "colpali-stack.fullname" . }}-agent-api
         azure.workload.identity/use: "true"
+      annotations:
+        secret.reloader.stakater.com/reload: "colpali-stack-app-secrets"
     spec:
       serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
       # Schedule on CPU pool nodes (no taints on cpupool)
       nodeSelector:
         kubernetes.azure.com/agentpool: cpupool
       initContainers:
-      - name: wait-for-colqwen
+      - name: wait-for-colpali
         image: {{ .Values.documentProcessor.dependencies.initContainer.image }}
         command:
         - /bin/sh
         - -c
         - |
-          echo "Waiting for ColQwen inference service to be ready..."
-          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}/health"; do
-            echo "ColQwen inference not ready, waiting 10 seconds..."
+          echo "Waiting for ColPali inference service to be ready..."
+          until curl -s -f -o /dev/null "http://{{ include "colpali-stack.fullname" . }}-colpali-inference:{{ .Values.colpaliInference.service.port }}/health"; do
+            echo "ColPali inference not ready, waiting 10 seconds..."
             sleep 10
           done
-          echo "ColQwen inference service is ready!"
+          echo "ColPali inference service is ready!"
         resources:
           requests:
             memory: {{ .Values.documentProcessor.dependencies.initContainer.resources.requests.memory }}
@@ -61,10 +63,8 @@ spec:
           value: {{ .Values.tenantId | quote }}
 
         # ColPali Inference endpoint (Kubernetes service)
-        - name: COLQWEN_ENDPOINT
-          value: "http://{{ include "colpali-stack.fullname" . }}-colqwen-inference:{{ .Values.colqwenInference.service.port }}/embeddings"
-        - name: COLPALI_REQUEST_TIMEOUT
-          value: "120"
+        - name: COLPALI_INFERENCE_ENDPOINT
+          value: "http://{{ include "colpali-stack.fullname" . }}-colpali-inference:{{ .Values.colpaliInference.service.port }}"
 
         # Qdrant configuration (Kubernetes service)
         - name: QDRANT_ENDPOINT
@@ -135,7 +135,7 @@ metadata:
   labels:
     app: {{ include "colpali-stack.fullname" . }}-agent-api
 spec:
-  type: {{ .Values.agentApi.service.type }}
+  type: ClusterIP
   ports:
   - port: {{ .Values.agentApi.service.port }}
     targetPort: {{ .Values.agentApi.service.targetPort }}

@@ -1,28 +1,22 @@
-# ColPali on Azure Kubernetes Service (AKS)
+# Multi-Modal RAG with ColPali on Azure Kubernetes Service (AKS)
 
-[![CI](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/actions/workflows/ci.yml)
+[![CI](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml)
 
 > [!WARNING]
 >
 > This code is provided as an accelerator implementation and should be carefully reviewed and adjusted before being used in your environments. This is a demonstration, and is **not a production ready solution**.
 
-This repository provides a **complete, deployment ready multi-modal RAG (Retrieval-Augmented Generation) solution** that processes documents visually using ColPali technology. Unlike traditional text-extraction approaches, this system understands documents as images, capturing layout, charts, tables, and visual elements that are often lost in OCR pipelines.
+This repository provides a multi-modal RAG (Retrieval-Augmented Generation) solution that processes documents visually using late interaction embedding techniques. Unlike traditional approaches that compress entire documents into single vectors, late interaction methods preserve fine-grained token information—each document page is represented as an image and embedded to produce hundreds of token-level embeddings. This means query tokens can be compared against document tokens directly, capturing layout, charts, tables, and visual elements that OCR pipelines typically lose.
+
+This repository uses **ColPali**, but any late interaction embedding model can be substituted.
 
 ## Vision Language Models & ColPali
 
 This solution offers an alternative approach to traditional multi-modal RAG implementations by leveraging Vision Language Models (VLMs). Unlike conventional methods that require complex preprocessing pipelines, VLMs process documents holistically as images, significantly reducing system complexity.
 
-**Traditional Approach Challenges:**
-- Complex chunking strategies for mixed content types
-- Image verbalization and description generation
-- OCR preprocessing with potential accuracy issues
-- Separate handling of text, tables, and visual elements
+**Why vision models over traditional text extraction?**
 
-**Vision Language Model Benefits:**
-- Direct image processing eliminates chunking complexity
-- Native understanding of visual layouts and relationships
-- No OCR preprocessing required
-- Unified handling of all document elements (text, tables, charts, diagrams)
+Traditional approaches require complex chunking strategies, OCR preprocessing (with its accuracy issues), image verbalization, and separate handling for text, tables, and visual elements. Vision Language Models process documents directly as images, understanding visual layouts and relationships without chunking or OCR. Everything—text, tables, charts, diagrams—is handled uniformly.
 
 ### What is ColPali?
 
@@ -37,25 +31,21 @@ ColPali is a multi-modal document understanding model that processes documents a
 - **Multi-Modal**: Understands both text and visual elements like tables, charts, and document structure
 - **No OCR Required**: Bypasses text extraction preprocessing steps
 
-This implementation uses **ColQwen2**, a variant that extends ColPali's approach with additional language support and inference optimizations.
+This implementation uses **ColQwen2** and **ColQwen3-4B**, variants that extend ColPali's approach with additional language support and inference optimizations.
 
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 
-## Azure Accelerator for Vision RAG
+## What's Included
 
-This accelerator contains significant engineering effort to deploy ColPali/ColQwen2 end-to-end in Azure environments. Rather than starting from scratch, you can leverage this tested, production-ready foundation to rapidly implement multi-modal document understanding capabilities.
+This is a complete end-to-end deployment for Azure. The main complexity is hosting a model serving layer and building a custom indexing pipeline—both are handled here.
 
-**Complete End-to-End Platform:**
-- **Document Processing Pipeline**: Automated ingestion from Azure Blob Storage with event-driven processing
-- **ColQwen2 Inference Service**: Kubernetes-native deployment with optimized model loading and caching
-- **Vector Search Engine**: High-performance Qdrant database for similarity-based document retrieval
-- **Production Infrastructure**: Full Azure deployment with security, monitoring, and scalability built-in
-
-**Key Components:**
-- **Infrastructure as Code**: Complete Bicep templates for reproducible Azure deployments
-- **Containerized Services**: Docker images for ColQwen2 inference and document processing
-- **Helm Charts**: Production-ready Kubernetes deployments with best practices
-- **Event-Driven Architecture**: Automatic processing triggered by document uploads
+**Components:**
+- Event-driven document processing pipeline (Blob Storage → Event Grid → Service Bus)
+- ColQwen2/ColQwen3-4B inference service on AKS with model caching
+- Qdrant vector database for similarity search
+- Complete infrastructure as code (Bicep templates)
+- Docker images and Helm charts for all services
+- Agent API and UI for querying
 
 ### Architecture Overview
 
@@ -64,13 +54,15 @@ This accelerator contains significant engineering effort to deploy ColPali/ColQw
 2. **Event Trigger** → Storage generates blob events, routed by Event Grid to Service Bus
 3. **Async Processing** → Document Processor consumes queue messages and reads documents
 4. **Image Extraction** → Documents converted to high-resolution page images
-5. **AI Inference** → ColQwen2 generates multi-modal embeddings on AKS pods
-6. **Vector Storage** → Embeddings stored in Qdrant with document metadata
+5. **AI Inference** → ColQwen2/ColQwen3-4B generates multi-modal embeddings on AKS pods
+6. **Image Storage** → Page images uploaded to Azure Blob Storage for retrieval
+7. **Vector Storage** → Embeddings stored in Qdrant with metadata and image URLs
 
 #### Query & Retrieval
-7. **User Queries** → Submitted via NGINX Ingress to Qdrant vector database
-8. **Semantic Search** → Vector similarity search returns relevant document sections
-9. **RAG Integration** → Results consumed by AI Foundry models for intelligent responses
+8. **User Queries** → Submitted via NGINX Ingress to Qdrant vector database
+9. **Semantic Search** → Vector similarity search returns relevant document sections with image URLs
+10. **Image Retrieval** → Page images fetched from Azure Blob Storage using stored URLs
+11. **RAG Integration** → Results with images consumed by AI Foundry models for intelligent responses
 
 ```mermaid
 %%{init: {
@@ -108,7 +100,7 @@ flowchart TB
         end
 
         subgraph APP_SERVICES ["Application Services"]
-            COLQWEN[ColQwen2 Inference<br/>StatefulSet]
+            COLQWEN[ColQwen2/ColQwen3-4B Inference<br/>StatefulSet]
             DOCPROC[Document Processor<br/>Deployment]
             QDRANT[Qdrant Vector DB<br/>StatefulSet]
             AGENT_API[Agent API<br/>Deployment]
@@ -127,7 +119,8 @@ flowchart TB
     DOCPROC -->|5. Read Document| STORAGE
     DOCPROC -->|6. Generate Embeddings| COLQWEN
     COLQWEN -->|7. Multi-Modal Embeddings| DOCPROC
-    DOCPROC -->|8. Store Vectors| QDRANT
+    DOCPROC -->|8. Store Page Images| STORAGE
+    DOCPROC -->|9. Store Vectors + URLs| QDRANT
 
     subgraph QUERY_LAYER ["Query & Retrieval"]
         direction LR
@@ -170,24 +163,19 @@ For detailed component descriptions, deployment topology, and technical specific
 ### Why Qdrant over AI Search?
 - **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - critical for ColPali's page-based embeddings
 - **Advanced Operations**: Qdrant supports reranking and MAX_SIM operations that AI Search doesn't provide
+- **Storage Optimization**: By storing page images in Azure Blob Storage and only vectors in Qdrant, we significantly reduce memory requirements and vector database storage costs
 
 ### Why AKS over Container Apps?
 - **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure.
 - **Simpler Setup**: No need to setup multiple Azure Services to host the different services.
-
-### Why AKS over Azure ML?
-
-- **Shared Compute Costs**: Multiple services (document processor + ColQwen2 inference) share the same node pool
-- **Single Platform**: Document processor and inference unified on same AKS cluster
-
-**Looking for an approach with Azure Machine Learning?** A previous version of this repository, utilised AML for the hosting of the endpoint. You can find the code at in this commit [a5c7c0811e2b596cf6e68905512901ae3bb460a2](https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali/tree/a5c7c0811e2b596cf6e68905512901ae3bb460a2).
+- **Shared Compute Costs**: Multiple services (document processor + ColQwen2/ColQwen3-4B inference) share the same node pool
 
 ## Project Structure
 
 ```
 ├── modules/
 │   ├── agent/          # RAG agent application
-│   ├── colqwen_inference/   # ColQwen2 inference service
+│   ├── colpali_inference/   # ColQwen2/ColQwen3-4B inference service
 │   ├── document_processor/  # FastAPI document processing service
 │   ├── helm/           # Helm charts for AKS deployment
 │   └── infra/          # Bicep infrastructure templates
@@ -196,24 +184,19 @@ For detailed component descriptions, deployment topology, and technical specific
 
 ## Scalability Optimizations
 
-This implementation incorporates two key optimisations to enable efficient scaling of ColPali embeddings:
+Two techniques make ColPali embeddings practical at scale:
 
-### Hierarchical Token Pooling
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces embedding dimensions by ~3x while maintaining retrieval quality.
 
-We utilize [hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling) developed by the ColPali team to reduce embedding dimensions by approximately 3x. This technique significantly decreases storage requirements and computational overhead while preserving retrieval quality.
+**Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
-### Mean Row and Column Pooling
+**Two-stage retrieval:**
+1. L1 uses row/column pooled embeddings for fast candidate selection
+2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-We implement mean row and column pooling techniques, suggested by the Qdrant team from their [PDF retrieval at scale tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/), which further compress embeddings for efficient initial retrieval stages.
+**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`) based on benchmarking results.
 
-### Two-Stage Retrieval Architecture
-
-By combining both optimization techniques, we achieve a hybrid approach:
-
-1. **L1 Retrieval**: Uses mean row and column pooled embeddings for fast initial candidate selection
-2. **L2 Reranking**: Applies hierarchical pooled embeddings for precise final ranking
-
-This two-stage architecture balances retrieval speed with accuracy, enabling scalable deployment while maintaining high-quality results.
+This balances speed and quality for production deployments.
 
 ## Quick Start
 

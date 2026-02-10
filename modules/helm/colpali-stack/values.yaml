@@ -15,33 +15,49 @@ keyVault:
   qdrantApiKeySecretName: "qdrant-api-key"
   qdrantReadOnlyApiKeySecretName: "qdrant-readonly-api-key"
   applicationInsightsConnectionStringSecretName: "appinsights-connection-string"
+  # Enable automatic secret rotation from Key Vault (CSI driver polls for changes)
+  rotationPollInterval: "2m"
+
+# Stakater Reloader - automatically restarts pods when secrets/configmaps change
+reloader:
+  enabled: true
+  fullnameOverride: "reloader"
+  reloader:
+    watchGlobally: false # Only watch resources in the same namespace
 
 qdrant:
   enabled: true
   persistence:
     enabled: true
-    size: 10Gi
-    storageClass: "managed-premium"
+    size: 128Gi
+    storageClassName: "managed-premium"
   resources:
     requests:
-      memory: "16Gi"
-      cpu: "2"
-    limits:
       memory: "24Gi"
-      cpu: "4"
+      cpu: "6"
+    limits:
+      memory: "30Gi"
+      cpu: "8"
   nodeSelector:
     kubernetes.azure.com/agentpool: cpupool
+  # Stakater Reloader annotation - explicitly watch the CSI-synced secret
+  podAnnotations:
+    secret.reloader.stakater.com/reload: "colpali-stack-app-secrets"
 
-  apiKey:
-    valueFrom:
-      secretKeyRef:
-        name: "colpali-stack-app-secrets"
-        key: qdrant-api-key
-  readOnlyApiKey:
-    valueFrom:
-      secretKeyRef:
-        name: "colpali-stack-app-secrets"
-        key: qdrant-readonly-api-key
+  # Pass API keys via environment variables referencing the CSI-synced secret
+  # This ensures the API key is read fresh from the CSI secret on each pod restart
+  # Qdrant reads these as QDRANT__SERVICE__API_KEY format
+  env:
+    - name: QDRANT__SERVICE__API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: "colpali-stack-app-secrets"
+          key: qdrant-api-key
+    - name: QDRANT__SERVICE__READ_ONLY_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: "colpali-stack-app-secrets"
+          key: qdrant-readonly-api-key
 
 # Document Processor
 documentProcessor:
@@ -50,10 +66,16 @@ documentProcessor:
   imageTag: "latest"
 
   processing:
-    maxConcurrentServiceBusMessages: 3
-    pageProcessingBatchSize: 4
-    maxConcurrentPageBatches: 8
-    colpaliMaxConcurrentRequests: 5
+    # Document-level concurrency (controlled by Service Bus receiver)
+    documentMaxConcurrent: 3
+    # ColPali GPU embedding concurrency and batching
+    colpaliMaxConcurrent: 5
+    colpaliBatchSize: 1
+    # Azure Blob storage concurrency
+    blobMaxConcurrent: 250
+    # Qdrant indexing concurrency and batching
+    qdrantMaxConcurrent: 5
+    qdrantBatchSize: 20
 
   resources:
     requests:
@@ -76,7 +98,7 @@ documentProcessor:
     terminationGracePeriodSeconds: 120
 
   dependencies:
-    waitForColqwen: true
+    waitForColPali: true
     waitForQdrant: true
     initContainer:
       image: "curlimages/curl:8.5.0"
@@ -94,7 +116,6 @@ agentApi:
   imageTag: "latest"
 
   service:
-    type: ClusterIP
     port: 8000
     targetPort: 8080
 
@@ -118,7 +139,6 @@ agentUi:
   imageTag: "latest"
 
   service:
-    type: LoadBalancer
     port: 80
     targetPort: 8080
 
@@ -136,15 +156,20 @@ agentUi:
     timeoutSeconds: 10
     failureThreshold: 3
 
-colqwenInference:
+colpaliInference:
   enabled: true
   replicaCount: 1
   imageTag: "latest"
 
+  # GPU node pool for inference workloads
+  # Set to "gpuinference" to use the new dedicated inference pool
+  nodePool: "gpuinference"
+
   # Model configuration
+  modelId: "TomoroAI/tomoro-colqwen3-embed-4b"
   model:
     modelDirectory: "/tmp/model-directory"
-    storageSize: "30Gi"
+    storageSize: "Gi"
 
   resources:
     requests:
@@ -159,21 +184,47 @@ colqwenInference:
     port: 80
     targetPort: 8080
 
-  healthcheck:
-    initialDelaySeconds: 600
-    periodSeconds: 30
-    timeoutSeconds: 10
-    failureThreshold: 5
-
   statefulSet:
     updateStrategy:
       type: RollingUpdate
       partition: 0
     terminationGracePeriodSeconds: 300
 
-ingress-nginx:
+ingress-nginx-agent-ui:
+  enabled: true
+  controller:
+    ingressClassName: nginx-agent-ui
+    ingressClassResource:
+      name: nginx-agent-ui
+      controllerValue: k8s.io/ingress-nginx-agent-ui
+    service:
+      type: LoadBalancer
+      externalTrafficPolicy: Local
+      annotations:
+        service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
+        service.beta.kubernetes.io/azure-load-balancer-health-probe-protocol: tcp
+
+ingress-nginx-colpali:
   enabled: false
   controller:
+    ingressClassName: nginx-colpali
+    ingressClassResource:
+      name: nginx-colpali
+      controllerValue: k8s.io/ingress-nginx-colpali
+    service:
+      type: LoadBalancer
+      externalTrafficPolicy: Local
+      annotations:
+        service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
+        service.beta.kubernetes.io/azure-load-balancer-health-probe-protocol: tcp
+
+ingress-nginx-qdrant:
+  enabled: false
+  controller:
+    ingressClassName: nginx-qdrant
+    ingressClassResource:
+      name: nginx-qdrant
+      controllerValue: k8s.io/ingress-nginx-qdrant
     service:
       type: LoadBalancer
       externalTrafficPolicy: Local

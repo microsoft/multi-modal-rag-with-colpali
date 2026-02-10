@@ -1,0 +1,166 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+{{- if .Values.colpaliInference.enabled }}
+# StatefulSet with individual PVCs for true multi-node scaling
+# Each replica gets its own PVC and downloads its own model copy
+# Allows horizontal scaling across multiple nodes
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-colpali-inference
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-colpali-inference
+spec:
+  replicas: {{ .Values.colpaliInference.replicaCount }}
+  serviceName: {{ include "colpali-stack.fullname" . }}-colpali-inference
+  updateStrategy:
+    type: {{ .Values.colpaliInference.statefulSet.updateStrategy.type | default "RollingUpdate" }}
+    rollingUpdate:
+      partition: {{ .Values.colpaliInference.statefulSet.updateStrategy.partition | default 0 }}
+  selector:
+    matchLabels:
+      app: {{ include "colpali-stack.fullname" . }}-colpali-inference
+  template:
+    metadata:
+      labels:
+        app: {{ include "colpali-stack.fullname" . }}-colpali-inference
+      annotations:
+        secret.reloader.stakater.com/reload: "colpali-stack-app-secrets"
+    spec:
+      serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
+      terminationGracePeriodSeconds: {{ .Values.colpaliInference.statefulSet.terminationGracePeriodSeconds | default 300 }}
+      securityContext:
+        fsGroup: 1000  # Ensure volume is writable by container user
+      nodeSelector:
+        kubernetes.azure.com/agentpool: {{ .Values.colpaliInference.nodePool | default "gpuinference" }}
+      tolerations:
+      - key: "sku"
+        operator: "Equal"
+        value: "gpu"
+        effect: "NoSchedule"
+      # InitContainer downloads the model once per pod startup
+      initContainers:
+      - name: model-downloader
+        image: "{{ .Values.acrServer }}/colpali-inference:{{ .Values.colpaliInference.imageTag }}"
+        command: ["python", "-m", "src.colpali_inference.app", "download"]
+        env:
+        - name: HF_HOME
+          value: "/mnt/models/hf"
+        - name: MODEL_ID
+          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: OTEL_SERVICE_NAME
+          value: "colpali-model-downloader"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: appinsights-connection-string
+        resources:
+          requests:
+            memory: "16Gi"
+            cpu: "2"
+          limits:
+            memory: "32Gi"
+            cpu: "4"
+        volumeMounts:
+        - name: model-storage
+          mountPath: /mnt/models/hf
+        - name: app-secrets-store
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+
+      # Main container serves inference after model is downloaded
+      containers:
+      - name: colpali-inference
+        image: "{{ .Values.acrServer }}/colpali-inference:{{ .Values.colpaliInference.imageTag }}"
+        env:
+        - name: HF_HOME
+          value: "/mnt/models/hf"
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: MODEL_ID
+          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: OTEL_SERVICE_NAME
+          value: "colpali-inference"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "colpali-stack.fullname" . }}-app-secrets
+              key: appinsights-connection-string
+        resources:
+          requests:
+            memory: {{ .Values.colpaliInference.resources.requests.memory }}
+            cpu: {{ .Values.colpaliInference.resources.requests.cpu }}
+            nvidia.com/gpu: 1
+          limits:
+            memory: {{ .Values.colpaliInference.resources.limits.memory }}
+            cpu: {{ .Values.colpaliInference.resources.limits.cpu }}
+            nvidia.com/gpu: 1
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: model-storage
+          mountPath: /mnt/models/hf
+        - name: app-secrets-store
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "pkill -SIGTERM -f 'python.*' && sleep 30"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 10
+      volumes:
+      - name: app-secrets-store
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: {{ include "colpali-stack.fullname" . }}-keyvault
+  volumeClaimTemplates:
+  - metadata:
+      name: model-storage
+      labels:
+        app: {{ include "colpali-stack.fullname" . }}-colpali-inference
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "managed"
+      resources:
+        requests:
+          storage: {{ .Values.colpaliInference.model.storageSize }}
+---
+# Service for ColPali inference pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "colpali-stack.fullname" . }}-colpali-inference
+  labels:
+    app: {{ include "colpali-stack.fullname" . }}-colpali-inference
+spec:
+  type: {{ .Values.colpaliInference.service.type }}
+  ports:
+  - port: {{ .Values.colpaliInference.service.port }}
+    targetPort: {{ .Values.colpaliInference.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ include "colpali-stack.fullname" . }}-colpali-inference
+{{- end }}

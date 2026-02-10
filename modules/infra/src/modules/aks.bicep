@@ -20,8 +20,6 @@ param kubernetesVersion string = '1.34.0'
 
 // Internal implementation details
 var aksNodePoolName = 'system'
-var cpuNodePoolName = 'cpupool'
-var gpuNodePoolName = 'gpupool'
 
 resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
   name: aksClusterName
@@ -60,10 +58,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
     }
     addonProfiles: {
       omsAgent: {
-        enabled: true
-        config: {
-          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
-        }
+        enabled: false
       }
       azureKeyvaultSecretsProvider: {
         enabled: true
@@ -75,6 +70,14 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
     }
     autoUpgradeProfile: {
       upgradeChannel: 'patch'
+    }
+    autoScalerProfile: {
+      'scale-down-delay-after-add': '5m'
+      'scale-down-delay-after-delete': '10s'
+      'scale-down-delay-after-failure': '3m'
+      'scale-down-unneeded-time': '5m'
+      'scale-down-unready-time': '20m'
+      'scan-interval': '10s'
     }
     azureMonitorProfile: {
       metrics: {
@@ -106,9 +109,9 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
 // CPU node pool for general workloads (Qdrant, Document Processor, etc.)
 resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
   parent: aksCluster
-  name: cpuNodePoolName
+  name: 'cpupool'
   properties: {
-    count: 1
+    count: 0
     vmSize: 'Standard_D8s_v3'
     osType: 'Linux'
     mode: 'User'
@@ -118,20 +121,19 @@ resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     minCount: 0
     maxCount: 5
     nodeLabels: {
-      agentpool: cpuNodePoolName
+      agentpool: 'cpupool'
       workload: 'cpu'
-      compute: 'azureml'
     }
     nodeTaints: []
   }
 }
 
-// GPU node pool for ML inference and training workloads
-resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
+// GPU node pool for inference workloads (spot instances)
+resource gpuInferenceNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
   parent: aksCluster
-  name: gpuNodePoolName
+  name: 'gpuinference'
   properties: {
-    count: 1
+    count: 0
     vmSize: 'standard_nv18ads_a10_v5'
     osType: 'Linux'
     mode: 'User'
@@ -139,14 +141,13 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     osDiskType: 'Managed'
     enableAutoScaling: true
     minCount: 0
-    maxCount: 2
+    maxCount: 3
     scaleSetPriority: 'Spot'
     scaleSetEvictionPolicy: 'Delete'
     spotMaxPrice: -1 // Pay up to on-demand price
     nodeLabels: {
-      agentpool: gpuNodePoolName
+      agentpool: 'gpuinference'
       workload: 'gpu'
-      compute: 'azureml'
       sku: 'gpu'
     }
     nodeTaints: [
@@ -215,11 +216,11 @@ resource aksControlPlaneDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-
       }
       {
         category: 'kube-audit'
-        enabled: true
+        enabled: false
       }
       {
         category: 'kube-audit-admin'
-        enabled: true
+        enabled: false
       }
       {
         category: 'kube-controller-manager'

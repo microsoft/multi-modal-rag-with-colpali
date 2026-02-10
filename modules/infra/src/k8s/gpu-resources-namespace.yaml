@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+#
+# Namespace for GPU infrastructure components (NVIDIA device plugin, DCGM metrics exporter).
+# This namespace isolates cluster-level GPU infrastructure from application workloads.
+#
+# Apply with:
+#   kubectl apply -f gpu-resources-namespace.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-resources
+  labels:
+    app.kubernetes.io/name: gpu-resources
+    app.kubernetes.io/component: infrastructure

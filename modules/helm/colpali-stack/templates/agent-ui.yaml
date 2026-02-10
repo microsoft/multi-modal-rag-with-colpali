@@ -17,6 +17,8 @@ spec:
       labels:
         app: {{ include "colpali-stack.fullname" . }}-agent-ui
         azure.workload.identity/use: "true"
+      annotations:
+        secret.reloader.stakater.com/reload: "colpali-stack-app-secrets"
     spec:
       serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
       # Schedule on CPU pool nodes (no taints on cpupool)
@@ -80,7 +82,7 @@ metadata:
   labels:
     app: {{ include "colpali-stack.fullname" . }}-agent-ui
 spec:
-  type: {{ .Values.agentUi.service.type }}
+  type: ClusterIP
   ports:
   - port: {{ .Values.agentUi.service.port }}
     targetPort: {{ .Values.agentUi.service.targetPort }}

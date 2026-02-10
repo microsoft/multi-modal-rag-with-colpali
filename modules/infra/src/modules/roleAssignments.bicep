@@ -165,7 +165,10 @@ resource aksAIFoundryOpenAIAssignment 'Microsoft.Authorization/roleAssignments@2
   name: guid(aiFoundryServiceId, aksWorkloadPrincipalId, roles.cognitiveServicesOpenAIUser, 'aks-ai-foundry-openai')
   scope: aiFoundryService
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.cognitiveServicesOpenAIUser)
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      roles.cognitiveServicesOpenAIUser
+    )
     principalId: aksWorkloadPrincipalId
     principalType: 'ServicePrincipal'
   }

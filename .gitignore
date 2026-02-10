@@ -207,7 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 # Auto-generated environment files
-environment.yml
+**/environment.yml
+**/environment-*.yml
 
 .env
 
@@ -225,3 +226,9 @@ infra/**/*.json
 
 **/debug_images/
 **/.files/
+
+# MLflow tracking data
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+**/mlruns/

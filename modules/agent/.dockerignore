@@ -12,7 +12,6 @@
 .git
 .gitignore
 .gitattributes
-README.md
 test_*.py
 **/tests
 **/test_files
@@ -61,7 +60,6 @@ Dockerfile
 **/.idea
 
 # Exclude documentation
-*.md
 **/docs
 
 **/.chainlit

@@ -1,0 +1,14 @@
+# Namespace configurations with spot instance tolerations
+# These namespaces use defaultTolerations annotation to inject spot instance
+# tolerations into all pods, enabling scheduling on cost-effective spot node pools.
+#
+# Apply with:
+#   kubectl apply -f namespace-spot-tolerations.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: colpali-stack
+  annotations:
+    # Automatically add spot instance toleration to all pods in this namespace
+    scheduler.alpha.kubernetes.io/defaultTolerations: '[{"Key": "kubernetes.azure.com/scalesetpriority", "Operator": "Equal", "Value": "spot", "Effect": "NoSchedule"}]'

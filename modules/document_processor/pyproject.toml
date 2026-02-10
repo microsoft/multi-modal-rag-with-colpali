@@ -1,12 +1,12 @@
 [project]
-name = "colqwen2-document-processor"
+name = "document-processor"
 version = "0.1.0"
 description = "Service Bus Consumer Service for processing documents with ColPali via message queue"
 authors = [
     {name = "Ben Constable", email = "benconstable@microsoft.com"},
     {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
-requires-python = ">=3.11,<=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.0.0",
     # Azure services
@@ -16,7 +16,7 @@ dependencies = [
     # Azure AI Search
     "azure-search-documents>=11.4.0",
     # QDRANT vector database
-    "qdrant-client==1.15.0",
+    "qdrant-client==1.16.2",
     # HTTP and API requests
     "requests>=2.31.0",
     # Image processing
@@ -35,7 +35,7 @@ readme = "README.md"
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
@@ -45,3 +45,7 @@ ignore = ["E501"]
 dev = [
     "ruff>=0.1.0",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

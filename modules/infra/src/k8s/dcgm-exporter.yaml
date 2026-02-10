@@ -1,0 +1,106 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+#
+# DCGM Exporter for GPU metrics (Prometheus-compatible).
+# Exposes GPU utilization, memory, temperature, and other metrics on port 9400.
+#
+# Prerequisites:
+#   - gpu-resources namespace must exist (apply gpu-resources-namespace.yaml first)
+#   - GPU nodes must have label: sku=gpu
+#   - For ServiceMonitor to work, Prometheus Operator CRDs must be installed
+#
+# Apply with:
+#   kubectl apply -f dcgm-exporter.yaml
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: gpu-resources
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+    app.kubernetes.io/component: gpu-metrics
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dcgm-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9400"
+    spec:
+      nodeSelector:
+        sku: gpu
+      tolerations:
+      - operator: "Exists"  # Tolerate all taints - runs on any GPU node
+      priorityClassName: "system-node-critical"
+      containers:
+      - name: exporter
+        image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
+        env:
+        - name: DCGM_EXPORTER_LISTEN
+          value: ":9400"
+        - name: DCGM_EXPORTER_KUBERNETES
+          value: "true"
+        ports:
+        - name: metrics
+          containerPort: 9400
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          capabilities:
+            add: ["SYS_ADMIN"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "384Mi"
+          limits:
+            cpu: "300m"
+            memory: "768Mi"
+        volumeMounts:
+        - name: pod-gpu-resources
+          mountPath: /var/lib/kubelet/pod-resources
+          readOnly: true
+      volumes:
+      - name: pod-gpu-resources
+        hostPath:
+          path: /var/lib/kubelet/pod-resources
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+  namespace: gpu-resources
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 9400
+    targetPort: 9400
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: dcgm-exporter
+---
+# ServiceMonitor for Prometheus to scrape DCGM metrics
+# Requires Prometheus Operator CRDs to be installed
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: gpu-resources
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  endpoints:
+  - port: metrics
+    interval: 15s

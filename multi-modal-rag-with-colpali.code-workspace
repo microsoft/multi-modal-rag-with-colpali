@@ -1,8 +1,8 @@
 {
   "folders": [
     {
-      "name": "Colqwen Inference",
-      "path": "modules/colqwen_inference"
+      "name": "ColPali Inference",
+      "path": "modules/colpali_inference"
     },
     {
       "name": "Document Processor",

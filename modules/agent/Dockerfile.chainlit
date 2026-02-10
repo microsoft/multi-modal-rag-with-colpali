@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # Copy UV binary from official UV image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -32,16 +32,16 @@ RUN chown app:app /app
 USER app
 
 # Copy dependency files first for better layer caching
-COPY --chown=app:app pyproject.toml uv.lock* ./
+COPY --chown=app:app pyproject.toml uv.lock* README.md ./
 
 # Install dependencies - UV handles virtual environment creation
-RUN uv sync --locked --no-install-project --no-editable --no-dev
+RUN uv sync --locked --no-install-project --no-editable --no-dev --prerelease=allow
 
 # Copy application code
 COPY --chown=app:app src/ ./src/
 
 # Install the project itself in non-editable mode
-RUN uv sync --locked --no-editable --no-dev
+RUN uv sync --locked --no-editable --no-dev --prerelease=allow
 
 # Set PATH to include virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
@@ -62,4 +62,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
 # Entry point for Chainlit UI
-CMD ["python", "-m", "chainlit", "run", "src/chainlit_ui.py", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "chainlit", "run", "src/agent/chainlit_ui.py", "--host", "0.0.0.0", "--port", "8080"]

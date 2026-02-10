@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-FROM python:3.11-slim-trixie
+FROM python:3.12-slim-trixie
 
 # Copy UV binary from official UV image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -31,7 +31,7 @@ RUN chown app:app /app
 USER app
 
 # Copy dependency files first for better layer caching
-COPY --chown=app:app pyproject.toml uv.lock* ./
+COPY --chown=app:app pyproject.toml uv.lock* README.md ./
 
 # Install dependencies - UV handles virtual environment creation
 RUN uv sync --locked --no-install-project --no-editable
@@ -46,4 +46,4 @@ RUN uv sync --locked --no-editable
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Entry point for inference server
-CMD ["python", "-m", "src.app"]
+CMD ["python", "-m", "src.document_processor.app"]
