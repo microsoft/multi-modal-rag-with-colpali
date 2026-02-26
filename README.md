@@ -162,17 +162,22 @@ flowchart TB
 
 For detailed component descriptions, deployment topology, and technical specifications, see the **[Infrastructure Guide](modules/infra/README.md)**.
 
-## Why Qdrant Vector Data + Azure Kubernetes Service?
+## Why Qdrant Vector Database + Azure Kubernetes Service?
 
-### Why Qdrant over AI Search?
-- **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - critical for ColPali's page-based embeddings
-- **Advanced Operations**: Qdrant supports reranking and MAX_SIM operations that AI Search doesn't provide
-- **Storage Optimization**: By storing page images in Azure Blob Storage and only vectors in Qdrant, we significantly reduce memory requirements and vector database storage costs
+### Why Qdrant Vector Database over AI Search for ColPali specific scenarios?
+- **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - this is needed to use ColPali's based models that output over 100 embeddings per document.
+- **Advanced Multi-Vector Operations**: Qdrant supports reranking and MAX_SIM operations that we cannot perform natively in AI Search. This makes it a lot easier, to implement late interaction where we compare multi-embeddings stored, with multi-embeddings at query time.
+
+For this specific case, AI Search would not have worked for our use case, but it has great applications in other scenarios.
+
+> [!NOTE]
+>
+> AI Search does offer other ways to achieve multi-modal RAG (See [Multimodal search in Azure AI Search](https://learn.microsoft.com/en-us/azure/search/multimodal-search-overview)), but for the use case we explored, ColPali based approaches led to higher retrieval quality, and higher indexing throughput at scale in production based on our benchmarking. Results will vary from use case to use case and should be benchmarked accordingly.
 
 ### Why AKS over Container Apps?
-- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure.
-- **Simpler Setup**: No need to setup multiple Azure Services to host the different services.
-- **Shared Compute Costs**: Multiple services (document processor + ColQwen2/ColQwen3-4B inference) share the same node pool
+- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure at the time of experimentation.
+- **Simpler Setup**: No need to setup multiple Azure Services to host the different services, everything can run inside the same AKS cluster.
+- **Shared Compute Costs**: Multiple services (document processor + ColQwen2/ColQwen3-4B inference) share the same node pool.
 
 ## Project Structure
 
@@ -198,9 +203,7 @@ Two techniques make ColPali embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`) based on benchmarking results.
-
-This balances speed and quality for production deployments.
+**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`) based on benchmarking results. We did extensive internal benchmarking, and determined that this combination, has the best latency / retrieval quality trade off for production deployments.
 
 ## Quick Start
 
