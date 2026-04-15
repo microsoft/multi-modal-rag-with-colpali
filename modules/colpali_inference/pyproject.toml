@@ -30,7 +30,7 @@ dependencies = [
     # HTTP client and utilities
     "aiohttp>=3.13.2",
     "aiofiles>=23.2.1",
-    "python-multipart>=0.0.6",
+    "python-multipart>=0.0.26",
     "tenacity>=9.1.2",
     # Environment management
     "python-dotenv>=1.0.0",
