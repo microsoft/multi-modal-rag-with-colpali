@@ -4,7 +4,7 @@ This directory contains Helm charts for deploying the ColPali/ColQwen multi-moda
 
 All application components are deployed to the `colpali-stack` namespace for resource isolation and management. The Helm charts handle the deployment of:
 
-- ColQwen2/ColQwen3-4B inference service
+- ColQwen3 inference service (`TomoroAI/tomoro-colqwen3-embed-4b`, vLLM GPU sidecar + CPU pooling shim)
 - Document processor service
 - Qdrant vector database
 - Agent API service (RAG backend)

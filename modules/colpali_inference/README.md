@@ -1,31 +1,50 @@
 # ColPali Inference Service
 
-This module provides a containerized ColPali visual document understanding model for Kubernetes deployment with optimized inference serving.
+GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model producing 320-dim per-token vectors — but any HuggingFace checkpoint that vLLM can load with `--task embed` will work by changing `MODEL_ID`.
 
-## Architecture Overview
+## Architecture: CPU shim + GPU vLLM sidecar
 
-This service is deployed as a **StatefulSet with two containers and an init container** so the GPU is only consumed by the model server, while the request shim scales out across CPU cores:
+The service runs as a Kubernetes **StatefulSet** with two long-running containers in a single pod plus a one-shot init container. The split exists so the GPU is only doing the model forward pass while everything else (JSON parsing, base64 decoding, tokenization plumbing, pooling math, telemetry) scales horizontally across CPU cores.
 
-1. **InitContainer (`model-downloader`)** — Populates the per-replica PVC at `/mnt/models` with the model weights from HuggingFace Hub (`MODEL_ID`), into `${MODEL_DIRECTORY_PATH}/<basename(MODEL_ID)>`.
-2. **CPU shim container (`colpali-inference`)** — FastAPI on port `8000`. Handles request validation, image decoding, tokenization and pooling math (hierarchical + mean row/col). Runs multiple uvicorn workers (`UVICORN_WORKERS`, default 4) and forwards embedding work to the vLLM sidecar.
-3. **GPU sidecar (`vllm`)** — `vllm/vllm-openai:v0.19.1` serving the ColPali model on port `8001`. Exposes `/pooling` and `/tokenize`; receives images from the shim via `file://` URLs on a shared tmpfs `emptyDir` mounted at `/shm`.
-4. **Persistent Storage** — Each replica gets its own Premium SSD PVC for model weights, enabling true horizontal scaling.
-
-The shim and the sidecar communicate over `localhost`; only the shim's port `8000` is exposed via the Service.
-
-## Deployment Architecture
-
-```yaml
-StatefulSet:
-  InitContainer:    model-downloader   # populates /mnt/models from HuggingFace Hub
-  Containers:
-    - colpali-inference (CPU)          # FastAPI shim, port 8000
-    - vllm              (GPU, 1x)      # vllm/vllm-openai:v0.19.1, port 8001
-  Volumes:
-    - model-storage (PVC, 30Gi RWO)    # shared between init + both containers
-    - image-shm     (emptyDir, tmpfs)  # 2Gi at /shm, file:// image transport
-  Scaling: Independent replicas across nodes
+```text
+          ┌─────────────────────────────────── Pod ──────────────────────────────────┐
+          │                                                                  │
+client ───▶│ colpali-inference  (CPU shim, FastAPI/uvicorn, port 8000)         │
+  POST    │  │  • validates EmbedRequest                                       │
+  /embed  │  │  • decodes base64 images → PNG bytes → /shm/<uuid>.png         │
+          │  │  • calls vLLM /tokenize  (text path)                            │
+          │  │  • calls vLLM /pooling  (text and image paths)                  │
+          │  │  • hierarchical / mean-row / mean-col pooling on CPU            │
+          │  │                                                                 │
+          │  └── localhost:8001 ──▶ vllm  (GPU, vllm/vllm-openai:v0.19.1)        │
+          │                            • loads model from /mnt/models/offline   │
+          │                            • --served-model-name = MODEL_ID         │
+          │                            • reads image bytes from file:///shm/... │
+          │                                                                  │
+          │  shared volumes:                                                  │
+          │    /mnt/models   PVC      (model weights, populated by init)      │
+          │    /shm         tmpfs    (image transport, file:// URLs)          │
+          └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Why a sidecar, not a single GPU process?
+
+In the naive single-process design (FastAPI + transformers on GPU), every uvicorn worker either pins its own GPU copy of the model (out of memory) or serializes through one shared model (no concurrency). Splitting responsibilities means:
+
+- **vLLM owns the GPU.** Continuous batching, paged attention and the `embed` task implementation already exist in vLLM; we don't reinvent them. One vLLM process per pod, one GPU per pod.
+- **The shim is stateless and CPU-bound.** It can run `UVICORN_WORKERS` (default 4) processes against the same vLLM sidecar over `localhost`. Tokenization and pooling parallelize across cores instead of fighting the GPU.
+- **Pooling stays out of the model server.** Hierarchical and mean row/col pooling are pure NumPy/Torch math on the raw token embeddings. Doing them in the shim means we can change pooling strategies without touching vLLM.
+- **Images travel as files, not JSON.** The shim writes decoded PNG bytes to a tmpfs `emptyDir` at `/shm` and passes `file:///shm/<uuid>.png` to vLLM (vLLM's `--allowed-local-media-path /shm`). This avoids the cost of re-encoding images as base64 over the loopback HTTP hop.
+
+### Container roles
+
+1. **`model-downloader` (initContainer)** — Runs `python -m src.colpali_inference.app download`. Pulls `MODEL_ID` from HuggingFace Hub into `${MODEL_DIRECTORY_PATH}/$(basename MODEL_ID)` on the shared PVC. Fails the pod fast if the model can't be fetched.
+2. **`colpali-inference` (CPU shim)** — FastAPI app on port `8000`. Reads `VLLM_BASE_URL=http://localhost:8001`, `MODEL_ID`, `IMAGE_SHM_DIR=/shm`. Sets `HF_HUB_OFFLINE=1` so the shim never tries to phone HF Hub at runtime — weights come from the PVC.
+3. **`vllm` (GPU sidecar)** — `vllm/vllm-openai:v0.19.1`. Launch flags (`--task embed`, `--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
+
+### Why a StatefulSet (not Deployment)?
+
+Each replica gets its own `volumeClaimTemplate`-backed PVC for the model. A new pod re-uses the same PVC across rolling restarts (no re-download), and replicas scale out cleanly because they don't share `RWO` storage.
 
 Deploy via Helm:
 
@@ -33,6 +52,8 @@ Deploy via Helm:
 # From repository root
 scripts/apply_helm.ps1
 ```
+
+See [modules/helm/colpali-stack/values.yaml](../../modules/helm/colpali-stack/values.yaml) (the `colpaliInference:` block) for the full set of tunables: `modelId`, `replicaCount`, `uvicornWorkers`, `limitConcurrency`, `vllm.maxModelLen`, `vllm.gpuMemoryUtilization`, GPU/CPU resource requests, `nodePool`, `spotNodePool`, etc.
 
 ## API Endpoints
 
@@ -51,8 +72,8 @@ Returns service status and model readiness:
   "status": "healthy",
   "model_loaded": true,
   "model_info": {
-    "model_name": "vidore/colqwen2-v1.0",
-    "device": "cuda:0",
+    "model_name": "TomoroAI/tomoro-colqwen3-embed-4b",
+    "vllm_base_url": "http://localhost:8001"
   }
 }
 ```
@@ -66,24 +87,17 @@ POST /embeddings
 ```json
 {
   "images": ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."],
-  "pooling_type": ["hierarchical", "mean_pooling"],
-  "pooling_config": {"pool_factor": 2}
+  "pooling_type": ["hierarchical_pooling", "mean_pooling"]
 }
 ```
 
-Returns structured embeddings:
+Returns structured embeddings (each field is a `batch x patches x embedding_dim` array, present only when requested):
 ```json
 {
   "embeddings": [[[0.1, 0.2, ...]]],
-  "hierarchical_pooled_embeddings": {
-    "hierarchical": [[[0.15, 0.25, ...]]]
-  },
-  "mean_row_pooled_embeddings": {
-    "mean_pooling": [[[0.12, 0.22, ...]]]
-  },
-  "mean_column_pooled_embeddings": {
-    "mean_pooling": [[[0.13, 0.23, ...]]]
-  }
+  "hierarchical_pooled_embeddings": [[[0.15, 0.25, ...]]],
+  "mean_row_pooled_embeddings": [[[0.12, 0.22, ...]]],
+  "mean_column_pooled_embeddings": [[[0.13, 0.23, ...]]]
 }
 ```
 

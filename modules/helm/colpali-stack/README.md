@@ -7,7 +7,7 @@ Helm chart that deploys the complete ColPali/ColQwen multi-modal RAG stack for p
 This chart deploys the following components:
 
 ### Core Services
-- **ColQwen2/ColQwen3-4B Inference** - AI model service for generating document embeddings (GPU-accelerated StatefulSet)
+- **ColQwen3 Inference** (`TomoroAI/tomoro-colqwen3-embed-4b`) - Late-interaction embedding service: GPU vLLM sidecar (`/pooling` endpoint) + CPU FastAPI shim for tokenization and pooling (StatefulSet)
 - **Document Processor** - Processes documents, creates embeddings, stores vectors in Qdrant and images in Blob Storage
 - **Agent API** - REST API for querying documents using RAG
 - **Agent UI** - Chainlit-based chat interface for interacting with the RAG system
@@ -60,7 +60,7 @@ Access Qdrant dashboard at: `http://<INGRESS-IP>/qdrant`
 
 ## Pods and Services
 - **Document Processor**: Processes documents, creates embeddings via ColPali/ColQwen, stores images in Blob Storage, stores vectors in Qdrant
-- **ColQwen2/ColQwen3-4B Inference**: AI model for generating document embeddings (CPU/GPU optimized)
+- **ColQwen3 Inference** (`TomoroAI/tomoro-colqwen3-embed-4b`): Late-interaction embedding model served via vLLM sidecar with a CPU pooling shim
 - **Qdrant**: Vector database for storing and searching embeddings
 - **NGINX Ingress**: Provides external access to services and Qdrant dashboard
 
@@ -100,7 +100,7 @@ graph TB
             end
 
             subgraph "AI Inference"
-                CI[ColQwen2/ColQwen3-4B Inference Pod<br/>CPU/GPU Optimized]
+                CI[tomoro-colqwen3-embed-4b Inference Pod<br/>vLLM Sidecar + CPU Shim]
                 HFPV[Model Storage<br/>Persistent Volume<br/>HuggingFace Cache]
             end
 
