@@ -7,40 +7,40 @@ authors = [
     {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # FastAPI web framework
     "fastapi>=0.121.0",
     "uvicorn[standard]>=0.38.0",
     "pydantic>=2.0.0",
-    # Core ML dependencies for inference
-    "torch>=2.8.0,<2.9.0",
-    "torchvision>=0.23.0,<0.24.0",
+    # CPU-only ML deps (model serving lives in the vLLM sidecar — the shim
+    # only tokenizes and runs pooling math on CPU).
+    "torch>=2.7.0,<2.8.0",
     "transformers>=4.57.1,<4.58.0",
+    # colpali-engine is kept solely for HierarchicalTokenPooler. No model
+    # loading from this package any more.
     "colpali-engine==0.3.13",
     "pillow>=10.0.0",
     "numpy==2.3.4",
-    "accelerate==1.11.0",
-    "einops==0.8.1",
     "huggingface-hub[hf-xet]==0.36.0",
-    "peft==0.14.0",
-    # Flash Attention for optimized attention computation (Linux x86_64 only)
-    # Using PyTorch 2.8 compatible wheel from v2.8.3 release for Python 3.12
-    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl ; platform_system == 'Linux' and platform_machine == 'x86_64'",
     # HTTP client and utilities
     "aiohttp>=3.13.2",
     "aiofiles>=23.2.1",
     "python-multipart>=0.0.6",
-    "tenacity>=9.1.2",
     # Environment management
     "python-dotenv>=1.0.0",
     # Azure Monitor OpenTelemetry for Application Insights
     "azure-monitor-opentelemetry>=1.6.0",
+    "opentelemetry-instrumentation-logging>=0.48b0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
@@ -48,5 +48,6 @@ ignore = ["E501"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.1.0",
+    "pre-commit==4.2.0",
+    "ruff==0.11.7",
 ]

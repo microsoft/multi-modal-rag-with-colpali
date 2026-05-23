@@ -48,6 +48,7 @@ helm upgrade --install colpali-stack "./modules/helm/colpali-stack" `
     --set serviceBusQueueName="$($env['SERVICE_BUS_QUEUE_NAME'])" `
     --set documentProcessor.imageTag="$(if ($env['DOCUMENT_PROCESSOR_IMAGE_TAG']) { $env['DOCUMENT_PROCESSOR_IMAGE_TAG'] } else { 'latest' })" `
     --set colpaliInference.imageTag="$(if ($env['COLPALI_INFERENCE_IMAGE_TAG']) { $env['COLPALI_INFERENCE_IMAGE_TAG'] } else { 'latest' })" `
+    --set colpaliInference.vllm.imageTag="$(if ($env['COLPALI_INFERENCE_VLLM_IMAGE_TAG']) { $env['COLPALI_INFERENCE_VLLM_IMAGE_TAG'] } else { 'latest' })" `
     --set agentApi.enabled=true --set agentApi.imageTag="$(if ($env['AGENT_API_IMAGE_TAG']) { $env['AGENT_API_IMAGE_TAG'] } else { 'latest' })" `
     --set aiFoundryOpenAiEndpoint="$($env['AI_FOUNDRY_OPEN_AI_ENDPOINT'])" `
     --set modelName="$($env['MODEL_NAME'])" `

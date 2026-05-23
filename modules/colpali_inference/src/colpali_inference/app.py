@@ -1,11 +1,22 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+# ColPali related code taken from: https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali
 """
-ColPali Inference Service
+ColPali Inference Service — CPU-only FastAPI shim.
 
-FastAPI inference server for visual document understanding and embedding generation.
-Supports both init container mode (model download) and inference server mode.
-Provides REST API endpoints for health checks and embedding generation with multiple pooling strategies.
+Provides REST API endpoints for health checks and embedding generation
+with multiple pooling strategies. The GPU forward pass is delegated to a
+vLLM sidecar container in the same pod; this process owns only the HF
+processor (for tokenization + patch-grid math) and the pooling
+post-processing.
+
+Runs with multiple uvicorn worker processes — each worker has its own
+processor instance and its own aiohttp.ClientSession to vLLM. vLLM owns
+GPU concurrency via continuous batching across all workers.
+
+Init container mode (`python -m colpali_inference.app download`) handles
+model snapshot population from HuggingFace Hub into the per-replica PVC;
+see download_model.py.
 """
 
 import asyncio
@@ -16,12 +27,14 @@ import sys
 from contextlib import asynccontextmanager
 
 from dotenv import find_dotenv, load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-from .inference import ColPaliInference
+from .inference import get_inference_instance
 from .models import EmbedHealthResponse, EmbedRequest, EmbedResponse
 from .setup_logging import configure_telemetry, trace_operation
+from .vllm_client import VLLMUpstreamError, get_client
 
 # Find and load .env file from the project root
 load_dotenv(find_dotenv())
@@ -31,133 +44,104 @@ configure_telemetry()
 
 logger = logging.getLogger(__name__)
 
-# Global inference instance
-inference_service = ColPaliInference()
-HEALTH_MODEL_NAME = os.getenv("MODEL_ID", "vidore/colqwen2-v1.0-hf")
+# Per-worker singletons (one of each per uvicorn worker process)
+inference_service = get_inference_instance()
+vllm_client = get_client()
 
-
-class GracefulShutdown:
-    """Handle graceful shutdown for ColPali inference service."""
-
-    def __init__(self):
-        self.shutdown_event = asyncio.Event()
-        self.shutdown_initiated = False
-
-    def setup_signal_handlers(self):
-        """Set up signal handlers for graceful shutdown (call from async context)."""
-
-        def signal_handler(signum):
-            if not self.shutdown_initiated:
-                self.shutdown_initiated = True
-                logger.info(
-                    "Received signal %s, initiating graceful shutdown...", signum
-                )
-                # Schedule the shutdown event to be set in the event loop
-                asyncio.create_task(self._set_shutdown_event())
-            else:
-                logger.info("Shutdown already initiated, ignoring signal %s", signum)
-
-        # Set up signal handlers in the event loop
-        loop = asyncio.get_running_loop()
-
-        if sys.platform != "win32":
-            # Unix signals
-            loop.add_signal_handler(signal.SIGTERM, signal_handler, signal.SIGTERM)
-            loop.add_signal_handler(signal.SIGINT, signal_handler, signal.SIGINT)
-        else:
-            # Windows signal handling (fallback to traditional signal handling)
-            def sync_signal_handler(signum, _frame):
-                signal_handler(signum)
-
-            signal.signal(signal.SIGINT, sync_signal_handler)
-
-    async def _set_shutdown_event(self):
-        """Set the shutdown event."""
-        self.shutdown_event.set()
-
-    async def wait_for_shutdown(self):
-        """Wait for shutdown signal."""
-        await self.shutdown_event.wait()
-
-    async def cleanup(self):
-        """Perform cleanup operations."""
-        logger.info("Performing graceful shutdown cleanup...")
-        # The inference service cleanup will be handled by FastAPI lifespan
-        logger.info("Graceful shutdown completed")
-
-
-# Global shutdown handler (don't set up signals yet)
-shutdown_handler = GracefulShutdown()
+HEALTH_MODEL_NAME = os.getenv("MODEL_ID", "TomoroAI/tomoro-colqwen3-embed-4b")
+VLLM_READY_TIMEOUT_SECONDS = float(os.getenv("VLLM_READY_TIMEOUT_SECONDS", "300"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan handler for non-blocking model initialization in background."""
-    logger.info("Starting ColPali inference server...")
+    """FastAPI lifespan handler.
 
-    # Start model initialization asynchronously to avoid blocking FastAPI startup
-    async def load_model_async():
+    Loads the HF processor synchronously (fast — CPU only, ~100 MB) and kicks
+    off a background task that waits for the vLLM sidecar to become ready.
+    /health reports the combined status.
+    """
+    logger.info("Starting ColPali inference shim...")
+
+    # Processor load is fast on CPU; do it inline so the worker is ready
+    # to serve as soon as vLLM is also ready.
+    try:
+        inference_service.initialize()
+    except Exception as e:
+        logger.error("Failed to initialize processor: %s", e)
+        # Don't raise — health check will report unhealthy.
+
+    async def wait_for_vllm():
         try:
-            logger.info("Initializing ColPali model (includes download if needed)...")
-            await asyncio.to_thread(inference_service.initialize)
-            logger.info("ColPali model initialized successfully")
+            await vllm_client.wait_until_ready(
+                timeout_seconds=VLLM_READY_TIMEOUT_SECONDS
+            )
         except Exception as e:
-            logger.error(f"Failed to initialize model: {e}")
-            # Don't raise - let health check endpoint handle the initialization state
+            logger.error("vLLM sidecar did not become ready: %s", e)
 
-    # Start model loading in background
-    asyncio.create_task(load_model_async())
+    asyncio.create_task(wait_for_vllm())
 
     try:
         yield
     finally:
-        logger.info("Shutting down ColPali inference server...")
+        logger.info("Shutting down ColPali inference shim...")
+        await vllm_client.close()
 
 
-# Create FastAPI app directly
 app = FastAPI(
     title="ColPali Inference Service",
-    description="FastAPI service for ColPali document understanding and embedding generation",
-    version="1.0.0",
+    description="FastAPI shim for ColPali / ColQwen3 embedding generation (vLLM-backed)",
+    version="2.0.0",
     lifespan=lifespan,
 )
+
+FastAPIInstrumentor.instrument_app(app)
 
 
 @app.get("/health", response_model=EmbedHealthResponse)
 async def health_check():
-    """Health check endpoint with proper HTTP status codes. Returns 503 during initialization, 200 when ready."""
-    try:
-        # Check ColPali model initialization status
-        model_loaded = inference_service.is_initialized
+    """Combined health check: processor loaded AND vLLM sidecar reachable.
 
-        if not model_loaded:
-            # Raise 503 Service Unavailable if model is still loading
+    Returns 200 when both are ready, 503 otherwise. Used by both readiness
+    and liveness probes (separate liveness `/livez` skips the vLLM check).
+    """
+    try:
+        processor_loaded = inference_service.is_initialized
+        vllm_ready = await vllm_client.health()
+
+        if not processor_loaded:
             raise HTTPException(
                 status_code=503,
                 detail=EmbedHealthResponse(
                     status="initializing",
                     model_loaded=False,
                     model_info=None,
-                    message="Model is still loading, please wait...",
+                    message="Processor still loading",
                 ).model_dump(),
             )
 
-        model_info = {
-            "model_name": HEALTH_MODEL_NAME,
-            "device": str(inference_service.device),
-        }
+        if not vllm_ready:
+            raise HTTPException(
+                status_code=503,
+                detail=EmbedHealthResponse(
+                    status="initializing",
+                    model_loaded=False,
+                    model_info={"vllm_ready": False},
+                    message="vLLM sidecar not ready",
+                ).model_dump(),
+            )
 
         return EmbedHealthResponse(
             status="healthy",
             model_loaded=True,
-            model_info=model_info,
+            model_info={
+                "model_name": HEALTH_MODEL_NAME,
+                "vllm_base_url": vllm_client.base_url,
+            },
         )
     except HTTPException:
-        # Re-raise HTTPExceptions to preserve status codes
         raise
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        # Return 503 Service Unavailable for initialization errors
+        logger.error("Health check failed: %s", e)
         raise HTTPException(
             status_code=503,
             detail=EmbedHealthResponse(
@@ -169,11 +153,25 @@ async def health_check():
         )
 
 
+@app.get("/livez")
+async def liveness_check():
+    """Lightweight liveness probe — does not touch vLLM.
+
+    Returns 200 as long as the shim process is responding. vLLM has its
+    own liveness probe configured on the sidecar container.
+    """
+    return {"status": "alive"}
+
+
 @app.post("/embeddings", response_model=EmbedResponse)
-async def generate_embeddings_endpoint(request: EmbedRequest):
-    """Main embedding endpoint - generates ColPali embeddings for images and text with multiple pooling strategies."""
+async def generate_embeddings_endpoint(request: EmbedRequest, raw_request: Request):
+    """Main embedding endpoint.
+
+    Supports client-disconnect detection: if the caller drops the connection
+    while inference is in progress, the inference task is cancelled and the
+    in-flight HTTP call to vLLM is aborted via aiohttp's task cancellation.
+    """
     try:
-        # Validate input - at least one of texts or images must be provided
         if not request.texts and not request.images:
             raise HTTPException(
                 status_code=400,
@@ -186,18 +184,86 @@ async def generate_embeddings_endpoint(request: EmbedRequest):
                 detail="Cannot process both 'texts' and 'images' in the same request",
             )
 
-        # Execute ColPali inference in thread pool to prevent FastAPI event loop blocking
-        result = await asyncio.to_thread(inference_service.generate_embeddings, request)
+        inference_task = asyncio.create_task(
+            inference_service.generate_embeddings(request)
+        )
 
-        return result
+        async def watch_disconnect() -> bool:
+            while not inference_task.done():
+                if await raw_request.is_disconnected():
+                    return True
+                await asyncio.sleep(0.5)
+            return False
+
+        disconnect_task = asyncio.create_task(watch_disconnect())
+
+        try:
+            done, _ = await asyncio.wait(
+                {inference_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if disconnect_task in done and disconnect_task.result():
+                logger.warning(
+                    "Client disconnected during inference, cancelling vLLM call"
+                )
+                inference_task.cancel()
+                return JSONResponse(
+                    status_code=499, content={"detail": "Client disconnected"}
+                )
+
+            return inference_task.result()
+
+        finally:
+            for task in (inference_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
     except HTTPException:
         raise
     except ValueError as e:
-        logger.error(f"Embedding generation failed: {e}")
+        logger.error("Embedding generation failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
+    except VLLMUpstreamError as e:
+        # Surface vLLM rejections verbatim so callers (indexer, search) can
+        # back off appropriately. The shim does not retry.
+        if e.status_code == 429:
+            headers = {"Retry-After": e.retry_after} if e.retry_after else None
+            logger.warning(
+                "vLLM 429 propagated to caller (retry-after=%s)", e.retry_after
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="vLLM is overloaded; retry with backoff",
+                headers=headers,
+            )
+        if e.status_code == 503:
+            headers = {"Retry-After": e.retry_after} if e.retry_after else None
+            logger.warning(
+                "vLLM 503 propagated to caller (retry-after=%s)", e.retry_after
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="vLLM is unavailable",
+                headers=headers,
+            )
+        # Other upstream failures: signal a bad gateway, not an internal
+        # shim error — distinguishes "vLLM broke" from "shim broke".
+        logger.error(
+            "vLLM upstream error %s propagated as 502: %s",
+            e.status_code,
+            e.body[:200],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"vLLM upstream error (status {e.status_code})",
+        )
     except Exception as e:
-        logger.error(f"Embedding generation failed: {e}")
+        logger.error("Embedding generation failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -209,105 +275,89 @@ async def root():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Global exception handler for unhandled errors in FastAPI endpoints."""
-    logger.error(f"Unhandled exception: {exc}")
+    """Global exception handler for unhandled errors."""
+    logger.error("Unhandled exception: %s", exc)
     return JSONResponse(
         status_code=500,
         content={"error": "Internal server error", "detail": str(exc)},
     )
 
 
-def server_mode():
-    """Start ColPali inference server with Uvicorn and graceful shutdown handling."""
-    logger.info("Starting ColPali inference server mode...")
+def server_mode() -> None:
+    """Start the uvicorn server with multiple workers.
 
+    The shim is CPU-bound (tokenize, decode, pool); multiple workers
+    parallelize across cores. All workers funnel into the single vLLM
+    sidecar which owns GPU continuous batching.
+    """
     import uvicorn
 
-    # Configuration from environment variables
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", "8000"))
     log_level = os.getenv("LOG_LEVEL", "info").lower()
+    workers = int(os.getenv("UVICORN_WORKERS", "4"))
+    limit_concurrency_str = os.getenv("LIMIT_CONCURRENCY")
+    limit_concurrency = int(limit_concurrency_str) if limit_concurrency_str else None
 
-    logger.info(f"Starting ColPali inference server on {host}:{port}")
-    logger.info(f"Log level: {log_level}")
-    logger.info(
-        "Using single worker (required for shared model state and lifespan handlers)"
-    )
+    logger.info("Starting ColPali inference shim on %s:%s", host, port)
+    logger.info("Log level: %s", log_level)
+    logger.info("Uvicorn workers: %s", workers)
+    if limit_concurrency:
+        logger.info("Per-worker concurrency limit: %s", limit_concurrency)
 
-    # Create uvicorn server configuration
-    config = uvicorn.Config(
-        app=app,
+    # Use uvicorn.run with the import string when running multiple workers
+    # (uvicorn requires the import string to reload the app in each worker
+    # process).
+    uvicorn.run(
+        "colpali_inference.app:app",
         host=host,
         port=port,
         log_level=log_level,
-        workers=1,  # Single worker required for shared ColPalimodel state
+        workers=workers,
         reload=False,
+        limit_concurrency=limit_concurrency,
     )
-
-    # Run server with graceful shutdown support
-    server = uvicorn.Server(config)
-
-    async def run_server():
-        """Run the server with graceful shutdown monitoring."""
-        # Set up signal handlers in the event loop
-        shutdown_handler.setup_signal_handlers()
-
-        # Start the server task
-        server_task = asyncio.create_task(server.serve())
-
-        # Wait for either server completion or shutdown signal
-        shutdown_task = asyncio.create_task(shutdown_handler.wait_for_shutdown())
-
-        try:
-            done, pending = await asyncio.wait(
-                {server_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-
-            # If shutdown was triggered, gracefully stop the server
-            if shutdown_task in done:
-                logger.info("Shutdown signal received, stopping server...")
-                server.should_exit = True
-                await server_task
-                await shutdown_handler.cleanup()
-
-            # Cancel any pending tasks
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
-        except Exception as e:
-            logger.error(f"Server error: {e}")
-            raise
-
-    # Run the server with asyncio
-    asyncio.run(run_server())
 
 
 @trace_operation("model_download")
-def download_mode():
-    """Init container mode - downloads ColPali model to persistent volume then exits."""
+def download_mode() -> None:
+    """Init container mode — downloads model snapshot to the shared PVC, then exits.
+
+    Pulls the model from HuggingFace Hub into
+    ``${MODEL_DIRECTORY_PATH}/<basename(MODEL_ID)>`` so both the vLLM
+    sidecar and the shim processor load from the same on-disk snapshot.
+    """
+    from .download_model import download_model_from_hf
+
     logger.info("ColPali container starting in download mode")
-    logger.info("Init container: Starting model download...")
-
-    try:
-        # Download ColPali model using inference service download functionality
-        inference_service._download_model_if_needed()
-        logger.info("Init container: Model download completed successfully")
-    except Exception as e:
-        logger.error(f"Model download failed: {e}")
-        raise
+    target_path = download_model_from_hf()
+    logger.info("Init container: model download completed to %s", target_path)
 
 
-def main():
-    """Main entry point - supports both init container (download) and inference server modes."""
-    # Check for download mode
+def _install_signal_handlers() -> None:
+    """SIGTERM / SIGINT handlers for graceful shutdown.
+
+    With multiple uvicorn workers, the master process handles signals and
+    propagates to workers automatically. We only need to ensure SIGTERM
+    triggers a clean exit (uvicorn's default behaviour already does this).
+    """
+    if sys.platform == "win32":
+        return
+
+    def _handler(signum, _frame):
+        logger.info("Received signal %s, shutting down", signum)
+        # Uvicorn master will catch and propagate; just log here.
+
+    signal.signal(signal.SIGTERM, _handler)
+
+
+def main() -> None:
+    """Main entry point — supports init container (download) and server modes."""
     if len(sys.argv) > 1 and sys.argv[1] == "download":
         download_mode()
     else:
-        logger.info("ColPali container starting as inference server")
+        _install_signal_handlers()
+        logger.info("ColPali container starting as inference shim")
         server_mode()
 
 

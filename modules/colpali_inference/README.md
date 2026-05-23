@@ -4,20 +4,26 @@ This module provides a containerized ColPali visual document understanding model
 
 ## Architecture Overview
 
-This service uses a **StatefulSet with InitContainer pattern** for optimized model deployment:
+This service is deployed as a **StatefulSet with two containers and an init container** so the GPU is only consumed by the model server, while the request shim scales out across CPU cores:
 
-1. **InitContainer** - Downloads ColPali style model to persistent volume (configurable via MODEL_ID)
-2. **Main Container** - Serves inference requests via FastAPI using pre-downloaded model
-3. **Persistent Storage** - Each pod gets its own Premium SSD volume for model storage
-4. **Horizontal Scaling** - Each replica downloads its own model copy, enabling true multi-node scaling
+1. **InitContainer (`model-downloader`)** — Populates the per-replica PVC at `/mnt/models` with the model weights from HuggingFace Hub (`MODEL_ID`), into `${MODEL_DIRECTORY_PATH}/<basename(MODEL_ID)>`.
+2. **CPU shim container (`colpali-inference`)** — FastAPI on port `8000`. Handles request validation, image decoding, tokenization and pooling math (hierarchical + mean row/col). Runs multiple uvicorn workers (`UVICORN_WORKERS`, default 4) and forwards embedding work to the vLLM sidecar.
+3. **GPU sidecar (`vllm`)** — `vllm/vllm-openai:v0.19.1` serving the ColPali model on port `8001`. Exposes `/pooling` and `/tokenize`; receives images from the shim via `file://` URLs on a shared tmpfs `emptyDir` mounted at `/shm`.
+4. **Persistent Storage** — Each replica gets its own Premium SSD PVC for model weights, enabling true horizontal scaling.
+
+The shim and the sidecar communicate over `localhost`; only the shim's port `8000` is exposed via the Service.
 
 ## Deployment Architecture
 
 ```yaml
 StatefulSet:
-  InitContainer: Downloads model to PVC
-  MainContainer: Serves inference from PVC
-  Storage: Premium SSD per replica (30Gi default)
+  InitContainer:    model-downloader   # populates /mnt/models from HuggingFace Hub
+  Containers:
+    - colpali-inference (CPU)          # FastAPI shim, port 8000
+    - vllm              (GPU, 1x)      # vllm/vllm-openai:v0.19.1, port 8001
+  Volumes:
+    - model-storage (PVC, 30Gi RWO)    # shared between init + both containers
+    - image-shm     (emptyDir, tmpfs)  # 2Gi at /shm, file:// image transport
   Scaling: Independent replicas across nodes
 ```
 
@@ -34,8 +40,9 @@ The FastAPI server provides REST endpoints for health checks and embeddings:
 
 ### Health Check
 ```
-GET /health
-GET /
+GET /health   # ready: shim initialised AND vLLM sidecar is /health-OK
+GET /livez    # liveness: shim process only (does not depend on vLLM)
+GET /         # alias for /health
 ```
 
 Returns service status and model readiness:
