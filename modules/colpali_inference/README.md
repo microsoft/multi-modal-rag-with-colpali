@@ -11,7 +11,7 @@ The service runs as a Kubernetes **StatefulSet** with two long-running container
           │                                                                  │
 client ───▶│ colpali-inference  (CPU shim, FastAPI/uvicorn, port 8000)         │
   POST    │  │  • validates EmbedRequest                                       │
-  /embed  │  │  • decodes base64 images → PNG bytes → /shm/<uuid>.png         │
+  /embeddings  │  │  • decodes base64 images → PNG bytes → /shm/<uuid>.png         │
           │  │  • calls vLLM /tokenize  (image mean-pooling alignment only)    │
           │  │  • calls vLLM /pooling  (direct text path; also image path)     │
           │  │  • hierarchical / mean-row / mean-col pooling on CPU            │
