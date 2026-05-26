@@ -30,7 +30,8 @@ ENV UV_CACHE_DIR="/tmp/uv-cache"
 # outbound HTTPS (model download, telemetry).
 RUN tdnf install -y \
     ca-certificates curl \
-    && tdnf clean all
+    && tdnf clean all \
+    && useradd --system --no-create-home --shell /sbin/nologin appuser
 
 WORKDIR /app
 
@@ -61,6 +62,11 @@ ENV UVICORN_WORKERS=4
 
 # Embed BUILD_NUMBER for the /health build-id contract used by post-deploy checks.
 RUN echo "BUILD_NUMBER=${BUILD_NUMBER:-localbuild.$(date +%Y%m%d%H%M)}" > .env
+
+# Transfer ownership of /app to the unprivileged user; /tmp is world-writable
+# by default so no explicit chown is needed there.
+RUN chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 
