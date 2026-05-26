@@ -69,4 +69,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 
 # The Python entrypoint exec's uvicorn with --workers when invoked without
 # the "download" arg (init container uses "download" to populate the PVC).
-CMD ["python", "-m", "src.colpali_inference.app"]
+CMD ["python", "-m", "colpali_inference.app"]

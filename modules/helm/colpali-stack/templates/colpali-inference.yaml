@@ -5,7 +5,7 @@
 # per-replica PVC for the model weights, populated by an init container.
 #
 # Container layout:
-#   - init `model-downloader`  : runs `python -m src.colpali_inference.app
+#   - init `model-downloader`  : runs `python -m colpali_inference.app
 #     download` to populate /mnt/models with the model weights from
 #     HuggingFace Hub.
 #   - `colpali-inference`      : CPU-only FastAPI shim on port 8000.
@@ -54,7 +54,7 @@ spec:
       initContainers:
       - name: model-downloader
         image: "{{ .Values.acrServer }}/colpali-inference:{{ .Values.colpaliInference.imageTag }}"
-        command: ["python", "-m", "src.colpali_inference.app", "download"]
+        command: ["python", "-m", "colpali_inference.app", "download"]
         env:
         - name: MODEL_ID
           value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
