@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+# ColPali related code taken from: https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali
 """
 Logging and telemetry configuration for ColPali service.
 Configures Python logging and Azure Monitor OpenTelemetry integration.
@@ -40,6 +41,7 @@ def configure_telemetry():
     """Configure Azure Monitor OpenTelemetry for Application Insights"""
     try:
         from azure.monitor.opentelemetry import configure_azure_monitor
+        from opentelemetry.instrumentation.logging import LoggingInstrumentor
 
         # Get Application Insights connection string from environment
         app_insights_connection_string = os.getenv(
@@ -50,6 +52,7 @@ def configure_telemetry():
             configure_azure_monitor(
                 connection_string=app_insights_connection_string,
             )
+            LoggingInstrumentor().instrument(set_logging_format=True)
             logger.info("Application Insights telemetry configured successfully")
         else:
             logger.warning(
@@ -64,7 +67,7 @@ def configure_telemetry():
         logger.error(f"Failed to configure Application Insights telemetry: {e}")
 
 
-def trace_operation(operation_name=None, new_root=True):
+def trace_operation(operation_name=None, new_root=False):
     """
     Decorator to create a trace span for a function.
     Supports both sync and async functions.
@@ -72,7 +75,8 @@ def trace_operation(operation_name=None, new_root=True):
     Args:
         operation_name: Custom name for the span (defaults to function name)
         new_root: If True, creates a new root trace context with unique operation ID.
-                  If False, creates a child span within current context.
+                  If False (default), creates a child span within current context,
+                  preserving the operation ID assigned by FastAPI/OpenTelemetry instrumentation.
     """
 
     def decorator(func):
@@ -91,7 +95,7 @@ def trace_operation(operation_name=None, new_root=True):
                 ):
                     return await func(*args, **kwargs)
             else:
-                # Create a child span within current context
+                # Create a child span within current context (preserves FastAPI's operation ID)
                 with tracer.start_as_current_span(span_name):
                     return await func(*args, **kwargs)
 
@@ -108,7 +112,7 @@ def trace_operation(operation_name=None, new_root=True):
                 ):
                     return func(*args, **kwargs)
             else:
-                # Create a child span within current context
+                # Create a child span within current context (preserves FastAPI's operation ID)
                 with tracer.start_as_current_span(span_name):
                     return func(*args, **kwargs)
 

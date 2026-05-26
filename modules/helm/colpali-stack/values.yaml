@@ -167,22 +167,54 @@ colpaliInference:
 
   # Model configuration
   modelId: "TomoroAI/tomoro-colqwen3-embed-4b"
+  modelDirectoryPath: "/mnt/models/offline"
+  hfHome: "/mnt/models/hf"
   model:
-    modelDirectory: "/tmp/model-directory"
-    storageSize: "Gi"
+    storageSize: "30Gi"
 
+  # Tmpfs emptyDir mounted at /shm for image transport between the shim
+  # and the vLLM sidecar (file:// URLs avoid HTTP overhead).
+  imageShmSize: "2Gi"
+
+  # Periodic /shm cleanup sidecar — busybox `find -mmin +N -delete` loop.
+  # Belt-and-braces cleanup against rare kill -9 / OOM leaks; the shim
+  # itself unlinks on every request and at startup.
+  shmJanitor:
+    intervalSeconds: 900
+    ageMinutes: 10
+
+  # CPU shim uvicorn tuning.
+  uvicornWorkers: 4
+  limitConcurrency: 36
+
+  # CPU shim resources (no GPU — runs tokenize / image decode / pooling math).
+  # Memory limit sized for uvicornWorkers=4, each ~2GB (torch + transformers +
+  # processor + telemetry). Bump if you raise uvicornWorkers.
   resources:
     requests:
-      memory: "64Gi"
-      cpu: "8"
+      memory: "8Gi"
+      cpu: "1"
     limits:
-      memory: "128Gi"
-      cpu: "12"
+      memory: "16Gi"
+      cpu: "4"
+
+  # GPU vLLM sidecar.
+  vllm:
+    imageTag: "latest"
+    maxModelLen: "2048"
+    gpuMemoryUtilization: "0.89"
+    resources:
+      requests:
+        memory: "32Gi"
+        cpu: "4"
+      limits:
+        memory: "64Gi"
+        cpu: "8"
 
   service:
     type: ClusterIP
     port: 80
-    targetPort: 8080
+    targetPort: 8000
 
   statefulSet:
     updateStrategy:

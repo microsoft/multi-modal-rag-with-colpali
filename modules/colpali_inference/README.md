@@ -1,25 +1,50 @@
 # ColPali Inference Service
 
-This module provides a containerized ColPali visual document understanding model for Kubernetes deployment with optimized inference serving.
+GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model producing 320-dim per-token vectors — but any HuggingFace checkpoint that vLLM can load with `--task embed` will work by changing `MODEL_ID`.
 
-## Architecture Overview
+## Architecture: CPU shim + GPU vLLM sidecar
 
-This service uses a **StatefulSet with InitContainer pattern** for optimized model deployment:
+The service runs as a Kubernetes **StatefulSet** with two long-running containers in a single pod plus a one-shot init container. The split exists so the GPU is only doing the model forward pass while everything else (JSON parsing, base64 decoding, tokenization plumbing, pooling math, telemetry) scales horizontally across CPU cores.
 
-1. **InitContainer** - Downloads ColPali style model to persistent volume (configurable via MODEL_ID)
-2. **Main Container** - Serves inference requests via FastAPI using pre-downloaded model
-3. **Persistent Storage** - Each pod gets its own Premium SSD volume for model storage
-4. **Horizontal Scaling** - Each replica downloads its own model copy, enabling true multi-node scaling
-
-## Deployment Architecture
-
-```yaml
-StatefulSet:
-  InitContainer: Downloads model to PVC
-  MainContainer: Serves inference from PVC
-  Storage: Premium SSD per replica (30Gi default)
-  Scaling: Independent replicas across nodes
+```text
+          ┌─────────────────────────────────── Pod ──────────────────────────────────┐
+          │                                                                  │
+client ───▶│ colpali-inference  (CPU shim, FastAPI/uvicorn, port 8000)         │
+  POST    │  │  • validates EmbedRequest                                       │
+  /embeddings  │  │  • decodes base64 images → PNG bytes → /shm/<uuid>.png         │
+          │  │  • calls vLLM /tokenize  (image mean-pooling alignment only)    │
+          │  │  • calls vLLM /pooling  (direct text path; also image path)     │
+          │  │  • hierarchical / mean-row / mean-col pooling on CPU            │
+          │  │                                                                 │
+          │  └── localhost:8001 ──▶ vllm  (GPU, vllm/vllm-openai:v0.19.1)        │
+          │                            • loads model from /mnt/models/offline   │
+          │                            • --served-model-name = MODEL_ID         │
+          │                            • reads image bytes from file:///shm/... │
+          │                                                                  │
+          │  shared volumes:                                                  │
+          │    /mnt/models   PVC      (model weights, populated by init)      │
+          │    /shm         tmpfs    (image transport, file:// URLs)          │
+          └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Why a sidecar, not a single GPU process?
+
+In the naive single-process design (FastAPI + transformers on GPU), every uvicorn worker either pins its own GPU copy of the model (out of memory) or serializes through one shared model (no concurrency). Splitting responsibilities means:
+
+- **vLLM owns the GPU.** Continuous batching, paged attention and the `embed` task implementation already exist in vLLM; we don't reinvent them. One vLLM process per pod, one GPU per pod.
+- **The shim is stateless and CPU-bound.** It can run `UVICORN_WORKERS` (default 4) processes against the same vLLM sidecar over `localhost`. Tokenization and pooling parallelize across cores instead of fighting the GPU.
+- **Pooling stays out of the model server.** Hierarchical and mean row/col pooling are pure NumPy/Torch math on the raw token embeddings. Doing them in the shim means we can change pooling strategies without touching vLLM.
+- **Images travel as files, not JSON.** The shim writes decoded PNG bytes to a tmpfs `emptyDir` at `/shm` and passes `file:///shm/<uuid>.png` to vLLM (vLLM's `--allowed-local-media-path /shm`). This avoids the cost of re-encoding images as base64 over the loopback HTTP hop.
+
+### Container roles
+
+1. **`model-downloader` (initContainer)** — Runs `python -m colpali_inference.app download`. Pulls `MODEL_ID` from HuggingFace Hub into `${MODEL_DIRECTORY_PATH}/$(basename MODEL_ID)` on the shared PVC. Fails the pod fast if the model can't be fetched.
+2. **`colpali-inference` (CPU shim)** — FastAPI app on port `8000`. Reads `VLLM_BASE_URL=http://localhost:8001`, `MODEL_ID`, `IMAGE_SHM_DIR=/shm`. Sets `HF_HUB_OFFLINE=1` so the shim never tries to phone HF Hub at runtime — weights come from the PVC.
+3. **`vllm` (GPU sidecar)** — `vllm/vllm-openai:v0.19.1`. Launch flags (`--task embed`, `--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
+
+### Why a StatefulSet (not Deployment)?
+
+Each replica gets its own `volumeClaimTemplate`-backed PVC for the model. A new pod re-uses the same PVC across rolling restarts (no re-download), and replicas scale out cleanly because they don't share `RWO` storage.
 
 Deploy via Helm:
 
@@ -28,14 +53,17 @@ Deploy via Helm:
 scripts/apply_helm.ps1
 ```
 
+See [modules/helm/colpali-stack/values.yaml](../../modules/helm/colpali-stack/values.yaml) (the `colpaliInference:` block) for the full set of tunables: `modelId`, `replicaCount`, `uvicornWorkers`, `limitConcurrency`, `vllm.maxModelLen`, `vllm.gpuMemoryUtilization`, GPU/CPU resource requests, `nodePool`, `spotNodePool`, etc.
+
 ## API Endpoints
 
 The FastAPI server provides REST endpoints for health checks and embeddings:
 
 ### Health Check
 ```
-GET /health
-GET /
+GET /health   # ready: shim initialised AND vLLM sidecar is /health-OK
+GET /livez    # liveness: shim process only (does not depend on vLLM)
+GET /         # alias for /health
 ```
 
 Returns service status and model readiness:
@@ -44,8 +72,8 @@ Returns service status and model readiness:
   "status": "healthy",
   "model_loaded": true,
   "model_info": {
-    "model_name": "vidore/colqwen2-v1.0",
-    "device": "cuda:0",
+    "model_name": "TomoroAI/tomoro-colqwen3-embed-4b",
+    "vllm_base_url": "http://localhost:8001"
   }
 }
 ```
@@ -59,24 +87,17 @@ POST /embeddings
 ```json
 {
   "images": ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."],
-  "pooling_type": ["hierarchical", "mean_pooling"],
-  "pooling_config": {"pool_factor": 2}
+  "pooling_type": ["hierarchical_pooling", "mean_pooling"]
 }
 ```
 
-Returns structured embeddings:
+Returns structured embeddings (each field is a `batch x patches x embedding_dim` array, present only when requested):
 ```json
 {
   "embeddings": [[[0.1, 0.2, ...]]],
-  "hierarchical_pooled_embeddings": {
-    "hierarchical": [[[0.15, 0.25, ...]]]
-  },
-  "mean_row_pooled_embeddings": {
-    "mean_pooling": [[[0.12, 0.22, ...]]]
-  },
-  "mean_column_pooled_embeddings": {
-    "mean_pooling": [[[0.13, 0.23, ...]]]
-  }
+  "hierarchical_pooled_embeddings": [[[0.15, 0.25, ...]]],
+  "mean_row_pooled_embeddings": [[[0.12, 0.22, ...]]],
+  "mean_column_pooled_embeddings": [[[0.13, 0.23, ...]]]
 }
 ```
 

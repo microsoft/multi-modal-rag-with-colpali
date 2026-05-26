@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+# ColPali related code taken from: https://github.com/microsoft/dstoolkit-multi-modal-rag-with-colpali
 """
 Pydantic models for the ColPali embedding API.
 

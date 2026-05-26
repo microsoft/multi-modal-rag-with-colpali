@@ -1,9 +1,20 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 {{- if .Values.colpaliInference.enabled }}
-# StatefulSet with individual PVCs for true multi-node scaling
-# Each replica gets its own PVC and downloads its own model copy
-# Allows horizontal scaling across multiple nodes
+# StatefulSet: 2-container split (CPU shim + GPU vLLM sidecar) with a
+# per-replica PVC for the model weights, populated by an init container.
+#
+# Container layout:
+#   - init `model-downloader`  : runs `python -m colpali_inference.app
+#     download` to populate /mnt/models with the model weights from
+#     HuggingFace Hub.
+#   - `colpali-inference`      : CPU-only FastAPI shim on port 8000.
+#     Talks to the vLLM sidecar at http://localhost:8001 for /pooling and
+#     /tokenize. Tokenization, image decoding and pooling math run on CPU
+#     across uvicorn workers.
+#   - `vllm`                   : GPU sidecar serving the embedding model
+#     on port 8001. Reads model weights from the shared PVC and image
+#     bytes from a tmpfs emptyDir at /shm (file:// URLs).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -30,7 +41,7 @@ spec:
       serviceAccountName: {{ include "colpali-stack.fullname" . }}-sa
       terminationGracePeriodSeconds: {{ .Values.colpaliInference.statefulSet.terminationGracePeriodSeconds | default 300 }}
       securityContext:
-        fsGroup: 1000  # Ensure volume is writable by container user
+        fsGroup: 1000
       nodeSelector:
         kubernetes.azure.com/agentpool: {{ .Values.colpaliInference.nodePool | default "gpuinference" }}
       tolerations:
@@ -38,16 +49,19 @@ spec:
         operator: "Equal"
         value: "gpu"
         effect: "NoSchedule"
-      # InitContainer downloads the model once per pod startup
+
+      # Init container: download the model into the shared PVC.
       initContainers:
       - name: model-downloader
         image: "{{ .Values.acrServer }}/colpali-inference:{{ .Values.colpaliInference.imageTag }}"
-        command: ["python", "-m", "src.colpali_inference.app", "download"]
+        command: ["python", "-m", "colpali_inference.app", "download"]
         env:
-        - name: HF_HOME
-          value: "/mnt/models/hf"
         - name: MODEL_ID
           value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+        - name: MODEL_DIRECTORY_PATH
+          value: {{ .Values.colpaliInference.modelDirectoryPath | default "/mnt/models/offline" | quote }}
+        - name: HF_HOME
+          value: {{ .Values.colpaliInference.hfHome | default "/mnt/models/hf" | quote }}
         - name: LOG_LEVEL
           value: "INFO"
         - name: OTEL_SERVICE_NAME
@@ -59,29 +73,39 @@ spec:
               key: appinsights-connection-string
         resources:
           requests:
-            memory: "16Gi"
-            cpu: "2"
+            memory: "1Gi"
+            cpu: "500m"
           limits:
-            memory: "32Gi"
-            cpu: "4"
+            memory: "4Gi"
+            cpu: "1"
         volumeMounts:
         - name: model-storage
-          mountPath: /mnt/models/hf
+          mountPath: /mnt/models
         - name: app-secrets-store
           mountPath: "/mnt/secrets-store"
           readOnly: true
 
-      # Main container serves inference after model is downloaded
       containers:
+      # CPU FastAPI shim — tokenize, image decode, pooling math.
       - name: colpali-inference
         image: "{{ .Values.acrServer }}/colpali-inference:{{ .Values.colpaliInference.imageTag }}"
         env:
-        - name: HF_HOME
-          value: "/mnt/models/hf"
-        - name: HF_HUB_OFFLINE
-          value: "1"
         - name: MODEL_ID
           value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+        - name: MODEL_DIRECTORY_PATH
+          value: {{ .Values.colpaliInference.modelDirectoryPath | default "/mnt/models/offline" | quote }}
+        - name: HF_HOME
+          value: {{ .Values.colpaliInference.hfHome | default "/mnt/models/hf" | quote }}
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: VLLM_BASE_URL
+          value: "http://localhost:8001"
+        - name: IMAGE_SHM_DIR
+          value: "/shm"
+        - name: UVICORN_WORKERS
+          value: {{ .Values.colpaliInference.uvicornWorkers | default 4 | quote }}
+        - name: LIMIT_CONCURRENCY
+          value: {{ .Values.colpaliInference.limitConcurrency | default 36 | quote }}
         - name: LOG_LEVEL
           value: "INFO"
         - name: OTEL_SERVICE_NAME
@@ -95,40 +119,158 @@ spec:
           requests:
             memory: {{ .Values.colpaliInference.resources.requests.memory }}
             cpu: {{ .Values.colpaliInference.resources.requests.cpu }}
-            nvidia.com/gpu: 1
           limits:
             memory: {{ .Values.colpaliInference.resources.limits.memory }}
             cpu: {{ .Values.colpaliInference.resources.limits.cpu }}
-            nvidia.com/gpu: 1
         ports:
-        - containerPort: 8080
+        - containerPort: 8000
           name: http
         volumeMounts:
         - name: model-storage
-          mountPath: /mnt/models/hf
+          mountPath: /mnt/models
+        - name: image-shm
+          mountPath: /shm
         - name: app-secrets-store
           mountPath: "/mnt/secrets-store"
           readOnly: true
         lifecycle:
           preStop:
             exec:
-              command:
-              - /bin/sh
-              - -c
-              - "pkill -SIGTERM -f 'python.*' && sleep 30"
+              command: ["/bin/sh", "-c", "sleep 15"]
         livenessProbe:
           httpGet:
-            path: /health
+            path: /livez
             port: http
-          initialDelaySeconds: 120
+          initialDelaySeconds: 60
           periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /health
             port: http
           initialDelaySeconds: 60
           periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        # startupProbe gates liveness/readiness on /livez until the shim
+        # process is responsive. Once it passes, readiness on /health takes
+        # over and tolerates vLLM cold-start (no spurious NotReady flap).
+        startupProbe:
+          httpGet:
+            path: /livez
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 60
+
+      # GPU vLLM sidecar — serves /pooling and /tokenize on port 8001.
+      - name: vllm
+        image: "{{ .Values.acrServer }}/colpali-inference-vllm:{{ .Values.colpaliInference.vllm.imageTag | default .Values.colpaliInference.imageTag }}"
+        # Launch command + flags are baked into the image ENTRYPOINT
+        # (modules/colpali_inference/Dockerfile.vllm). Only env overrides
+        # are passed here so the image is the single source of truth.
+        env:
+        - name: MODEL_ID
+          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+        - name: MODEL_DIRECTORY_PATH
+          value: {{ .Values.colpaliInference.modelDirectoryPath | default "/mnt/models/offline" | quote }}
+        - name: VLLM_MAX_MODEL_LEN
+          value: {{ .Values.colpaliInference.vllm.maxModelLen | default "2048" | quote }}
+        - name: VLLM_GPU_MEMORY_UTILIZATION
+          value: {{ .Values.colpaliInference.vllm.gpuMemoryUtilization | default "0.89" | quote }}
+        ports:
+        - containerPort: 8001
+          name: vllm-http
+        resources:
+          requests:
+            memory: {{ .Values.colpaliInference.vllm.resources.requests.memory }}
+            cpu: {{ .Values.colpaliInference.vllm.resources.requests.cpu }}
+            nvidia.com/gpu: 1
+          limits:
+            memory: {{ .Values.colpaliInference.vllm.resources.limits.memory }}
+            cpu: {{ .Values.colpaliInference.vllm.resources.limits.cpu }}
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: model-storage
+          mountPath: /mnt/models
+        - name: image-shm
+          mountPath: /shm
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: vllm-http
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: vllm-http
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 6
+        startupProbe:
+          httpGet:
+            path: /health
+            port: vllm-http
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 60
+
+      # Janitor sidecar — periodically sweep stale image files from /shm.
+      # The shim already unlinks files via its `_stage_images` finally-block
+      # and clears the directory at startup, but if the shim is killed -9
+      # mid-request the tmpfs (emptyDir Memory) survives in-place restarts
+      # and the file leaks until the next restart. This loop deletes any
+      # *.png older than the configured age, providing belt-and-braces
+      # cleanup. -mmin +N skips in-flight requests (a request never holds
+      # a staged file for that long).
+      - name: shm-janitor
+        image: "busybox:1.36"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          INTERVAL="${SHM_JANITOR_INTERVAL_SECONDS:-3600}"
+          AGE_MIN="${SHM_JANITOR_AGE_MINUTES:-60}"
+          DIR="${IMAGE_SHM_DIR:-/shm}"
+          echo "[shm-janitor] dir=${DIR} interval=${INTERVAL}s age=+${AGE_MIN}min"
+          while true; do
+            sleep "${INTERVAL}"
+            if [ -d "${DIR}" ]; then
+              # -mmin +N deletes files whose mtime is older than N minutes.
+              find "${DIR}" -maxdepth 1 -type f -name '*.png' -mmin +"${AGE_MIN}" -delete 2>/dev/null || true
+            fi
+          done
+        env:
+        - name: IMAGE_SHM_DIR
+          value: "/shm"
+        - name: SHM_JANITOR_INTERVAL_SECONDS
+          value: {{ .Values.colpaliInference.shmJanitor.intervalSeconds | default 3600 | quote }}
+        - name: SHM_JANITOR_AGE_MINUTES
+          value: {{ .Values.colpaliInference.shmJanitor.ageMinutes | default 60 | quote }}
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+        volumeMounts:
+        - name: image-shm
+          mountPath: /shm
+
       volumes:
+      - name: image-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.colpaliInference.imageShmSize | default "2Gi" }}
       - name: app-secrets-store
         csi:
           driver: secrets-store.csi.k8s.io
@@ -147,7 +289,6 @@ spec:
         requests:
           storage: {{ .Values.colpaliInference.model.storageSize }}
 ---
-# Service for ColPali inference pods
 apiVersion: v1
 kind: Service
 metadata:

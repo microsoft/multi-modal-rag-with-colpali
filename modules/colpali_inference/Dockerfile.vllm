@@ -1,0 +1,62 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+#
+# vLLM sidecar image for the ColPali Inference service.
+#
+# Wraps the upstream vllm/vllm-openai image. Bakes in the CLI flags
+# the shim depends on:
+#   - /pooling endpoint via the embed pooling task (auto-detected for
+#     ColQwen3 via supports_late_interaction=True; no --task flag needed).
+#   - --allowed-local-media-path /shm to let vLLM read image files from
+#     the tmpfs shared volume mounted at /shm by the StatefulSet spec.
+#   - --max-model-len and --gpu-memory-utilization sized for ColQwen3-4B
+#     on A10-12Q (override via env if profile changes).
+#
+# Model weights are NOT baked into this image — they come from the shared
+# PVC at /models/<model-name>, populated by the existing init container.
+#
+# vLLM is pinned to v0.19.1 because v0.20+ requires NVIDIA driver >= 580
+# (CUDA 13). Bump only after the AKS GPU node image ships a newer driver.
+
+FROM vllm/vllm-openai:v0.19.1
+
+# Runtime config — override via env (helm) without rebuilding the image.
+# All `vllm serve` flags below are resolved from these vars, so this image is
+# the single source of truth for the launch command.
+ENV MODEL_DIRECTORY_PATH=/mnt/models/offline
+ENV MODEL_ID=TomoroAI/tomoro-colqwen3-embed-4b
+ENV VLLM_MAX_MODEL_LEN=2048
+ENV VLLM_GPU_MEMORY_UTILIZATION=0.89
+# Path whitelisted for file:// image URLs sent by the shim (tmpfs shared
+# volume mounted at /shm in both shim and vllm containers).
+ENV VLLM_ALLOWED_LOCAL_MEDIA_PATH=/shm
+
+EXPOSE 8001
+
+# Entrypoint: resolve MODEL_ID → ${MODEL_DIRECTORY_PATH}/<basename> and exec.
+# Flag rationale:
+#   --enforce-eager           : skip CUDA graph capture (faster cold start;
+#                               ColQwen3-4B doesn't benefit at our batch sizes)
+#   --max-num-batched-tokens  : cap continuous-batching token budget per step
+#   --max-num-seqs            : cap concurrent sequences in the engine
+#   --mm-processor-cache-gb 0 : disable multimodal processor cache (the shim
+#                               tokenizes images itself; vLLM cache is wasted)
+#   --scheduling-policy priority : honour `priority` field on /pooling calls
+#                               so text searches preempt indexing traffic
+#   --trust-remote-code       : ColQwen3 ships custom modeling code
+ENTRYPOINT ["/bin/sh", "-c", "\
+  MODEL_NAME=$(basename \"${MODEL_ID}\") && \
+  exec vllm serve \"${MODEL_DIRECTORY_PATH}/${MODEL_NAME}\" \
+    --served-model-name \"${MODEL_ID}\" \
+    --host 0.0.0.0 \
+    --port 8001 \
+    --max-model-len \"${VLLM_MAX_MODEL_LEN}\" \
+    --gpu-memory-utilization \"${VLLM_GPU_MEMORY_UTILIZATION}\" \
+    --allowed-local-media-path \"${VLLM_ALLOWED_LOCAL_MEDIA_PATH}\" \
+    --enforce-eager \
+    --max-num-batched-tokens 8192 \
+    --max-num-seqs 16 \
+    --mm-processor-cache-gb 0 \
+    --scheduling-policy priority \
+    --trust-remote-code \
+"]
