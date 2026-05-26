@@ -38,13 +38,13 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # Install dependencies (no private sources — all from public PyPI).
-RUN uv sync --no-install-project --no-editable --no-dev
+RUN uv sync --locked --no-install-project --no-editable --no-dev
 
 # Copy application code.
 COPY src/ ./src/
 
 # Install the project itself (non-editable so /app/src isn't writable).
-RUN uv sync --no-editable --no-dev
+RUN uv sync --locked --no-editable --no-dev
 
 
 # Put the venv on PATH.
