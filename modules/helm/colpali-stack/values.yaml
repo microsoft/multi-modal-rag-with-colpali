@@ -176,6 +176,13 @@ colpaliInference:
   # and the vLLM sidecar (file:// URLs avoid HTTP overhead).
   imageShmSize: "2Gi"
 
+  # Periodic /shm cleanup sidecar — busybox `find -mmin +N -delete` loop.
+  # Belt-and-braces cleanup against rare kill -9 / OOM leaks; the shim
+  # itself unlinks on every request and at startup.
+  shmJanitor:
+    intervalSeconds: 900
+    ageMinutes: 10
+
   # CPU shim uvicorn tuning.
   uvicornWorkers: 4
   limitConcurrency: 36

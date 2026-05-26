@@ -222,6 +222,50 @@ spec:
           timeoutSeconds: 10
           failureThreshold: 60
 
+      # Janitor sidecar — periodically sweep stale image files from /shm.
+      # The shim already unlinks files via its `_stage_images` finally-block
+      # and clears the directory at startup, but if the shim is killed -9
+      # mid-request the tmpfs (emptyDir Memory) survives in-place restarts
+      # and the file leaks until the next restart. This loop deletes any
+      # *.png older than the configured age, providing belt-and-braces
+      # cleanup. -mmin +N skips in-flight requests (a request never holds
+      # a staged file for that long).
+      - name: shm-janitor
+        image: "busybox:1.36"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          INTERVAL="${SHM_JANITOR_INTERVAL_SECONDS:-3600}"
+          AGE_MIN="${SHM_JANITOR_AGE_MINUTES:-60}"
+          DIR="${IMAGE_SHM_DIR:-/shm}"
+          echo "[shm-janitor] dir=${DIR} interval=${INTERVAL}s age=+${AGE_MIN}min"
+          while true; do
+            sleep "${INTERVAL}"
+            if [ -d "${DIR}" ]; then
+              # -mmin +N deletes files whose mtime is older than N minutes.
+              find "${DIR}" -maxdepth 1 -type f -name '*.png' -mmin +"${AGE_MIN}" -delete 2>/dev/null || true
+            fi
+          done
+        env:
+        - name: IMAGE_SHM_DIR
+          value: "/shm"
+        - name: SHM_JANITOR_INTERVAL_SECONDS
+          value: {{ .Values.colpaliInference.shmJanitor.intervalSeconds | default 3600 | quote }}
+        - name: SHM_JANITOR_AGE_MINUTES
+          value: {{ .Values.colpaliInference.shmJanitor.ageMinutes | default 60 | quote }}
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+        volumeMounts:
+        - name: image-shm
+          mountPath: /shm
+
       volumes:
       - name: image-shm
         emptyDir:

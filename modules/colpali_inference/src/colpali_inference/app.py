@@ -62,6 +62,25 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Starting ColPali inference shim...")
 
+    # Sweep any stale image files left in IMAGE_SHM_DIR by a previous
+    # container instance that was killed mid-request (kill -9, OOM, segfault)
+    # before its `_stage_images` finally-block could unlink them. emptyDir
+    # tmpfs survives in-place container restarts, so without this sweep the
+    # 2Gi /shm would slowly fill across restarts.
+    try:
+        shm_dir = vllm_client.image_shm_dir
+        shm_dir.mkdir(parents=True, exist_ok=True)
+        stale = list(shm_dir.glob("*.png"))
+        for p in stale:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Failed to remove stale shm file %s: %s", p, e)
+        if stale:
+            logger.info("Cleared %d stale image(s) from %s", len(stale), shm_dir)
+    except Exception as e:
+        logger.warning("Stale shm sweep failed: %s", e)
+
     # Processor load is fast on CPU; do it inline so the worker is ready
     # to serve as soon as vLLM is also ready.
     try:
