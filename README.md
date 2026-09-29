@@ -104,7 +104,7 @@ flowchart TB
         end
 
         subgraph APP_SERVICES ["Application Services"]
-            COLQWEN[tomoro-colqwen3-embed-4b Inference<br/>StatefulSet (vLLM + shim)]
+            COLQWEN["tomoro-colqwen3-embed-4b Inference<br/>StatefulSet (vLLM + shim)"]
             DOCPROC[Document Processor<br/>Deployment]
             QDRANT[Qdrant Vector DB<br/>StatefulSet]
             AGENT_API[Agent API<br/>Deployment]
