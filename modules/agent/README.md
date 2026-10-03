@@ -6,6 +6,9 @@ A containerized chat interface for document Q&A using Azure OpenAI and ColPali-b
 >
 > This is a **demo** built with Chainlit to show what ColPali can do. Not production-ready.
 
+For local development, set `AZURE_TOKEN_CREDENTIALS=dev` before starting the agent.
+The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredential`.
+
 ## Architecture Overview
 
 This service uses a **distributed architecture** for separation of concerns and flexible scaling:
