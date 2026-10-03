@@ -61,6 +61,8 @@ spec:
           value: {{ .Values.aksIdentityClientId | quote }}
         - name: AZURE_TENANT_ID
           value: {{ .Values.tenantId | quote }}
+        - name: AZURE_TOKEN_CREDENTIALS
+          value: "WorkloadIdentityCredential"
 
         # ColPali Inference endpoint (Kubernetes service)
         - name: COLPALI_INFERENCE_ENDPOINT
