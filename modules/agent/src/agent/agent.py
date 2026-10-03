@@ -92,7 +92,7 @@ class ColPaliAgent:
             if self._initialized:
                 return
 
-            credential = DefaultAzureCredential()
+            credential = DefaultAzureCredential(require_envvar=True)
             try:
                 chat_client = AzureOpenAIChatClient(
                     credential=credential,
