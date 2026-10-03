@@ -139,6 +139,38 @@ class ColPaliInference:
             return torch.stack(list(pooled_result))
         raise TypeError(f"Unexpected type from pool_embeddings: {type(pooled_result)}")
 
+    @staticmethod
+    def mean_pool_rows_and_columns(
+        image_embedding: torch.Tensor,
+        image_tokens_mask: torch.Tensor,
+        x_patches: int,
+        y_patches: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Mean-pool image tokens per grid row and per grid column.
+
+        Qwen2-VL-style processors emit merged image tokens row-major:
+        ``y_patches`` rows (height) of ``x_patches`` tokens (width). Returns
+        ``(prefix + y_patches row vectors + postfix,
+        prefix + x_patches column vectors + postfix)``.
+        """
+        image_tokens = image_embedding[image_tokens_mask].view(
+            y_patches, x_patches, image_embedding.shape[-1]
+        )
+        pooled_by_rows = torch.mean(image_tokens, dim=1)
+        pooled_by_columns = torch.mean(image_tokens, dim=0)
+
+        image_token_idxs = torch.nonzero(image_tokens_mask.int(), as_tuple=False)
+        first_image_token_idx = int(image_token_idxs[0].item())
+        last_image_token_idx = int(image_token_idxs[-1].item())
+
+        prefix_tokens = image_embedding[:first_image_token_idx]
+        postfix_tokens = image_embedding[last_image_token_idx + 1 :]
+
+        return (
+            torch.cat((prefix_tokens, pooled_by_rows, postfix_tokens), dim=0),
+            torch.cat((prefix_tokens, pooled_by_columns, postfix_tokens), dim=0),
+        )
+
     def _get_patches(self, image_size: Tuple[int, int]) -> Tuple[int, int]:
         """Get (x_patches, y_patches) for one image via the HF processor (CPU)."""
         if self.processor is None:
@@ -252,27 +284,11 @@ class ColPaliInference:
                             "tokenization are out of sync."
                         )
 
-                    embedding_dim = image_embedding.shape[-1]
-                    image_tokens = image_embedding[image_tokens_mask].view(
-                        x_patches, y_patches, embedding_dim
-                    )
-                    pooled_by_rows = torch.mean(image_tokens, dim=0)
-                    pooled_by_columns = torch.mean(image_tokens, dim=1)
-
-                    image_token_idxs = torch.nonzero(
-                        image_tokens_mask.int(), as_tuple=False
-                    )
-                    first_image_token_idx = int(image_token_idxs[0].item())
-                    last_image_token_idx = int(image_token_idxs[-1].item())
-
-                    prefix_tokens = image_embedding[:first_image_token_idx]
-                    postfix_tokens = image_embedding[last_image_token_idx + 1 :]
-
-                    pooled_by_rows_full = torch.cat(
-                        (prefix_tokens, pooled_by_rows, postfix_tokens), dim=0
-                    )
-                    pooled_by_columns_full = torch.cat(
-                        (prefix_tokens, pooled_by_columns, postfix_tokens), dim=0
+                    (
+                        pooled_by_rows_full,
+                        pooled_by_columns_full,
+                    ) = self.mean_pool_rows_and_columns(
+                        image_embedding, image_tokens_mask, x_patches, y_patches
                     )
 
                     pooled_rows_batch.append(
