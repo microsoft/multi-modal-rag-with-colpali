@@ -87,7 +87,7 @@ class DocumentRetriever:
         if azure_client_id:
             self.credential = ManagedIdentityCredential(client_id=azure_client_id)
         else:
-            self.credential = DefaultAzureCredential()
+            self.credential = DefaultAzureCredential(require_envvar=True)
 
         self.blob_service_client = None  # Initialized on first use
 
