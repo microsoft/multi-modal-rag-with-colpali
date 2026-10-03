@@ -1,77 +1,78 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+#
+# ColPali Inference shim image (CPU-only FastAPI front-end).
+# The vLLM sidecar is built separately from Dockerfile.vllm.
 
-# Copy UV binary from official UV image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# UV (Python package manager) from the official ghcr image.
+FROM ghcr.io/astral-sh/uv:latest AS uvimage
 
-# Install Python 3.12 and essential system dependencies
-# Set timezone non-interactively and configure debconf for non-interactive mode
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=UTC
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
-    && apt-get update && apt-get install -y \
-    software-properties-common \
-    curl \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y \
-    python3.12 \
-    python3.12-dev \
-    python3.12-venv \
-    && ln -sf /usr/bin/python3.12 /usr/bin/python \
-    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
-    && rm -rf /var/lib/apt/lists/*
+# Azure Linux Python base image.
+FROM mcr.microsoft.com/azurelinux/base/python:3.12
+COPY --from=uvimage /uv /uvx /bin/
 
-# Configure UV for optimal performance
+ARG BUILD_NUMBER
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONHASHSEED=random
+ENV PYTHONIOENCODING="utf-8"
+ENV PYTHONUTF8=1
+ENV PYTHONPATH=/app/src
+ENV PORT=8000
+
+# UV tuning.
 ENV UV_LINK_MODE=copy
 ENV UV_COMPILE_BYTECODE=1
-
-# Create non-root user for security with home directory
-RUN groupadd -r app && useradd -r -g app -m app
-
-# Set UV cache directory to a writable location
 ENV UV_CACHE_DIR="/tmp/uv-cache"
 
-# Set working directory and change ownership
+# Minimal runtime deps. curl is used by the HEALTHCHECK; ca-certificates for
+# outbound HTTPS (model download, telemetry).
+RUN tdnf install -y \
+    ca-certificates curl \
+    && tdnf clean all \
+    && useradd --system --no-create-home --shell /sbin/nologin appuser
+
 WORKDIR /app
-RUN chown app:app /app
 
-# Switch to non-root user for dependency installation
-USER app
+# Copy dependency files first for better layer caching.
+COPY pyproject.toml uv.lock README.md ./
 
-# Copy dependency files first for better layer caching
-COPY --chown=app:app pyproject.toml uv.lock* README.md ./
+# Install dependencies (no private sources — all from public PyPI).
+RUN uv sync --locked --no-install-project --no-editable --no-dev
 
-# Install dependencies - UV handles virtual environment creation
-RUN uv sync --locked --no-install-project --no-editable
+# Copy application code.
+COPY src/ ./src/
 
-# Copy application code
-COPY --chown=app:app src/ ./src/
+# Install the project itself (non-editable so /app/src isn't writable).
+RUN uv sync --locked --no-editable --no-dev
 
-# Install the project itself in non-editable mode
-RUN uv sync --locked --no-editable
 
-# Set PATH to include virtual environment
+# Put the venv on PATH.
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Set HuggingFace cache directory to writable location
+# HuggingFace cache for processor files (model weights live on the PVC at
+# MODEL_DIRECTORY_PATH, populated by the init container).
 ENV HF_HOME="/tmp/hf_cache"
 
-# Set working directory and user
-WORKDIR /app
-USER app
+# Number of uvicorn worker processes. The shim is CPU-bound (tokenize, image
+# decode, pooling math); multiple workers parallelise across cores. vLLM
+# remains the single GPU consumer and owns continuous batching.
+ENV UVICORN_WORKERS=4
 
-# Server configuration
-ENV HOST=0.0.0.0
-ENV PORT=8080
+# Embed BUILD_NUMBER for the /health build-id contract used by post-deploy checks.
+RUN echo "BUILD_NUMBER=${BUILD_NUMBER:-localbuild.$(date +%Y%m%d%H%M)}" > .env
 
-# Expose port
-EXPOSE 8080
+# Transfer ownership of /app to the unprivileged user; /tmp is world-writable
+# by default so no explicit chown is needed there.
+RUN chown -R appuser:appuser /app
+USER appuser
 
-# Health check
+EXPOSE 8000
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
-# Entry point for inference server
-CMD ["python", "-m", "src.colpali_inference.app"]
+# The Python entrypoint exec's uvicorn with --workers when invoked without
+# the "download" arg (init container uses "download" to populate the PVC).
+CMD ["python", "-m", "colpali_inference.app"]
