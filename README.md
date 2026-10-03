@@ -35,7 +35,7 @@ ColPali is a multi-modal document understanding model that processes documents a
 - **Multi-Modal**: Understands both text and visual elements like tables, charts, and document structure
 - **No OCR Required**: Bypasses text extraction preprocessing steps
 
-This implementation uses **ColQwen2** and **ColQwen3-4B**, variants that extend ColPali's approach with additional language support and inference optimizations.
+This implementation ships with **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3-based late-interaction embedding model (320-dim per-token vectors). The inference service runs the model behind a [vLLM](https://github.com/vllm-project/vllm) sidecar (`/pooling` endpoint) so the GPU only does the forward pass while a CPU FastAPI shim handles tokenization, image staging, hierarchical and mean row/column pooling. Any other ColQwen2/ColQwen3 late-interaction checkpoint compatible with vLLM's pooling task can be substituted by changing `colpaliInference.modelId` in the Helm values.
 
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 
@@ -45,7 +45,7 @@ This is a complete end-to-end deployment for Azure. The main complexity is hosti
 
 **Components:**
 - Event-driven document processing pipeline (Blob Storage → Event Grid → Service Bus)
-- ColQwen2/ColQwen3-4B inference service on AKS with model caching
+- ColQwen3 (`TomoroAI/tomoro-colqwen3-embed-4b`) inference service on AKS — vLLM GPU sidecar + CPU pooling shim, with model weights cached on a shared PVC
 - Qdrant vector database for similarity search
 - Complete infrastructure as code (Bicep templates)
 - Docker images and Helm charts for all services
@@ -58,7 +58,7 @@ This is a complete end-to-end deployment for Azure. The main complexity is hosti
 2. **Event Trigger** → Storage generates blob events, routed by Event Grid to Service Bus
 3. **Async Processing** → Document Processor consumes queue messages and reads documents
 4. **Image Extraction** → Documents converted to high-resolution page images
-5. **AI Inference** → ColQwen2/ColQwen3-4B generates multi-modal embeddings on AKS pods
+5. **AI Inference** → `tomoro-colqwen3-embed-4b` (served via vLLM) generates multi-modal embeddings on AKS pods
 6. **Image Storage** → Page images uploaded to Azure Blob Storage for retrieval
 7. **Vector Storage** → Embeddings stored in Qdrant with metadata and image URLs
 
@@ -104,7 +104,7 @@ flowchart TB
         end
 
         subgraph APP_SERVICES ["Application Services"]
-            COLQWEN[ColQwen2/ColQwen3-4B Inference<br/>StatefulSet]
+            COLQWEN["tomoro-colqwen3-embed-4b Inference<br/>StatefulSet (vLLM + shim)"]
             DOCPROC[Document Processor<br/>Deployment]
             QDRANT[Qdrant Vector DB<br/>StatefulSet]
             AGENT_API[Agent API<br/>Deployment]
@@ -162,24 +162,29 @@ flowchart TB
 
 For detailed component descriptions, deployment topology, and technical specifications, see the **[Infrastructure Guide](modules/infra/README.md)**.
 
-## Why Qdrant Vector Data + Azure Kubernetes Service?
+## Why Qdrant Vector Database + Azure Kubernetes Service?
 
-### Why Qdrant over AI Search?
-- **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - critical for ColPali's page-based embeddings
-- **Advanced Operations**: Qdrant supports reranking and MAX_SIM operations that AI Search doesn't provide
-- **Storage Optimization**: By storing page images in Azure Blob Storage and only vectors in Qdrant, we significantly reduce memory requirements and vector database storage costs
+### Why Qdrant Vector Database over AI Search for ColPali specific scenarios?
+- **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - this is needed to use ColPali's based models that output over 100 embeddings per document.
+- **Advanced Multi-Vector Operations**: Qdrant supports reranking and MAX_SIM operations that we cannot perform natively in AI Search. This makes it a lot easier, to implement late interaction where we compare multi-embeddings stored, with multi-embeddings at query time.
+
+For this specific case, AI Search would not have worked for our use case, but it has great applications in other scenarios.
+
+> [!NOTE]
+>
+> AI Search does offer other ways to achieve multi-modal RAG (See [Multimodal search in Azure AI Search](https://learn.microsoft.com/en-us/azure/search/multimodal-search-overview)), but for the use case we explored, ColPali based approaches led to higher retrieval quality, and higher indexing throughput at scale in production based on our benchmarking. Results will vary from use case to use case and should be benchmarked accordingly.
 
 ### Why AKS over Container Apps?
-- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure.
-- **Simpler Setup**: No need to setup multiple Azure Services to host the different services.
-- **Shared Compute Costs**: Multiple services (document processor + ColQwen2/ColQwen3-4B inference) share the same node pool
+- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure at the time of experimentation.
+- **Simpler Setup**: No need to setup multiple Azure Services to host the different services, everything can run inside the same AKS cluster.
+- **Shared Compute Costs**: Multiple services (document processor + ColQwen3 inference) share the same node pool.
 
 ## Project Structure
 
 ```
 ├── modules/
 │   ├── agent/          # RAG agent application
-│   ├── colpali_inference/   # ColQwen2/ColQwen3-4B inference service
+│   ├── colpali_inference/   # tomoro-colqwen3-embed-4b inference service (vLLM sidecar + CPU shim)
 │   ├── document_processor/  # FastAPI document processing service
 │   ├── helm/           # Helm charts for AKS deployment
 │   └── infra/          # Bicep infrastructure templates
@@ -198,9 +203,7 @@ Two techniques make ColPali embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`) based on benchmarking results.
-
-This balances speed and quality for production deployments.
+**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`) based on benchmarking results. We did extensive internal benchmarking, and determined that this combination, has the best latency / retrieval quality trade off for production deployments.
 
 ## Quick Start
 
