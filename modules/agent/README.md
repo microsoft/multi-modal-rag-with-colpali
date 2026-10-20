@@ -33,17 +33,11 @@ page vector in the corpus; the HNSW prefetch remains approximate.
 
 ### Search settings and PULSAR
 
-The current retriever sets `prefetch_limit = top_k * 10` for each row/column
-prefetch and `hnsw_ef = 200`, with binary quantization, `rescore=False`, and
-`oversampling=2.0`. These are implementation settings, not separately exposed
-environment variables. `search_documents_batch` defaults to `top_k=10`;
-the single-query `search_documents` wrapper defaults to `top_k=5`.
-
-[Section 5.2 of PULSAR](https://arxiv.org/html/2608.28572#S5.SS2) instead reports a
+[Section 5.2 of PULSAR](https://arxiv.org/html/2608.28572#S5.SS2) reports a
 production prefetch limit of **200** and HNSW ef of **64**, following sweeps on
 ViDoRe V3; its pooling comparison used ef **128**. Those settings and the paper's
-production `top_k=5` are reference operating points, not this agent's defaults
-or universally optimal values. Evaluate candidate recall and search latency on
+production `top_k=5` are reference operating points, not universally optimal
+values. Evaluate candidate recall and search latency on
 your corpus before changing them. Query expansion, embedding generation, image
 fetches, and answer generation also contribute to this agent's end-to-end
 latency; the paper's vector-search timings do not include all of those steps.
