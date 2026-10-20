@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .agent import ColPaliAgent
+from .agent import INTERNAL_ERROR_MESSAGE, ColPaliAgent
 from .document_retriever import DocumentRetriever
 from .models import (
     ChatRequest,
@@ -37,8 +37,6 @@ load_dotenv(find_dotenv())
 configure_telemetry()
 
 logger = logging.getLogger(__name__)
-
-INTERNAL_ERROR_MESSAGE = "An unexpected error occurred. Please try again later."
 
 # Global agent instance
 agent: Optional[ColPaliAgent] = None
