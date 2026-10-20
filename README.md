@@ -200,12 +200,11 @@ Two techniques make these token-level embeddings practical at scale:
 
 ## Quick Start
 
-See **[scripts/README.md](scripts/README.md)** for deployment instructions.
+Follow the **[first-run guide](scripts/README.md)** to deploy, upload a PDF, ask a
+question, and clean up the resources. It includes prerequisites and common failures.
 
-### Prerequisites
-- Azure subscription
-- Azure CLI
-- Python 3.11+
+Deployment requires an Azure subscription, PowerShell 7, Azure CLI, kubectl, Helm,
+and Docker. Local Python development uses Python 3.12 and uv.
 
 ## Contributing
 
