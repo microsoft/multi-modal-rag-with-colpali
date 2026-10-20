@@ -38,7 +38,9 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 ## API Error Responses
 
 Internal failures return a generic message; exception details and tracebacks are
-logged server-side, not sent to clients.
+logged server-side, not sent to clients. The agent's `run_stream` error events
+also use this generic message, so exception details never enter the event payload
+passed to API consumers.
 
 - `/chat` and unhandled API failures return HTTP 500 with `error` and `detail` fields.
 - `/chat/stream` keeps the SSE response and emits a terminal `error` event with
