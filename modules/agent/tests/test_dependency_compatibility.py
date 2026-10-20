@@ -3,19 +3,104 @@
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 import jwt
+from agent_framework import ChatMessage, DataContent, Role, TextContent
+from agent_framework.azure import AzureOpenAIChatClient
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from msal.oauth2cli.assertion import JwtAssertionCreator
+from openai.types.chat import ChatCompletion
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-from agent import app as api
+with patch("agent.setup_logging.configure_telemetry"):
+    from agent import app as api
+
+from agent.agent import ColPaliAgent
+
+
+class FrameworkCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_agent_uses_core_azure_chat_client(self):
+        credential = Mock()
+        qdrant = AsyncMock()
+        environment = {
+            "AI_FOUNDRY_OPEN_AI_ENDPOINT": "https://example.invalid",
+            "COLPALI_INFERENCE_ENDPOINT": "https://example.invalid",
+            "AZURE_OPENAI_API_KEY": "test-only",
+            "AZURE_OPENAI_API_VERSION": "2024-10-21",
+            "AZURE_CLIENT_ID": "",
+        }
+        with (
+            patch.dict(os.environ, environment),
+            patch("agent.agent.DefaultAzureCredential", return_value=credential),
+            patch("agent.document_retriever.DefaultAzureCredential"),
+            patch("agent.document_retriever.AsyncQdrantClient", return_value=qdrant),
+            patch("agent.agent.os.makedirs"),
+        ):
+            agent = ColPaliAgent(deployment_name="test-model")
+            await agent.initialize()
+        self.assertIsInstance(agent._chat_client, AzureOpenAIChatClient)
+        client = agent._chat_client
+        response = ChatCompletion(
+            id="test-completion",
+            created=0,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "Related question"},
+                }
+            ],
+        )
+        try:
+            with patch.object(
+                client.client.chat.completions,
+                "create",
+                new=AsyncMock(return_value=response),
+            ) as complete:
+                queries = await agent.generate_search_queries("Original question")
+                self.assertEqual(queries, ["Original question", "Related question"])
+                self.assertEqual(complete.call_args.kwargs["model"], "test-model")
+                result = await client.get_response(
+                    [
+                        ChatMessage(
+                            role=Role.USER,
+                            contents=[
+                                TextContent(text="Describe"),
+                                DataContent(
+                                    uri="data:image/png;base64,aGVsbG8=",
+                                    media_type="image/png",
+                                ),
+                            ],
+                        )
+                    ]
+                )
+                self.assertEqual(result.text, "Related question")
+                messages = complete.call_args.kwargs["messages"]
+                self.assertEqual(messages[0]["content"][0]["text"], "Describe")
+                self.assertEqual(
+                    messages[1]["content"][0],
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                    },
+                )
+        finally:
+            await client.client.close()
+            await agent.cleanup()
+        credential.close.assert_called_once()
+        qdrant.close.assert_awaited_once()
 
 
 class ApiCompatibilityTests(unittest.TestCase):
@@ -81,6 +166,41 @@ class ApiCompatibilityTests(unittest.TestCase):
 
 
 class DependencyCompatibilityTests(unittest.TestCase):
+    def test_only_core_framework_distribution_is_required(self):
+        core = distribution("agent-framework-core")
+        self.assertEqual(core.version, "1.0.0b251120")
+        self.assertIn(
+            "agent_framework/azure/_chat_client.py", {str(path) for path in core.files}
+        )
+        for name in ["agent-framework", "agent-framework-mem0", "mem0ai"]:
+            with self.subTest(package=name), self.assertRaises(PackageNotFoundError):
+                distribution(name)
+
+    def test_test_imports_do_not_configure_azure_monitor(self):
+        script = """
+import os
+import runpy
+import sys
+from unittest.mock import patch
+
+with patch.dict(os.environ, {
+    "APPLICATIONINSIGHTS_CONNECTION_STRING":
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000"
+}), patch("azure.monitor.opentelemetry.configure_azure_monitor") as configure:
+    runpy.run_path(sys.argv[1])
+    configure.assert_not_called()
+"""
+        for name in ["test_app.py", "test_dependency_compatibility.py"]:
+            with self.subTest(module=name):
+                result = subprocess.run(
+                    [sys.executable, "-c", script, str(Path(__file__).with_name(name))],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_instrumented_fastapi_request(self):
         app = FastAPI()
 

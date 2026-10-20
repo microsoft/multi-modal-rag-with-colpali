@@ -4,12 +4,14 @@
 import json
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent import app as api
+with patch("agent.setup_logging.configure_telemetry"):
+    from agent import app as api
 
 PRIVATE_ERROR = "Backend failure at /private/service.py: secret-token"
 PUBLIC_ERROR = "An unexpected error occurred. Please try again later."
