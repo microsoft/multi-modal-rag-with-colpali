@@ -61,41 +61,17 @@ var roles = {
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
 }
 
-resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
-  name: last(split(dataStorageAccountId, '/'))
-}
-
-resource aiFoundryService 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
-  name: last(split(aiFoundryServiceId, '/'))
-}
-
-// Get reference to AI Foundry project for scoped role assignment
-resource aiFoundryProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' existing = {
-  parent: aiFoundryService
-  name: last(split(aiFoundryProjectId, '/'))
-}
-
-// Get reference to Container Registry for scoped role assignments
-resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  name: last(split(containerRegistryId, '/'))
-}
-
-resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = if (!empty(serviceBusNamespaceId)) {
-  name: last(split(serviceBusNamespaceId, '/'))
-}
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(keyVaultId)) {
-  name: last(split(keyVaultId, '/'))
-}
-
 // =============================================================================
 // AKS IDENTITY PERMISSIONS
 // =============================================================================
 
 // AKS Workload Identity -> Data Storage (for blob access)
-resource aksDataStorageAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId)) {
-  name: guid(dataStorageAccountId, aksWorkloadPrincipalId, roles.storageBlobDataContributor, 'aks-data-storage')
-  scope: dataStorageAccount
-  properties: {
+module aksDataStorageAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId)) {
+  name: 'aksDataStorageAssignment'
+  params: {
+    name: guid(dataStorageAccountId, aksWorkloadPrincipalId, roles.storageBlobDataContributor, 'aks-data-storage')
+    resourceId: dataStorageAccountId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       roles.storageBlobDataContributor
@@ -106,10 +82,12 @@ resource aksDataStorageAssignment 'Microsoft.Authorization/roleAssignments@2022-
 }
 
 // AKS Workload Identity -> Service Bus Namespace (for sending messages)
-resource aksServiceBusSenderAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(serviceBusNamespaceId)) {
-  name: guid(serviceBusNamespaceId, aksWorkloadPrincipalId, roles.serviceBusDataSender, 'aks-servicebus-sender')
-  scope: serviceBusNamespace
-  properties: {
+module aksServiceBusSenderAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(serviceBusNamespaceId)) {
+  name: 'aksServiceBusSenderAssignment'
+  params: {
+    name: guid(serviceBusNamespaceId, aksWorkloadPrincipalId, roles.serviceBusDataSender, 'aks-servicebus-sender')
+    resourceId: serviceBusNamespaceId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.serviceBusDataSender)
     principalId: aksWorkloadPrincipalId
     principalType: 'ServicePrincipal'
@@ -117,10 +95,12 @@ resource aksServiceBusSenderAssignment 'Microsoft.Authorization/roleAssignments@
 }
 
 // AKS Workload Identity -> Service Bus Namespace (for receiving messages)
-resource aksServiceBusReceiverAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(serviceBusNamespaceId)) {
-  name: guid(serviceBusNamespaceId, aksWorkloadPrincipalId, roles.serviceBusDataReceiver, 'aks-servicebus-receiver')
-  scope: serviceBusNamespace
-  properties: {
+module aksServiceBusReceiverAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(serviceBusNamespaceId)) {
+  name: 'aksServiceBusReceiverAssignment'
+  params: {
+    name: guid(serviceBusNamespaceId, aksWorkloadPrincipalId, roles.serviceBusDataReceiver, 'aks-servicebus-receiver')
+    resourceId: serviceBusNamespaceId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.serviceBusDataReceiver)
     principalId: aksWorkloadPrincipalId
     principalType: 'ServicePrincipal'
@@ -128,10 +108,12 @@ resource aksServiceBusReceiverAssignment 'Microsoft.Authorization/roleAssignment
 }
 
 // AKS Cluster Kubelet Identity -> Container Registry (for pulling images)
-resource aksClusterAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksKubeletIdentityPrincipalId)) {
-  name: guid(containerRegistryId, aksKubeletIdentityPrincipalId, roles.acrPull, 'aks-cluster-acr-pull')
-  scope: containerRegistry
-  properties: {
+module aksClusterAcrPullAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksKubeletIdentityPrincipalId)) {
+  name: 'aksClusterAcrPullAssignment'
+  params: {
+    name: guid(containerRegistryId, aksKubeletIdentityPrincipalId, roles.acrPull, 'aks-cluster-acr-pull')
+    resourceId: containerRegistryId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.acrPull)
     principalId: aksKubeletIdentityPrincipalId
     principalType: 'ServicePrincipal'
@@ -139,10 +121,12 @@ resource aksClusterAcrPullAssignment 'Microsoft.Authorization/roleAssignments@20
 }
 
 // AKS Workload Identity -> Key Vault (for reading Qdrant API key secrets)
-resource aksKeyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(keyVaultId)) {
-  name: guid(keyVaultId, aksWorkloadPrincipalId, roles.keyVaultSecretsUser, 'aks-keyvault-secrets-user')
-  scope: keyVault
-  properties: {
+module aksKeyVaultSecretsUserAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId) && !empty(keyVaultId)) {
+  name: 'aksKeyVaultSecretsUserAssignment'
+  params: {
+    name: guid(keyVaultId, aksWorkloadPrincipalId, roles.keyVaultSecretsUser, 'aks-keyvault-secrets-user')
+    resourceId: keyVaultId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.keyVaultSecretsUser)
     principalId: aksWorkloadPrincipalId
     principalType: 'ServicePrincipal'
@@ -150,10 +134,12 @@ resource aksKeyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignmen
 }
 
 // AKS Workload Identity -> AI Foundry Project (for Azure AI Agents API access)
-resource aksAIFoundryProjectAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId)) {
-  name: guid(aiFoundryProjectId, aksWorkloadPrincipalId, roles.azureAIUser, 'aks-ai-foundry-project')
-  scope: aiFoundryProject
-  properties: {
+module aksAIFoundryProjectAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId)) {
+  name: 'aksAIFoundryProjectAssignment'
+  params: {
+    name: guid(aiFoundryProjectId, aksWorkloadPrincipalId, roles.azureAIUser, 'aks-ai-foundry-project')
+    resourceId: aiFoundryProjectId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.azureAIUser)
     principalId: aksWorkloadPrincipalId
     principalType: 'ServicePrincipal'
@@ -161,10 +147,12 @@ resource aksAIFoundryProjectAssignment 'Microsoft.Authorization/roleAssignments@
 }
 
 // AKS Workload Identity -> AI Foundry Service (for OpenAI model access)
-resource aksAIFoundryOpenAIAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId)) {
-  name: guid(aiFoundryServiceId, aksWorkloadPrincipalId, roles.cognitiveServicesOpenAIUser, 'aks-ai-foundry-openai')
-  scope: aiFoundryService
-  properties: {
+module aksAIFoundryOpenAIAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(aksWorkloadPrincipalId)) {
+  name: 'aksAIFoundryOpenAIAssignment'
+  params: {
+    name: guid(aiFoundryServiceId, aksWorkloadPrincipalId, roles.cognitiveServicesOpenAIUser, 'aks-ai-foundry-openai')
+    resourceId: aiFoundryServiceId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       roles.cognitiveServicesOpenAIUser
@@ -179,10 +167,12 @@ resource aksAIFoundryOpenAIAssignment 'Microsoft.Authorization/roleAssignments@2
 // =============================================================================
 
 // User -> Data Storage Account (for reading/writing documents)
-resource userDataStorageAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(userObjectId)) {
-  name: guid(dataStorageAccountId, userObjectId, roles.storageBlobDataContributor, 'user-data-storage')
-  scope: dataStorageAccount
-  properties: {
+module userDataStorageAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(userObjectId)) {
+  name: 'userDataStorageAssignment'
+  params: {
+    name: guid(dataStorageAccountId, userObjectId, roles.storageBlobDataContributor, 'user-data-storage')
+    resourceId: dataStorageAccountId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       roles.storageBlobDataContributor
@@ -193,10 +183,12 @@ resource userDataStorageAssignment 'Microsoft.Authorization/roleAssignments@2022
 }
 
 // User -> AI Foundry (for AI services access)
-resource userAIFoundryAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(userObjectId)) {
-  name: guid(aiFoundryServiceId, userObjectId, roles.azureAIUser, 'user-ai-foundry')
-  scope: aiFoundryService
-  properties: {
+module userAIFoundryAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(userObjectId)) {
+  name: 'userAIFoundryAssignment'
+  params: {
+    name: guid(aiFoundryServiceId, userObjectId, roles.azureAIUser, 'user-ai-foundry')
+    resourceId: aiFoundryServiceId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.azureAIUser)
     principalId: userObjectId
     principalType: 'User'
@@ -204,10 +196,12 @@ resource userAIFoundryAssignment 'Microsoft.Authorization/roleAssignments@2022-0
 }
 
 // User -> Container Registry (for pushing images)
-resource userAcrPushAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(userObjectId)) {
-  name: guid(containerRegistryId, userObjectId, roles.acrPush, 'user-acr-push')
-  scope: containerRegistry
-  properties: {
+module userAcrPushAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(userObjectId)) {
+  name: 'userAcrPushAssignment'
+  params: {
+    name: guid(containerRegistryId, userObjectId, roles.acrPush, 'user-acr-push')
+    resourceId: containerRegistryId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.acrPush)
     principalId: userObjectId
     principalType: 'User'
@@ -215,10 +209,12 @@ resource userAcrPushAssignment 'Microsoft.Authorization/roleAssignments@2022-04-
 }
 
 // User -> Container Registry (for pulling images)
-resource userAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments && !empty(userObjectId)) {
-  name: guid(containerRegistryId, userObjectId, roles.acrPull, 'user-acr-pull')
-  scope: containerRegistry
-  properties: {
+module userAcrPullAssignment 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = if (deployRoleAssignments && !empty(userObjectId)) {
+  name: 'userAcrPullAssignment'
+  params: {
+    name: guid(containerRegistryId, userObjectId, roles.acrPull, 'user-acr-pull')
+    resourceId: containerRegistryId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.acrPull)
     principalId: userObjectId
     principalType: 'User'
