@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - gpu-resources namespace must exist (apply gpu-resources-namespace.yaml first)
 #   - GPU nodes must have label: sku=gpu
-#   - For ServiceMonitor to work, Prometheus Operator CRDs must be installed
+#   - AKS managed Prometheus must provide the azmonitoring.coreos.com CRDs
 #
 # Apply with:
 #   kubectl apply -f dcgm-exporter.yaml
@@ -89,8 +89,8 @@ spec:
     app.kubernetes.io/name: dcgm-exporter
 ---
 # ServiceMonitor for Prometheus to scrape DCGM metrics
-# Requires Prometheus Operator CRDs to be installed
-apiVersion: monitoring.coreos.com/v1
+# Uses the CRD provided by Azure Monitor managed Prometheus
+apiVersion: azmonitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: dcgm-exporter

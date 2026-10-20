@@ -37,6 +37,17 @@ annotations:
 1. Run infrastructure deployment: `.\scripts\deploy_infra.ps1`
 2. Have kubectl and helm installed
 
+### Node pools
+
+The infrastructure uses `systempool` for cluster services, `cpupool` for CPU
+workloads, and `gpupool` for GPU workloads. The chart's CPU selectors target
+`cpupool`; `colpaliInference.nodePool` defaults to `gpupool`.
+
+Existing clusters using `gpuinference` must create the replacement GPU pool
+before switching this selector. During migration, retain the old selector with
+`--set colpaliInference.nodePool=gpuinference` when installing or upgrading the
+chart directly. AKS pool names cannot be changed in place.
+
 ## Deploy Everything
 
 ```powershell
@@ -44,7 +55,7 @@ annotations:
 ```
 
 This automatically:
-1. Updates Helm dependencies (`helm dependency update`)
+1. Restores locked Helm dependencies (`helm dependency build`)
 2. Deploys the application components
 3. Sets up Qdrant with Premium SSD storage
 4. Configures ingress for Qdrant dashboard access

@@ -162,8 +162,7 @@ colpaliInference:
   imageTag: "latest"
 
   # GPU node pool for inference workloads
-  # Set to "gpuinference" to use the new dedicated inference pool
-  nodePool: "gpuinference"
+  nodePool: "gpupool"
 
   # W4A16 text weights; vision encoder stays unquantized. vLLM auto-detects
   # the checkpoint's AutoRound/GPTQ format despite its "-awq" repository name.

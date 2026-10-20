@@ -29,55 +29,58 @@ var systemTopicName = 'egst-${dataStorageAccountName}-blobs'
 var eventGridIdentityName = 'id-${systemTopicName}'
 
 // Create User Assigned Identity for Event Grid. Needed to authenticate to Service Bus which needs to be authorised before the subscription can be created.
-resource eventGridIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: eventGridIdentityName
-  location: location
+module eventGridIdentity 'br/public:avm/res/managed-identity/user-assigned-identity:0.6.0' = {
+  name: 'eventGridIdentity'
+  params: {
+    name: eventGridIdentityName
+    location: location
+    enableTelemetry: false
+  }
 }
 
-resource blobSystemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' = {
-  name: systemTopicName
-  location: location
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${eventGridIdentity.id}': {}
+module blobSystemTopic 'br/public:avm/res/event-grid/system-topic:0.7.0' = {
+  name: 'blobSystemTopic'
+  params: {
+    name: systemTopicName
+    location: location
+    enableTelemetry: false
+    managedIdentities: {
+      userAssignedResourceIds: [
+        eventGridIdentity.outputs.resourceId
+      ]
     }
-  }
-  properties: {
     source: dataStorageAccountId
     topicType: 'Microsoft.Storage.StorageAccounts'
-  }
-}
-
-resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2024-06-01-preview' = {
-  parent: blobSystemTopic
-  name: 'egs-${baseName}-document-processing'
-  properties: {
-    deliveryWithResourceIdentity: {
-      destination: {
-        endpointType: 'ServiceBusQueue'
-        properties: {
-          resourceId: '${serviceBusNamespaceId}/queues/${serviceBusQueueName}'
+    eventSubscriptions: [
+      {
+        name: 'egs-${baseName}-document-processing'
+        deliveryWithResourceIdentity: {
+          destination: {
+            endpointType: 'ServiceBusQueue'
+            properties: {
+              resourceId: '${serviceBusNamespaceId}/queues/${serviceBusQueueName}'
+            }
+          }
+          identity: {
+            type: 'UserAssigned'
+            userAssignedIdentity: eventGridIdentity.outputs.resourceId
+          }
         }
+        filter: {
+          includedEventTypes: [
+            'Microsoft.Storage.BlobCreated'
+            'Microsoft.Storage.BlobDeleted'
+          ]
+          subjectBeginsWith: '/blobServices/default/containers/documents/blobs/'
+          subjectEndsWith: '.pdf'
+        }
+        retryPolicy: {
+          maxDeliveryAttempts: 5
+          eventTimeToLiveInMinutes: 180
+        }
+        eventDeliverySchema: 'EventGridSchema'
       }
-      identity: {
-        type: 'UserAssigned'
-        userAssignedIdentity: eventGridIdentity.id
-      }
-    }
-    filter: {
-      includedEventTypes: [
-        'Microsoft.Storage.BlobCreated'
-        'Microsoft.Storage.BlobDeleted'
-      ]
-      subjectBeginsWith: '/blobServices/default/containers/documents/blobs/'
-      subjectEndsWith: '.pdf'
-    }
-    retryPolicy: {
-      maxDeliveryAttempts: 5
-      eventTimeToLiveInMinutes: 180
-    }
-    eventDeliverySchema: 'EventGridSchema'
+    ]
   }
   dependsOn: [
     eventGridServiceBusDataSenderRole
@@ -85,43 +88,43 @@ resource blobEventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscripti
   ]
 }
 
-resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2021-11-01' existing = {
-  name: last(split(serviceBusNamespaceId, '/'))
-}
-
 // Grant Event Grid user assigned identity permission to send messages to Service Bus
-resource eventGridServiceBusDataSenderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(serviceBusNamespaceId, eventGridIdentity.id, roles.serviceBusDataSender, 'eventgrid-servicebus-sender')
-  scope: serviceBusNamespace
-  properties: {
+module eventGridServiceBusDataSenderRole 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = {
+  name: 'eventGridServiceBusDataSenderRole'
+  params: {
+    name: guid(serviceBusNamespaceId, eventGridIdentity.outputs.resourceId, roles.serviceBusDataSender, 'eventgrid-servicebus-sender')
+    resourceId: serviceBusNamespaceId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.serviceBusDataSender)
-    principalId: eventGridIdentity.properties.principalId
+    principalId: eventGridIdentity.outputs.principalId
     principalType: 'ServicePrincipal'
   }
 }
 
 // Grant Event Grid user assigned identity permission to receive messages from Service Bus (required for delivery confirmation)
-resource eventGridServiceBusDataReceiverRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(serviceBusNamespaceId, eventGridIdentity.id, roles.serviceBusDataReceiver, 'eventgrid-servicebus-receiver')
-  scope: serviceBusNamespace
-  properties: {
+module eventGridServiceBusDataReceiverRole 'br/public:avm/ptn/authorization/resource-role-assignment:0.1.2' = {
+  name: 'eventGridServiceBusDataReceiverRole'
+  params: {
+    name: guid(serviceBusNamespaceId, eventGridIdentity.outputs.resourceId, roles.serviceBusDataReceiver, 'eventgrid-servicebus-receiver')
+    resourceId: serviceBusNamespaceId
+    enableTelemetry: false
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.serviceBusDataReceiver)
-    principalId: eventGridIdentity.properties.principalId
+    principalId: eventGridIdentity.outputs.principalId
     principalType: 'ServicePrincipal'
   }
 }
 
 @description('The Event Grid System Topic resource ID')
-output systemTopicId string = blobSystemTopic.id
+output systemTopicId string = blobSystemTopic.outputs.resourceId
 
 @description('The Event Grid subscription resource ID')
-output eventSubscriptionId string = blobEventSubscription.id
+output eventSubscriptionId string = '${blobSystemTopic.outputs.resourceId}/eventSubscriptions/egs-${baseName}-document-processing'
 
 @description('The Event Grid user assigned identity principal ID')
-output eventGridIdentityPrincipalId string = eventGridIdentity.properties.principalId
+output eventGridIdentityPrincipalId string = eventGridIdentity.outputs.principalId
 
 @description('The Event Grid user assigned identity resource ID')
-output eventGridIdentityId string = eventGridIdentity.id
+output eventGridIdentityId string = eventGridIdentity.outputs.resourceId
 
 @description('The Event Grid user assigned identity client ID')
-output eventGridIdentityClientId string = eventGridIdentity.properties.clientId
+output eventGridIdentityClientId string = eventGridIdentity.outputs.clientId

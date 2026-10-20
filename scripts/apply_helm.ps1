@@ -1,20 +1,39 @@
 #!/usr/bin/env pwsh
 # Copyright (c) Microsoft Corporation. Licensed under the MIT License.
-# Deploys ColPali stack to AKS. Usage: .\apply_helm.ps1 [-LocalAccess] [-Help]
+# Deploys ColPali stack to AKS. Use -EnvFile, -Subscription and -KubeConfig for an isolated environment.
 
-param([switch]$LocalAccess, [Alias("h")][switch]$Help)
+param(
+    [switch]$LocalAccess,
+    [Alias("h")][switch]$Help,
+    [string]$EnvFile,
+    [string]$Subscription,
+    [string]$KubeConfig
+)
 
 if ($Help) {
-    Write-Host "Usage: apply_helm.ps1 [-LocalAccess]"
+    Write-Host "Usage: apply_helm.ps1 [-LocalAccess] [-EnvFile <path>] [-Subscription <name-or-id>] [-KubeConfig <path>]"
     Write-Host "  -LocalAccess  Enable ingress for all services (default: Agent UI only)"
     exit 0
 }
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+if ($EnvFile) {
+    $EnvFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EnvFile)
+} else {
+    $EnvFile = "$ProjectRoot\.env"
+}
+$subscriptionArgs = @()
+if ($Subscription) { $subscriptionArgs = @("--subscription", $Subscription) }
+$credentialArgs = @()
+$kubeArgs = @()
+if ($KubeConfig) {
+    $KubeConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($KubeConfig)
+    $credentialArgs = @("--file", $KubeConfig)
+    $kubeArgs = @("--kubeconfig", $KubeConfig)
+}
 Set-Location $ProjectRoot
 
-$EnvFile = "$ProjectRoot\.env"
 if (-not (Test-Path $EnvFile)) { throw ".env file not found. Run deploy_infra.ps1 first." }
 
 $env = @{}
@@ -28,12 +47,14 @@ Get-Content $EnvFile | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { $env[$
 }
 
 Write-Host "Deploying to $($env['AKS_CLUSTER_NAME'])..."
-az aks get-credentials --resource-group $env['RESOURCE_GROUP'] --name $env['AKS_CLUSTER_NAME'] --overwrite-existing
+az aks get-credentials --resource-group $env['RESOURCE_GROUP'] --name $env['AKS_CLUSTER_NAME'] --overwrite-existing @subscriptionArgs @credentialArgs
 if ($LASTEXITCODE -ne 0) { throw "Failed to get AKS credentials" }
 
 Push-Location "modules/helm/colpali-stack"
-helm dependency update
-Pop-Location
+try {
+    helm dependency build
+    if ($LASTEXITCODE -ne 0) { throw "Failed to restore Helm dependencies" }
+} finally { Pop-Location }
 
 $ingressEnabled = if ($LocalAccess) { "true" } else { "false" }
 
@@ -60,18 +81,21 @@ helm upgrade --install colpali-stack "./modules/helm/colpali-stack" `
     --set ingress-nginx-agent-ui.enabled=true `
     --set ingress-nginx-colpali.enabled=$ingressEnabled `
     --set ingress-nginx-qdrant.enabled=$ingressEnabled `
+    @kubeArgs `
     --wait --timeout 30m
 
 if ($LASTEXITCODE -ne 0) { throw "Helm deployment failed" }
 
 Write-Host "Deployment complete. Checking status..."
-kubectl get pods -n colpali-stack
+kubectl @kubeArgs get pods -n colpali-stack
+if ($LASTEXITCODE -ne 0) { throw "Failed to get application pod status" }
 
 # Get and display ingress IPs
 $maxWait = 120; $elapsed = 0
 $agentUiIp = ""
 while ($elapsed -lt $maxWait -and -not $agentUiIp) {
-    $agentUiIp = kubectl get svc colpali-stack-ingress-nginx-agent-ui-controller -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    $agentUiIp = kubectl @kubeArgs get svc colpali-stack-ingress-nginx-agent-ui-controller -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to get Agent UI ingress service" }
     if (-not $agentUiIp) { Start-Sleep 10; $elapsed += 10 }
 }
 
@@ -84,8 +108,10 @@ if ($agentUiIp) {
 }
 
 if ($LocalAccess) {
-    $colpaliIp = kubectl get svc colpali-stack-ingress-nginx-colpali-controller -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
-    $qdrantIp = kubectl get svc colpali-stack-ingress-nginx-qdrant-controller -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    $colpaliIp = kubectl @kubeArgs get svc colpali-stack-ingress-nginx-colpali-controller -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to get ColPali ingress service" }
+    $qdrantIp = kubectl @kubeArgs get svc colpali-stack-ingress-nginx-qdrant-controller -n colpali-stack -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to get Qdrant ingress service" }
     if ($colpaliIp) { Write-Host "ColPali: http://$colpaliIp" }
     if ($qdrantIp) { Write-Host "Qdrant: http://$qdrantIp" }
 }

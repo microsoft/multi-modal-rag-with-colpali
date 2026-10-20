@@ -43,7 +43,7 @@ spec:
       securityContext:
         fsGroup: 1000
       nodeSelector:
-        kubernetes.azure.com/agentpool: {{ .Values.colpaliInference.nodePool | default "gpuinference" }}
+        kubernetes.azure.com/agentpool: {{ .Values.colpaliInference.nodePool | default "gpupool" }}
       tolerations:
       - key: "sku"
         operator: "Equal"
