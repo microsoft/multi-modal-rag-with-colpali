@@ -1,6 +1,6 @@
 # ColPali/ColQwen Stack Helm Chart
 
-Helm chart that deploys the complete ColPali/ColQwen multi-modal RAG stack for production use.
+Helm chart for deploying the ColPali/ColQwen multi-modal RAG stack.
 
 ## Components
 
@@ -45,7 +45,7 @@ annotations:
 
 This automatically:
 1. Updates Helm dependencies (`helm dependency update`)
-2. Deploys all components with proper configuration
+2. Deploys the application components
 3. Sets up Qdrant with Premium SSD storage
 4. Configures ingress for Qdrant dashboard access
 
@@ -127,7 +127,6 @@ graph TB
         DOCS[Document Upload]
     end
 
-    %% Data flow (solid lines)
     DOCS -->|PDF Upload| ST
     ST -->|Blob Created Event| EG
     EG -->|Event Message| SB
@@ -140,25 +139,21 @@ graph TB
     USER -->|Query/Dashboard| IG
     IG -->|Route Traffic| QD
 
-    %% Configuration/Management (dashed lines)
     DPSA -.->|Authenticate| KV
     KV -.->|Provide Secrets| AS
     AS -.->|Mount Config| DP
     AS -.->|Mount Config| CI
 
-    %% Storage relationships (dotted lines)
     CI -.->|Cache Models| HFPV
     QD -.->|Persist Data| QDPV
     DP -.->|Read Files| ST
     DP -.->|Send Telemetry| AI
     CI -.->|Send Telemetry| AI
 
-    %% Container registry (deployment time)
     ACR -.->|Pull Images| DP
     ACR -.->|Pull Images| CI
     ACR -.->|Pull Images| QD
 
-    %% Node Styling
     classDef pod fill:#f0f8ff,stroke:#326ce5,stroke-width:2px
     classDef storage fill:#f8f8f8,stroke:#666666,stroke-width:2px
     classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px

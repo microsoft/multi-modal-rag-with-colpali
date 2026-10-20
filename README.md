@@ -41,7 +41,7 @@ ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with
 
 ## What's Included
 
-This is a complete end-to-end deployment for Azure. The main complexity is hosting a model serving layer and building a custom indexing pipeline—both are handled here.
+This repository includes model serving, document indexing, and deployment scripts for Azure.
 
 **Components:**
 - Event-driven document processing pipeline (Blob Storage → Event Grid → Service Bus)
@@ -66,7 +66,7 @@ This is a complete end-to-end deployment for Azure. The main complexity is hosti
 8. **User Queries** → Submitted via NGINX Ingress to Qdrant vector database
 9. **Semantic Search** → Vector similarity search returns relevant document sections with image URLs
 10. **Image Retrieval** → Page images fetched from Azure Blob Storage using stored URLs
-11. **RAG Integration** → Results with images consumed by AI Foundry models for intelligent responses
+11. **RAG Integration** → AI Foundry models use retrieved pages to answer the query
 
 ```mermaid
 %%{init: {
@@ -115,7 +115,6 @@ flowchart TB
         PVC -.->|Mount Model| COLQWEN
     end
 
-    %% Event-Driven Processing Flow (integrated with existing nodes)
     USER[User] -->|1. Upload PDF| STORAGE
     STORAGE -->|2. Blob Event| EG
     EG -->|3. Route Event| SB
@@ -136,7 +135,6 @@ flowchart TB
         RESULTS --> AGENT_API
     end
 
-    %% Infrastructure connections
     ACR -.->|Pull Images| COLQWEN
     ACR -.->|Pull Images| DOCPROC
     ACR -.->|Pull Images| QDRANT
@@ -146,7 +144,6 @@ flowchart TB
     KV -.->|Secrets & Config| COLQWEN
     KV -.->|Secrets & Config| AGENT_API
 
-    %% Node Styling
     classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px
     classDef k8s fill:#f0f8ff,stroke:#326ce5,stroke-width:2px
     classDef flow fill:#f0fff0,stroke:#28a745,stroke-width:2px
@@ -205,7 +202,7 @@ Two techniques make ColPali embeddings practical at scale:
 
 ## Quick Start
 
-Ready to deploy? See the **[scripts/README.md](scripts/README.md)** for complete deployment instructions and automation scripts.
+See **[scripts/README.md](scripts/README.md)** for deployment instructions.
 
 ### Prerequisites
 - Azure subscription

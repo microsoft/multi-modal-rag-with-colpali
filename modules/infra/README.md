@@ -54,14 +54,12 @@ flowchart TB
         end
     end
 
-    %% End-to-End Flow (integrated, no separate box)
     DOCS[PDF Documents] --> DOCPROC
     DOCPROC --> COLPALI
     COLPALI --> QDRANT
     QUERY[User Query] --> QDRANT
     QDRANT --> RESULTS[Search Results]
 
-    %% Node Styling
     classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px
     classDef k8s fill:#f0f8ff,stroke:#326ce5,stroke-width:2px
     classDef flow fill:#f0fff0,stroke:#28a745,stroke-width:2px
@@ -100,7 +98,7 @@ The following services are deployed to the AKS cluster via Helm charts (see `/mo
 | ColPali Model Download | Init Container | Downloads ColPali models from HuggingFace and persists to Persistent Volume Claims before inference pods start. |
 | ColPali Inference | Deployment | StatefulSet running ColPali inference pods with PVCs for model storage, serving multi-modal embedding API. |
 | Document Processor | Deployment | FastAPI application handling PDF ingestion, image extraction, blob storage upload, and vector indexing workflows. |
-| Qdrant Vector Database | StatefulSet | High-performance vector database for storing document embeddings, metadata, and blob storage URLs for similarity search operations. |
+| Qdrant Vector Database | StatefulSet | Stores document embeddings, metadata, and blob storage URLs for similarity search. |
 
 ## Infrastructure Structure
 

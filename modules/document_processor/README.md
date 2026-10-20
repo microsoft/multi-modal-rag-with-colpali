@@ -62,7 +62,7 @@ Pages move to the next stage without waiting for an entire batch to finish. Each
 
 ## Qdrant Vector Schema
 
-Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** index setup (optimal based on benchmarking):
+Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** index setup:
 
 | Vector | Size | HNSW | Quantization | Storage | Purpose |
 |--------|------|------|--------------|---------|--------|
