@@ -8,11 +8,11 @@
 
 > [!WARNING]
 >
-> This **accelerator** uses [ColPali](https://github.com/illuin-tech/colpali), created by the research team at [Illuin Technology](https://www.illuin.tech/). It is **not a production-ready solution**. Review and adjust the code before using it in your environments.
+> This **accelerator** defaults to [TomoroAI's](https://huggingface.co/TomoroAI) [ColQwen3 model (`tomoro-colqwen3-embed-4b`)](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b), building on the foundational [ColPali approach and tooling](https://github.com/illuin-tech/colpali) from [Illuin Technology](https://www.illuin.tech/), including hierarchical token pooling. It is **not a production-ready solution**. Review and adjust the code before using it in your environments.
 
 This repository provides a multi-modal RAG (Retrieval-Augmented Generation) solution that processes document pages as images. Each page produces hundreds of token-level embeddings rather than a single vector. Late interaction compares query tokens directly with these embeddings, helping retrieve content from text, charts, tables, and page layouts.
 
-This repository uses **ColPali**, but any late interaction embedding model can be substituted.
+This repository uses **ColQwen3** by default; other compatible ColQwen2/ColQwen3 late-interaction embedding models can be substituted.
 
 ## Vision Language Models & ColPali
 
@@ -186,7 +186,7 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 
 ## Scalability Optimizations
 
-Two techniques make ColPali embeddings practical at scale:
+Two techniques make these token-level embeddings practical at scale:
 
 **[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces embedding dimensions by ~3x while maintaining retrieval quality.
 
