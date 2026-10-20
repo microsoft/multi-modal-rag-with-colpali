@@ -149,9 +149,9 @@ class ColPaliInference:
         """Mean-pool image tokens per grid row and per grid column.
 
         Qwen2-VL-style processors emit merged image tokens row-major:
-        ``y_patches`` rows (height) of ``x_patches`` tokens (width). Returns
-        ``(prefix + y_patches row vectors + postfix,
-        prefix + x_patches column vectors + postfix)``.
+        ``y_patches`` rows (height) of ``x_patches`` tokens (width).
+        Average visual tokens spatially, retaining contextual prefix/suffix
+        vectors separately. Spatial pooling is an application extension.
         """
         image_tokens = image_embedding[image_tokens_mask].view(
             y_patches, x_patches, image_embedding.shape[-1]
@@ -159,7 +159,7 @@ class ColPaliInference:
         pooled_by_rows = torch.mean(image_tokens, dim=1)
         pooled_by_columns = torch.mean(image_tokens, dim=0)
 
-        image_token_idxs = torch.nonzero(image_tokens_mask.int(), as_tuple=False)
+        image_token_idxs = torch.nonzero(image_tokens_mask, as_tuple=False)
         first_image_token_idx = int(image_token_idxs[0].item())
         last_image_token_idx = int(image_token_idxs[-1].item())
 
@@ -223,23 +223,14 @@ class ColPaliInference:
         logger.debug("Processing %d images", len(images))
 
         pooling_types = set(request.pooling_type)
-        needs_input_ids = PoolingType.MEAN_POOLING in pooling_types
-
-        # For mean pooling we need the exact token-id sequence vLLM ran
-        # against. Querying vLLM's /tokenize endpoint with the same chat
-        # payload that embed_images sends is the only reliable way to get
-        # this — the shim's local HF processor uses colpali_engine's
-        # image-only template, which produces a different prompt structure
-        # than vLLM's chat-template path and therefore disagrees on token
-        # counts (especially for ColQwen3 dynamic-resolution images).
-        per_image_input_ids: Optional[List[torch.Tensor]] = None
-        if needs_input_ids:
-            tokenize_results = await asyncio.gather(
-                *(self.vllm_client.tokenize_chat_image(image) for image in images)
-            )
-            per_image_input_ids = [
-                torch.tensor(ids, dtype=torch.long) for ids in tokenize_results
-            ]
+        # Check the actual vLLM prompt against the installed retrieval processor,
+        # not just its length: generic chat templates have different suffixes.
+        tokenize_results = await asyncio.gather(
+            *(self.vllm_client.tokenize_chat_image(image) for image in images)
+        )
+        per_image_input_ids = [
+            torch.tensor(ids, dtype=torch.long) for ids in tokenize_results
+        ]
 
         # Call vLLM for embeddings (one variable-length tensor per image).
         embeddings_per_image = await self.vllm_client.embed_images(images)
@@ -250,39 +241,55 @@ class ColPaliInference:
                 f"{len(images)} images"
             )
 
+        image_token_id = self._get_image_token_id()
+        patch_grids: List[Tuple[int, int]] = []
+        if self.processor is None:
+            raise RuntimeError("Processor must be initialized")
+        for embedding, input_ids, image in zip(
+            embeddings_per_image, per_image_input_ids, images
+        ):
+            x_patches, y_patches = self._get_patches(image.size)
+            mask = input_ids == image_token_id
+            actual = int(mask.sum().item())
+            expected = x_patches * y_patches
+            if actual == 0 or actual != expected:
+                raise RuntimeError(
+                    f"Image-token count mismatch: tokenizer reported "
+                    f"{actual} image tokens but patch grid expects "
+                    f"{x_patches}x{y_patches}={expected}."
+                )
+            if embedding.shape[0] != input_ids.shape[0]:
+                raise RuntimeError(
+                    f"Embedding/input_ids length mismatch: "
+                    f"{embedding.shape[0]} vs {input_ids.shape[0]}. "
+                    "vLLM and shim tokenization are out of sync."
+                )
+            prompt = (
+                self.processor.visual_prompt_prefix
+                + self.processor.visual_prompt_suffix
+            ).replace(self.processor.image_token, self.processor.image_token * expected)
+            reference_ids = self.processor.tokenizer.encode(
+                prompt, add_special_tokens=False
+            )
+            if input_ids.tolist() != reference_ids:
+                raise RuntimeError(
+                    "Image prompt mismatch: vLLM tokenization differs from "
+                    "the installed model processor's retrieval prompt."
+                )
+            patch_grids.append((x_patches, y_patches))
+
         response: Dict[str, Any] = {}
 
         for pooling_type in pooling_types:
             if pooling_type == PoolingType.MEAN_POOLING:
                 logger.debug("Applying mean pooling...")
-                assert per_image_input_ids is not None
-                image_token_id = self._get_image_token_id()
-
                 pooled_rows_batch: List[List[List[float]]] = []
                 pooled_cols_batch: List[List[List[float]]] = []
 
-                for image_embedding, tokenized_image, image in zip(
-                    embeddings_per_image, per_image_input_ids, images
+                for image_embedding, input_ids, (x_patches, y_patches) in zip(
+                    embeddings_per_image, per_image_input_ids, patch_grids
                 ):
-                    x_patches, y_patches = self._get_patches(image.size)
-
-                    image_tokens_mask = tokenized_image == image_token_id
-
-                    expected = x_patches * y_patches
-                    actual = int(image_tokens_mask.sum().item())
-                    if actual != expected:
-                        raise RuntimeError(
-                            f"Image-token count mismatch: tokenizer reported "
-                            f"{actual} image tokens but patch grid expects "
-                            f"{x_patches}x{y_patches}={expected}."
-                        )
-                    if image_embedding.shape[0] != tokenized_image.shape[0]:
-                        raise RuntimeError(
-                            f"Embedding/input_ids length mismatch: "
-                            f"{image_embedding.shape[0]} vs "
-                            f"{tokenized_image.shape[0]}. vLLM and shim "
-                            "tokenization are out of sync."
-                        )
+                    image_tokens_mask = input_ids == image_token_id
 
                     (
                         pooled_by_rows_full,
@@ -328,12 +335,39 @@ class ColPaliInference:
         return EmbedResponse(**response)
 
     async def _process_texts_from_request(self, request: EmbedRequest) -> EmbedResponse:
-        """Text embedding path: vLLM handles tokenization internally."""
+        """Use reference query augmentation, removing only masked batch padding."""
         if request.texts is None:
             raise ValueError("Request must contain 'texts' field with text content")
 
         logger.debug("Processing %d text queries", len(request.texts))
-        embeddings_per_text = await self.vllm_client.embed_texts(list(request.texts))
+        if self.processor is None:
+            raise RuntimeError("Processor must be initialized")
+        batch = await asyncio.to_thread(
+            self.processor.process_texts, list(request.texts)
+        )
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        if (
+            input_ids.ndim != 2
+            or input_ids.shape != attention_mask.shape
+            or input_ids.shape[0] != len(request.texts)
+            or not torch.all((attention_mask == 0) | (attention_mask == 1))
+        ):
+            raise RuntimeError("Query input_ids/attention_mask shape or value mismatch")
+        token_ids = [
+            ids[mask.bool()].tolist() for ids, mask in zip(input_ids, attention_mask)
+        ]
+        if any(not ids for ids in token_ids):
+            raise RuntimeError("Query tokenization produced an empty active sequence")
+        embeddings_per_text = await self.vllm_client.embed_token_ids(token_ids)
+        if len(embeddings_per_text) != len(token_ids):
+            raise RuntimeError("Query embedding batch count mismatch")
+        for embedding, ids in zip(embeddings_per_text, token_ids):
+            if embedding.shape[0] != len(ids):
+                raise RuntimeError(
+                    f"Query embedding/token count mismatch: "
+                    f"{embedding.shape[0]} vs {len(ids)}"
+                )
 
         final_embeddings = [emb.float().numpy().tolist() for emb in embeddings_per_text]
         logger.info("Generated embeddings for %s text queries", len(request.texts))

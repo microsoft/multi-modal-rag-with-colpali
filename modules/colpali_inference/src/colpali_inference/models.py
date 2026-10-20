@@ -35,7 +35,8 @@ class EmbedRequest(BaseModel):
     """Request model for embedding API."""
 
     texts: Optional[List[str]] = Field(
-        default=None, description="List of texts to embed"
+        default=None,
+        description="Queries to embed using the model processor's query augmentation",
     )
     images: Optional[List[str]] = Field(
         default=None,
@@ -68,7 +69,7 @@ class EmbedRequest(BaseModel):
                 invalid_names = [p.value for p in invalid_pooling_types]
                 raise ValueError(
                     f"Pooling types {invalid_names} are not supported for text queries. "
-                    "Text queries return single embeddings, so only 'none' pooling is applicable. "
+                    "Text queries return per-token embeddings, so only 'none' pooling is applicable. "
                     f"Remove pooling_type parameter or set it to [{PoolingType.NONE.value!r}] for text requests."
                 )
 
@@ -116,20 +117,20 @@ class EmbedResponse(BaseModel):
 
     embeddings: Optional[List[List[List[float]]]] = Field(
         default=None,
-        description="Generated embeddings (batch x patches x embedding_dim)",
+        description="Variable-length embeddings for all active image-prompt or augmented query tokens, excluding masked batch padding (batch x tokens x embedding_dim)",
     )
 
     hierarchical_pooled_embeddings: Optional[List[List[List[float]]]] = Field(
         default=None,
-        description="Hierarchical embeddings by pooling type (batch x hierarchical patches x embedding_dim)",
+        description="Hierarchical pooling over all active image-prompt vectors, including contextual nonvisual tokens (batch x clusters x embedding_dim)",
     )
 
     mean_row_pooled_embeddings: Optional[List[List[List[float]]]] = Field(
         default=None,
-        description="Mean row pooled embeddings (batch x row patches x embedding_dim)",
+        description="Spatial row means with active contextual prefix/suffix vectors retained (batch x vectors x embedding_dim)",
     )
 
     mean_column_pooled_embeddings: Optional[List[List[List[float]]]] = Field(
         default=None,
-        description="Mean column pooled embeddings (batch x column patches x embedding_dim)",
+        description="Spatial column means with active contextual prefix/suffix vectors retained (batch x vectors x embedding_dim)",
     )
