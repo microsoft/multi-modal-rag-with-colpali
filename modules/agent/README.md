@@ -34,3 +34,17 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 3. Retrieve relevant pages using ColPali + Qdrant
 4. Generate answer with Azure OpenAI using retrieved context
 5. Return response with source citations
+
+## API Error Responses
+
+Internal failures return a generic message; exception details and tracebacks are
+logged server-side, not sent to clients.
+
+- `/chat` and unhandled API failures return HTTP 500 with `error` and `detail` fields.
+- `/chat/stream` keeps the SSE response and emits a terminal `error` event with
+  generic `content` and a `timestamp`, including when the agent yields an error event.
+
+## API Tests
+
+Run `uv run --frozen pytest tests` from `modules/agent`. The API tests replace the
+agent and do not require Azure credentials or running backend services.
