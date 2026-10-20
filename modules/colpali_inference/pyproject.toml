@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [tool.uv]
-prerelease = "explicit"
+prerelease = "allow"
 
 [tool.ruff]
 line-length = 88
