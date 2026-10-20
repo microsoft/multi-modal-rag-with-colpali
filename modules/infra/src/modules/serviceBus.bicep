@@ -16,44 +16,46 @@ param serviceBusSku string = 'Standard'
 
 var documentProcessingQueueName = 'document-processing'
 
-resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2021-11-01' = {
-  name: serviceBusNamespaceName
-  location: location
-  sku: {
-    name: serviceBusSku
-    tier: serviceBusSku
-  }
-  properties: {
+module serviceBusNamespace 'br/public:avm/res/service-bus/namespace:0.17.1' = {
+  name: 'serviceBusNamespace'
+  params: {
+    name: serviceBusNamespaceName
+    location: location
+    enableTelemetry: false
+    skuObject: {
+      name: serviceBusSku
+    }
+    zoneRedundant: false
+    publicNetworkAccess: 'Enabled'
     disableLocalAuth: true
-  }
-}
-
-resource documentProcessingQueue 'Microsoft.ServiceBus/namespaces/queues@2021-11-01' = {
-  parent: serviceBusNamespace
-  name: documentProcessingQueueName
-  properties: {
-    lockDuration: 'PT5M'
-    maxSizeInMegabytes: 1024
-    requiresDuplicateDetection: true
-    duplicateDetectionHistoryTimeWindow: 'PT10M'
-    requiresSession: false
-    defaultMessageTimeToLive: 'P14D'
-    deadLetteringOnMessageExpiration: true
-    maxDeliveryCount: 5
-    enableBatchedOperations: true
-    autoDeleteOnIdle: 'P10675199DT2H48M5.4775807S'
-    enablePartitioning: false
+    authorizationRules: []
+    queues: [
+      {
+        name: documentProcessingQueueName
+        lockDuration: 'PT5M'
+        maxSizeInMegabytes: 1024
+        requiresDuplicateDetection: true
+        duplicateDetectionHistoryTimeWindow: 'PT10M'
+        requiresSession: false
+        defaultMessageTimeToLive: 'P14D'
+        deadLetteringOnMessageExpiration: true
+        maxDeliveryCount: 5
+        enableBatchedOperations: true
+        autoDeleteOnIdle: 'P10675199DT2H48M5.4775807S'
+        enablePartitioning: false
+      }
+    ]
   }
 }
 
 @description('Service Bus namespace resource ID')
-output serviceBusNamespaceId string = serviceBusNamespace.id
+output serviceBusNamespaceId string = serviceBusNamespace.outputs.resourceId
 
 @description('Service Bus namespace name')
-output serviceBusNamespaceName string = serviceBusNamespace.name
+output serviceBusNamespaceName string = serviceBusNamespace.outputs.name
 
 @description('Service Bus namespace hostname')
-output serviceBusNamespaceHostname string = serviceBusNamespace.properties.serviceBusEndpoint
+output serviceBusNamespaceHostname string = serviceBusNamespace.outputs.serviceBusEndpoint
 
 @description('Document processing queue name')
-output documentProcessingQueueName string = documentProcessingQueue.name
+output documentProcessingQueueName string = documentProcessingQueueName

@@ -19,17 +19,18 @@ param location string = resourceGroup().location
 ])
 param storageAccountSku string = 'Standard_LRS'
 
-resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: dataStorageAccountName
-  location: location
-  kind: 'StorageV2'
-  sku: {
-    name: storageAccountSku
-  }
-  properties: {
+module dataStorageAccount 'br/public:avm/res/storage/storage-account:0.33.1' = {
+  name: 'dataStorageAccount'
+  params: {
+    name: dataStorageAccountName
+    location: location
+    enableTelemetry: false
+    kind: 'StorageV2'
+    skuName: storageAccountSku
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
+    requireInfrastructureEncryption: false
     supportsHttpsTrafficOnly: true
     accessTier: 'Hot'
     publicNetworkAccess: 'Enabled'
@@ -37,65 +38,39 @@ resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
       defaultAction: 'Allow'
       bypass: 'AzureServices'
     }
-    encryption: {
-      services: {
-        blob: {
-          enabled: true
+    blobServices: {
+      containerDeleteRetentionPolicyEnabled: false
+      deleteRetentionPolicyEnabled: false
+      containers: [
+        {
+          name: 'documents'
+          publicAccess: 'None'
         }
-        file: {
-          enabled: true
+        {
+          name: 'documents-page-images'
+          publicAccess: 'None'
         }
-      }
-      keySource: 'Microsoft.Storage'
+        {
+          name: 'benchmark-datasets'
+          publicAccess: 'None'
+        }
+        {
+          name: 'benchmark-datasets-images'
+          publicAccess: 'None'
+        }
+      ]
     }
   }
 }
 
-resource dataBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
-  parent: dataStorageAccount
-  name: 'default'
-}
-
-resource documentsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  parent: dataBlobService
-  name: 'documents'
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-resource documentsPageImagesContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  parent: dataBlobService
-  name: 'documents-page-images'
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-resource benchmarkDatasetsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  parent: dataBlobService
-  name: 'benchmark-datasets'
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-resource benchmarkDatasetsImagesContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  parent: dataBlobService
-  name: 'benchmark-datasets-images'
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
 @description('The resource ID of the data storage account')
-output dataStorageAccountId string = dataStorageAccount.id
+output dataStorageAccountId string = dataStorageAccount.outputs.resourceId
 
 @description('The name of the data storage account')
-output dataStorageAccountName string = dataStorageAccount.name
+output dataStorageAccountName string = dataStorageAccount.outputs.name
 
 @description('The name of the documents container')
-output documentsContainerName string = documentsContainer.name
+output documentsContainerName string = 'documents'
 
 @description('The name of the benchmark datasets container')
-output benchmarkDatasetsContainerName string = benchmarkDatasetsContainer.name
+output benchmarkDatasetsContainerName string = 'benchmark-datasets'
