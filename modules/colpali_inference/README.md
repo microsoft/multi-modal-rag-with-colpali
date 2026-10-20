@@ -33,6 +33,7 @@ Running FastAPI and the model together can load a separate model copy per worker
 
 - **vLLM owns the GPU.** It handles batching and inference with one process and one GPU per pod.
 - **The shim is stateless and CPU-bound.** It can run `UVICORN_WORKERS` (default 4) processes against the same vLLM sidecar over `localhost`. Tokenization and pooling run across CPU cores.
+- **Local tokenizer access is serialized per worker.** Query preprocessing and image-prompt validation share a lock in offloaded threads because the fast tokenizer mutates backend settings. Cancelling a request does not release that lock before tokenization finishes; waiting for it does not block the event loop. vLLM calls remain concurrent.
 - **Pooling stays out of the model server.** Hierarchical and mean row/col pooling are pure NumPy/Torch math on the raw token embeddings. Doing them in the shim means we can change pooling strategies without touching vLLM.
 - **Images travel as files, not JSON.** The shim writes decoded PNG images to shared memory at `/shm` and passes `file:///shm/<uuid>.png` to vLLM (`--allowed-local-media-path /shm`). This avoids re-encoding images as base64 between containers.
 
@@ -173,5 +174,5 @@ python -m unittest discover -s tests -v
 ```
 
 These checks cover active-token selection, rectangular spatial pooling, invalid
-upstream vectors, and HTTP request parity using a local fake vLLM server. They
-do not require model weights or a GPU.
+upstream vectors, tokenizer concurrency and cancellation, and HTTP request parity
+using a local fake vLLM server. They do not require model weights or a GPU.
