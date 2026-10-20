@@ -42,6 +42,24 @@ your corpus before changing them. Query expansion, embedding generation, image
 fetches, and answer generation also contribute to this agent's end-to-end
 latency; the paper's vector-search timings do not include all of those steps.
 
+### Pending indexer-port integration
+
+The separate version-two indexer port adopts those production operating points;
+it is not included in this documentation change. Both single-query and expanded
+query paths default to 5 unique pages, with `max(200, top_k)` candidates per
+mean-vector prefetch, `hnsw_ef=64`, `exact=False`, `indexed_only=True`, and binary
+rescoring enabled with 2x oversampling.
+
+That port changes the mean-vector names to `mean_row_pooled` and
+`mean_column_pooled` and reads the nested version-two payload contract. Migrate
+the writer and reader together using a freshly indexed collection; renaming
+vectors in documentation or switching the model alone is not a migration.
+
+`indexed_only` can exclude unoptimized Qdrant segments, so allow optimization
+to catch up when checking newly ingested data. It does not filter on a completed
+document hash: individual pages can become searchable before the document is
+complete. The port does not provide atomic document publication.
+
 ## Agent Flow
 
 1. User submits query via Agent UI

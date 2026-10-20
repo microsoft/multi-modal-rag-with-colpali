@@ -213,7 +213,23 @@ The paper reports the following results under different measurement conditions:
 
 PULSAR also separates **150-DPI embedding images from 500-DPI answer images**. Its embedding-DPI study raised the visual-token cap to avoid resolution clipping; changing render DPI alone does not reproduce that setup. The zero page-legibility errors at 500 DPI were observed on 516 questions from just two decks, with the source page supplied directly to the answering model, so they do not establish error-free end-to-end RAG ([Sections 5.1](https://arxiv.org/html/2608.28572#S5.SS1) and [5.6](https://arxiv.org/html/2608.28572#S5.SS6)).
 
-For production ingestion, the paper describes bounded rasterization, document/page content hashes for skipping and resuming work, document-completion visibility gating, and priority scheduling. Treat these as design considerations to verify against the implemented processor, not features implied by the paper citation. See the [Document Processor Guide](modules/document_processor/README.md) for the current ingestion contract, the [Inference Service Guide](modules/colpali_inference/README.md) for preprocessing constraints, and the [Agent Guide](modules/agent/README.md) for search settings. Benchmark retrieval quality, image legibility, memory, and latency on your own workload before adopting the paper's operating points.
+#### Pending version-two indexer port
+
+The PULSAR-aligned indexer port is being developed separately and is **not included in this documentation change**. Its implementation includes the following changes; they are not yet defaults or guarantees of this branch:
+
+| Area | Pending implementation and differences from PULSAR |
+|------|----------------------------------------------------|
+| Image preparation | 150-DPI embedding and 500-DPI storage defaults. Render once at storage resolution, crop, and downsample a separate embedding copy rather than render the PDF twice. Token-limit recovery reduces only the embedding image, not the stored answer image. |
+| Resolution limits | A 4,194,304-pixel preprocessing cap (4,096 merged visual tokens for this model) and a 3,072-token sequence budget, including prompt tokens. The visual ceiling does not mean every image fits that sequence budget. The paper's 65,536 visual-token DPI-ablation cap is not the production default. |
+| Incremental ingestion | Bounded page rendering, file/page hashes, a processing fingerprint, durable-page resume, and refreshed extracted text for OCR-only changes. Completion requires full page coverage, successful image uploads and Qdrant writes, a source ETag check, and orphan cleanup. |
+| Retrieval and storage | Top 5 pages, at least 200 candidates per mean-pooled vector, HNSW ef 64, binary prefetch rescoring with 2x oversampling, and hierarchical pooling factor 3. Full-precision pooled vectors are stored on disk alongside binary mean-vector copies in RAM, not replaced by a quantized-only representation. |
+| Remaining production gaps | One document queue, not PULSAR's preemptive document-priority lanes. Completion checks govern success and resume state, not retrieval visibility: partially processed documents can have searchable pages. Qdrant's `indexed_only` option concerns optimized segments, not document completeness or atomic publication. |
+
+The port also introduces a **breaking index contract**: 320-dimensional vectors, renamed mean-vector fields, nested payloads, new page IDs, and new image paths. Existing indexes need reindexing into a fresh collection and a coordinated writer/reader switch; deploying updated services alone does not migrate historical data. Keep old collections and images until the replacement is verified.
+
+Runtime upgrades are tracked separately from the paper-aligned settings. A newer Python, Transformers, or vLLM runtime is not a reproduction of the paper's software stack. Local/component checks and runtime smoke checks do not establish the paper's retrieval quality, throughput, cost, or end-to-end answer results.
+
+See the [Document Processor Guide](modules/document_processor/README.md) for the checked-out version's ingestion contract, the [Inference Service Guide](modules/colpali_inference/README.md) for preprocessing constraints, and the [Agent Guide](modules/agent/README.md) for search settings. The port updates these guides alongside its implementation. Benchmark retrieval quality, image legibility, memory, and latency on your own workload before production rollout.
 
 ## Quick Start
 
