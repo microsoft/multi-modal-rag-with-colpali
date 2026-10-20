@@ -11,7 +11,7 @@ The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredenti
 
 ## Architecture Overview
 
-This service uses a **distributed architecture** for separation of concerns and flexible scaling:
+The agent uses these services:
 
 1. **Agent API** – FastAPI backend exposing chat and health endpoints
 2. **Agent UI** – Chainlit-based chat interface for interactive document Q&A
@@ -20,7 +20,7 @@ This service uses a **distributed architecture** for separation of concerns and 
 
 ## Retrieval Strategy
 
-Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy (optimal based on benchmarking):
+Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
