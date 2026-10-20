@@ -9,6 +9,22 @@ A containerized chat interface for document Q&A using Azure OpenAI and ColPali-b
 For local development, set `AZURE_TOKEN_CREDENTIALS=dev` before starting the agent.
 The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredential`.
 
+## Dependency compatibility checks
+
+Use Python 3.12 and the committed lockfile:
+
+```shell
+uv sync --locked --no-editable --no-dev --prerelease=allow
+uv run --locked --no-dev python -m unittest discover -s tests -v
+```
+
+These offline-service tests cover API startup/shutdown, chat and SSE responses,
+request validation, CORS, OpenTelemetry middleware, the Chainlit UI and Engine.IO handshake, and MSAL
+assertion signing. They do not call Azure or the inference service. The project's
+prerelease policy matches both Dockerfiles, preventing `--locked` installs from
+re-resolving with a different policy. Transitive security floors are recorded in
+`tool.uv.constraint-dependencies`.
+
 ## Architecture Overview
 
 The agent uses these services:
