@@ -27,9 +27,9 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_CACHE_DIR="/tmp/uv-cache"
 
 # Minimal runtime deps. curl is used by the HEALTHCHECK; ca-certificates for
-# outbound HTTPS (model download, telemetry).
+# outbound HTTPS (model download, telemetry); shadow-utils provides useradd.
 RUN tdnf install -y \
-    ca-certificates curl \
+    ca-certificates curl shadow-utils \
     && tdnf clean all \
     && useradd --system --no-create-home --shell /sbin/nologin appuser
 
