@@ -132,36 +132,14 @@ See the main README for full architecture details.
 
 ### Reference preprocessing, pooling and rollout
 
-- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b/blob/13517a29e8c5e408f7f2684337ed407df3acb212/processing_colqwen3.py):
-  `<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe the image.<|im_end|><|endoftext|>`.
-  vLLM expands the image placeholder. Tokenization and embedding share one
-  request builder; `continue_final_message` preserves the explicit retrieval
-  suffix instead of adding the generic chat ending.
-- Raw image outputs retain every active prompt position. Hierarchical pooling
-  clusters that complete sequence. Delimiters and prompt words carry contextual
-  information after attention; they are not masked padding.
-- Row/column pooling is an application extension: average only the visual grid,
-  retaining active contextual prefix/suffix vectors separately in both outputs.
-- Queries use the installed processor's `process_texts` preprocessing. ColQwen3
-  appends ten active query-augmentation tokens. Keep them even though their ID
-  also serves as the padding ID. Only attention-mask-zero batch padding is
-  removed before sending token IDs to vLLM.
-- Every image output mode checks vLLM's token IDs against the installed
-  processor's retrieval prompt and patch grid. Query outputs must match the
-  active input lengths. Prompt/count mismatches, non-finite vectors and
-  unexpected all-zero rows fail explicitly; zero rows are not silently removed.
-- **Rollout requires reindexing.** Existing image vectors produced with the
-  generic chat prompt are not rewritten by deploying this API. Regenerate
-  affected vectors in a separately approved migration, preserving source
-  images and document/page identities. Coordinate inference and retrieval
-  rollout so old and new representations are not mixed.
-- This repository does not implement a query-embedding cache. If external
-  consumers cache embeddings, rotate their cache namespace/version and restart
-  them before switching query traffic; do not reuse old query-cache entries or
-  clear unrelated cache data.
-- The image-resolution cap and vLLM backend are unchanged. Matching reference
-  prompt IDs is not full Hugging Face/vLLM numerical parity or a demonstrated
-  relevance gain; validate those separately before production rollout.
+- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b/blob/13517a29e8c5e408f7f2684337ed407df3acb212/processing_colqwen3.py): `<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe the image.<|im_end|><|endoftext|>`. vLLM expands the image placeholder. Tokenization and embedding share one request builder; `continue_final_message` preserves the explicit retrieval suffix instead of adding the generic chat ending.
+- Raw image outputs retain every active prompt position. Hierarchical pooling clusters that complete sequence. Delimiters and prompt words carry contextual information after attention; they are not masked padding.
+- Row/column pooling is an application extension: average only the visual grid, retaining active contextual prefix/suffix vectors separately in both outputs.
+- Queries use the installed processor's `process_texts` preprocessing. ColQwen3 appends ten active query-augmentation tokens. Keep them even though their ID also serves as the padding ID. Only attention-mask-zero batch padding is removed before sending token IDs to vLLM.
+- Every image output mode checks vLLM's token IDs against the installed processor's retrieval prompt and patch grid. Query outputs must match the active input lengths. Prompt/count mismatches, non-finite vectors and unexpected all-zero rows fail explicitly; zero rows are not silently removed.
+- **Rollout requires reindexing.** Existing image vectors produced with the generic chat prompt are not rewritten by deploying this API. Regenerate affected vectors in a separately approved migration, preserving source images and document/page identities. Coordinate inference and retrieval rollout so old and new representations are not mixed.
+- This repository does not implement a query-embedding cache. If external consumers cache embeddings, rotate their cache namespace/version and restart them before switching query traffic; do not reuse old query-cache entries or clear unrelated cache data.
+- The image-resolution cap and vLLM backend are unchanged. Matching reference prompt IDs is not full Hugging Face/vLLM numerical parity or a demonstrated relevance gain; validate those separately before production rollout.
 
 ### Regression checks
 
@@ -172,20 +150,11 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
 
-These checks cover active-token selection, rectangular spatial pooling, invalid
-upstream vectors, and HTTP request parity using a local fake vLLM server. They
-do not require model weights or a GPU.
+These checks cover active-token selection, rectangular spatial pooling, invalid upstream vectors, and HTTP request parity using a local fake vLLM server. They do not require model weights or a GPU.
 
 ## Dependency compatibility checks
 
-The shim's security baseline uses Torch 2.13 / torchvision 0.28,
-Transformers 5.17, colpali-engine 0.3.18, and Hugging Face Hub 1.x.
-These dependencies load the CPU processor and run pooling; the GPU model
-still loads in the unchanged vLLM sidecar. Hub 1.x includes `hf-xet` without
-the former optional extra. Transitive security floors live in
-`tool.uv.constraint-dependencies`; `uv.lock` pins the tested versions.
-The prerelease setting matches the existing lock because Azure Monitor
-depends on beta OpenTelemetry instrumentation packages.
+The shim's security baseline uses Torch 2.13 / torchvision 0.28, Transformers 5.17, colpali-engine 0.3.18, and Hugging Face Hub 1.x. These dependencies load the CPU processor and run pooling; the GPU model still loads in the unchanged vLLM sidecar. Hub 1.x includes `hf-xet` without the former optional extra. Transitive security floors live in `tool.uv.constraint-dependencies`; `uv.lock` pins the tested versions. The prerelease setting matches the existing lock because Azure Monitor depends on beta OpenTelemetry instrumentation packages.
 
 Run the CPU compatibility suite from this module:
 
@@ -195,22 +164,8 @@ $env:PYTHONPATH = "$PWD\src"
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-The suite exercises real hierarchical/mean pooling, image decoding and
-cleanup, an HTTP round trip to a local test server, upstream errors, API
-validation, downloader arguments, and Transformers' refusal to download
-custom generation code without trust consent.
+The suite exercises real hierarchical/mean pooling, image decoding and cleanup, an HTTP round trip to a local test server, upstream errors, API validation, downloader arguments, and Transformers' refusal to download custom generation code without trust consent.
 
-To also check the actual model processor, point
-`COLPALI_TEST_MODEL_DIRECTORY` at a directory containing
-`tomoro-colqwen3-embed-4b` with the trusted model's processor/tokenizer files
-and custom Python modules (weights are unnecessary). These tests load the
-processor offline using the same `AutoProcessor` path as production and
-check square/rectangular image token counts against the patch grid and
-the query/image shim paths through a local fake vLLM server.
-Without this variable, the real-snapshot tests are skipped.
+To also check the actual model processor, point `COLPALI_TEST_MODEL_DIRECTORY` at a directory containing `tomoro-colqwen3-embed-4b` with the trusted model's processor/tokenizer files and custom Python modules (weights are unnecessary). These tests load the processor offline using the same `AutoProcessor` path as production and check square/rectangular image token counts against the patch grid and the query/image shim paths through a local fake vLLM server. Without this variable, the real-snapshot tests are skipped.
 
-These CPU checks do not validate GPU weight loading or end-to-end vLLM
-embeddings; those require the deployed sidecar and a GPU. Accelerate's
-checkpoint traversal advisory GHSA-4j2p-28q2-5m79 remains unresolved:
-the published 1.15.0 implementation still joins untrusted shard paths,
-so it is not treated as a security fix.
+These CPU checks do not validate GPU weight loading or end-to-end vLLM embeddings; those require the deployed sidecar and a GPU. Accelerate's checkpoint traversal advisory GHSA-4j2p-28q2-5m79 remains unresolved: the published 1.15.0 implementation still joins untrusted shard paths, so it is not treated as a security fix.
