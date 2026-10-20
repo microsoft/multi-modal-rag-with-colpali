@@ -58,12 +58,6 @@ kubectl get ingress
 
 Access Qdrant dashboard at: `http://<INGRESS-IP>/qdrant`
 
-## Pods and Services
-- **Document Processor**: Processes documents, creates embeddings via ColPali/ColQwen, stores images in Blob Storage, stores vectors in Qdrant
-- **ColQwen3 Inference** (`TomoroAI/tomoro-colqwen3-embed-4b`): Late-interaction embedding model served via vLLM sidecar with a CPU pooling shim
-- **Qdrant**: Vector database for storing and searching embeddings
-- **NGINX Ingress**: Provides external access to services and Qdrant dashboard
-
 ## Configuration
 
 The chart uses Helm dependencies defined in `Chart.yaml`:

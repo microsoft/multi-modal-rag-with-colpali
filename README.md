@@ -2,25 +2,25 @@
 
 [![CI](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml)
 
+**Read our paper: [PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**
+
 > [!NOTE]
 >
-> This is an **accelerator** to help you get started with multi-modal RAG using [ColPali](https://github.com/illuin-tech/colpali). ColPali was created by the research team at [Illuin Technology](https://www.illuin.tech/) — this repository provides Azure infrastructure, deployment scripts, and integration patterns to operationalize their work.
+> This is an **accelerator** to help you get started with multi-modal RAG using [ColPali](https://github.com/illuin-tech/colpali). ColPali was created by the research team at [Illuin Technology](https://www.illuin.tech/) — this repository provides Azure infrastructure, deployment scripts, and examples to help you use it.
 
 > [!WARNING]
 >
 > This code is provided as an accelerator implementation and should be carefully reviewed and adjusted before being used in your environments. This is a demonstration, and is **not a production ready solution**.
 
-This repository provides a multi-modal RAG (Retrieval-Augmented Generation) solution that processes documents visually using late interaction embedding techniques. Unlike traditional approaches that compress entire documents into single vectors, late interaction methods preserve fine-grained token information—each document page is represented as an image and embedded to produce hundreds of token-level embeddings. This means query tokens can be compared against document tokens directly, capturing layout, charts, tables, and visual elements that OCR pipelines typically lose.
+This repository provides a multi-modal RAG (Retrieval-Augmented Generation) solution that processes document pages as images. Each page produces hundreds of token-level embeddings rather than a single vector. Late interaction compares query tokens directly with these embeddings, helping retrieve content from text, charts, tables, and page layouts.
 
 This repository uses **ColPali**, but any late interaction embedding model can be substituted.
 
 ## Vision Language Models & ColPali
 
-This solution offers an alternative approach to traditional multi-modal RAG implementations by leveraging Vision Language Models (VLMs). Unlike conventional methods that require complex preprocessing pipelines, VLMs process documents holistically as images, significantly reducing system complexity.
-
 **Why vision models over traditional text extraction?**
 
-Traditional approaches require complex chunking strategies, OCR preprocessing (with its accuracy issues), image verbalization, and separate handling for text, tables, and visual elements. Vision Language Models process documents directly as images, understanding visual layouts and relationships without chunking or OCR. Everything—text, tables, charts, diagrams—is handled uniformly.
+Text extraction pipelines often need OCR, chunking, and separate handling for tables and images. Vision Language Models (VLMs) process whole pages as images, handling text, tables, charts, and diagrams together without OCR or text chunking.
 
 ### What is ColPali?
 
@@ -35,7 +35,7 @@ ColPali is a multi-modal document understanding model that processes documents a
 - **Multi-Modal**: Understands both text and visual elements like tables, charts, and document structure
 - **No OCR Required**: Bypasses text extraction preprocessing steps
 
-This implementation ships with **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3-based late-interaction embedding model (320-dim per-token vectors). The inference service runs the model behind a [vLLM](https://github.com/vllm-project/vllm) sidecar (`/pooling` endpoint) so the GPU only does the forward pass while a CPU FastAPI shim handles tokenization, image staging, hierarchical and mean row/column pooling. Any other ColQwen2/ColQwen3 late-interaction checkpoint compatible with vLLM's pooling task can be substituted by changing `colpaliInference.modelId` in the Helm values.
+This implementation ships with **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model with 320-dimensional token embeddings. [vLLM](https://github.com/vllm-project/vllm) runs inference on the GPU; a CPU service handles image preparation and pooling. To use another compatible ColQwen2/ColQwen3 late-interaction model, change `colpaliInference.modelId` in the Helm values. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for details.
 
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 
@@ -160,19 +160,17 @@ flowchart TB
 
 
 
-For detailed component descriptions, deployment topology, and technical specifications, see the **[Infrastructure Guide](modules/infra/README.md)**.
+For Azure resources and deployment details, see the **[Infrastructure Guide](modules/infra/README.md)**.
 
 ## Why Qdrant Vector Database + Azure Kubernetes Service?
 
 ### Why Qdrant Vector Database over AI Search for ColPali specific scenarios?
-- **Multi-Vector Limits**: AI Search has a 100 multi-vector limit per document, while Qdrant has no such restriction - this is needed to use ColPali's based models that output over 100 embeddings per document.
-- **Advanced Multi-Vector Operations**: Qdrant supports reranking and MAX_SIM operations that we cannot perform natively in AI Search. This makes it a lot easier, to implement late interaction where we compare multi-embeddings stored, with multi-embeddings at query time.
-
-For this specific case, AI Search would not have worked for our use case, but it has great applications in other scenarios.
+- **Multi-Vector Limits**: AI Search has a 100-vector limit per document, while Qdrant has no such restriction. ColPali-based models produce more than 100 embeddings per document.
+- **Multi-Vector Operations**: Qdrant supports reranking and MAX_SIM operations that we cannot perform natively in AI Search. These let us compare query embeddings directly with document embeddings.
 
 > [!NOTE]
 >
-> AI Search does offer other ways to achieve multi-modal RAG (See [Multimodal search in Azure AI Search](https://learn.microsoft.com/en-us/azure/search/multimodal-search-overview)), but for the use case we explored, ColPali based approaches led to higher retrieval quality, and higher indexing throughput at scale in production based on our benchmarking. Results will vary from use case to use case and should be benchmarked accordingly.
+> AI Search also supports [multi-modal RAG](https://learn.microsoft.com/en-us/azure/search/multimodal-search-overview). In our benchmarks, ColPali-based approaches gave better retrieval quality and higher indexing throughput at scale. Results vary, so benchmark your own use case.
 
 ### Why AKS over Container Apps?
 - **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure at the time of experimentation.
@@ -203,15 +201,11 @@ Two techniques make ColPali embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`) based on benchmarking results. We did extensive internal benchmarking, and determined that this combination, has the best latency / retrieval quality trade off for production deployments.
+**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). This gave the best balance of latency and retrieval quality in our benchmarks.
 
 ## Quick Start
 
 Ready to deploy? See the **[scripts/README.md](scripts/README.md)** for complete deployment instructions and automation scripts.
-
-> [!WARNING]
->
-> This code is provided as an accelerator implementation and should be carefully reviewed and adjusted before being used in your environments. This is a demonstration, and is **not a production ready solution**.
 
 ### Prerequisites
 - Azure subscription

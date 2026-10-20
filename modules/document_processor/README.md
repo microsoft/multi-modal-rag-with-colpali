@@ -1,6 +1,6 @@
 # Document Processor Service
 
-This module provides a containerized document processing pipeline that converts PDF documents into ColPali embeddings for visual document search. Page images are stored in Azure Blob Storage, while vector embeddings with metadata are indexed in Qdrant for efficient similarity search.
+This service converts PDFs into page images and ColPali embeddings for visual document search. It stores images in Azure Blob Storage and indexes embeddings with metadata in Qdrant.
 
 ## Architecture Overview
 
@@ -15,7 +15,7 @@ Service Bus-driven pipeline for processing documents:
 
 ## Concurrency Model
 
-The processor uses a **rolling pipeline** architecture where each page flows through independently, with each client managing its own concurrency via semaphores:
+The processor uses a **rolling pipeline**: each page moves through independently, and each client uses a semaphore to limit concurrent operations:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -45,11 +45,7 @@ The processor uses a **rolling pipeline** architecture where each page flows thr
 
 ### Why Rolling Pipeline?
 
-Unlike batch-based processing that waits at synchronization points, the rolling pipeline:
-- **Maximizes throughput**: As soon as one ColPali request completes, the next starts immediately
-- **Eliminates bottlenecks**: No waiting for entire batches to complete
-- **Natural backpressure**: Each semaphore independently throttles its stage
-- **Better GPU utilization**: ColPali requests flow continuously without gaps
+Pages move to the next stage without waiting for an entire batch to finish. Each stage limits its own concurrency, keeping requests flowing without overwhelming downstream services.
 
 ### Concurrency Settings
 

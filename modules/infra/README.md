@@ -125,15 +125,9 @@ src/k8s/                      # Kubernetes cluster bootstrap manifests
 └── dcgm-exporter.yaml               # GPU metrics exporter for Prometheus
 ```
 
-**Azure Infrastructure**: These Bicep modules provision the Azure managed services that support the Kubernetes workloads.
-
-**Kubernetes Bootstrap**: The `k8s/` folder contains cluster-level Kubernetes manifests that are applied immediately after AKS creation by the `deploy_infra` script. These are infrastructure components (not application workloads) that enable GPU scheduling and monitoring.
-
-**Kubernetes Applications**: The actual ColPali services (inference, document processing, vector database) are deployed separately to AKS via Helm charts located in the `/modules` directory.
-
 ## Kubernetes Bootstrap Resources
 
-The following cluster-level resources are deployed by `deploy_infra` after the AKS cluster is created. These are infrastructure prerequisites that must exist before application Helm charts can be deployed.
+The `deploy_infra` script applies the `k8s/` manifests after creating the AKS cluster. These resources enable GPU scheduling and monitoring and must exist before deploying the application Helm charts.
 
 | Resource | File | Purpose |
 |----------|------|---------|
@@ -142,7 +136,7 @@ The following cluster-level resources are deployed by `deploy_infra` after the A
 | NVIDIA Device Plugin | `nvidia-device-plugin.yaml` | DaemonSet enabling `nvidia.com/gpu` resource scheduling on GPU nodes |
 | DCGM Exporter | `dcgm-exporter.yaml` | GPU metrics (utilization, memory, temperature) for Prometheus monitoring |
 
-> **Note**: These resources were moved from the Helm chart to infrastructure because they are cluster-level components deployed once per cluster, not per-application release. They don't require Helm templating and must exist before application workloads can be scheduled.
+> **Note**: These resources are deployed once per cluster, not with each application release.
 
 ## Naming Conventions
 

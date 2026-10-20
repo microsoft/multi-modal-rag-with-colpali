@@ -4,7 +4,7 @@ GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-styl
 
 ## Architecture: CPU shim + GPU vLLM sidecar
 
-The service runs as a Kubernetes **StatefulSet** with two long-running containers in a single pod plus a one-shot init container. The split exists so the GPU is only doing the model forward pass while everything else (JSON parsing, base64 decoding, tokenization plumbing, pooling math, telemetry) scales horizontally across CPU cores.
+The service runs as a Kubernetes **StatefulSet**. Each pod has two long-running containers and an init container. vLLM runs model inference on the GPU; the CPU shim handles requests, image decoding, tokenization, pooling, and telemetry.
 
 ```text
           ┌─────────────────────────────────── Pod ──────────────────────────────────┐
@@ -29,12 +29,12 @@ client ───▶│ colpali-inference  (CPU shim, FastAPI/uvicorn, port 8000)
 
 ### Why a sidecar, not a single GPU process?
 
-In the naive single-process design (FastAPI + transformers on GPU), every uvicorn worker either pins its own GPU copy of the model (out of memory) or serializes through one shared model (no concurrency). Splitting responsibilities means:
+Running FastAPI and the model together can load a separate model copy per worker, exhausting GPU memory. Sharing one model can limit concurrency. Using a sidecar avoids these problems:
 
-- **vLLM owns the GPU.** Continuous batching, paged attention and the `embed` task implementation already exist in vLLM; we don't reinvent them. One vLLM process per pod, one GPU per pod.
+- **vLLM owns the GPU.** It handles batching and inference with one process and one GPU per pod.
 - **The shim is stateless and CPU-bound.** It can run `UVICORN_WORKERS` (default 4) processes against the same vLLM sidecar over `localhost`. Tokenization and pooling parallelize across cores instead of fighting the GPU.
 - **Pooling stays out of the model server.** Hierarchical and mean row/col pooling are pure NumPy/Torch math on the raw token embeddings. Doing them in the shim means we can change pooling strategies without touching vLLM.
-- **Images travel as files, not JSON.** The shim writes decoded PNG bytes to a tmpfs `emptyDir` at `/shm` and passes `file:///shm/<uuid>.png` to vLLM (vLLM's `--allowed-local-media-path /shm`). This avoids the cost of re-encoding images as base64 over the loopback HTTP hop.
+- **Images travel as files, not JSON.** The shim writes decoded PNG images to shared memory at `/shm` and passes `file:///shm/<uuid>.png` to vLLM (`--allowed-local-media-path /shm`). This avoids re-encoding images as base64 between containers.
 
 ### Container roles
 
