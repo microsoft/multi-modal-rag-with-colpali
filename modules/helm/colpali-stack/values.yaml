@@ -165,8 +165,9 @@ colpaliInference:
   # Set to "gpuinference" to use the new dedicated inference pool
   nodePool: "gpuinference"
 
-  # Model configuration
-  modelId: "TomoroAI/tomoro-colqwen3-embed-4b"
+  # W4A16 text weights; vision encoder stays unquantized. vLLM auto-detects
+  # the checkpoint's AutoRound/GPTQ format despite its "-awq" repository name.
+  modelId: "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"
   modelDirectoryPath: "/mnt/models/offline"
   hfHome: "/mnt/models/hf"
   model:

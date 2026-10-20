@@ -10,7 +10,7 @@ vLLM sidecar serves from and the shim processor loads from.
 
 Required env vars:
     MODEL_DIRECTORY_PATH - PVC mount point (e.g. /mnt/models/offline)
-    MODEL_ID             - HuggingFace model ID (e.g. TomoroAI/tomoro-colqwen3-embed-4b)
+    MODEL_ID             - HuggingFace model ID (e.g. TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)
 """
 
 import json
@@ -69,7 +69,7 @@ def _patch_config_for_vllm(target_dir: str) -> None:
 def _model_name_from_id(model_id: str) -> str:
     """Extract the local directory name from a HuggingFace model ID.
 
-    Example: ``TomoroAI/tomoro-colqwen3-embed-4b`` -> ``tomoro-colqwen3-embed-4b``.
+    Example: ``TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`` -> ``tomoro-ai-colqwen3-embed-4b-awq``.
     """
     return model_id.split("/")[-1]
 
@@ -115,7 +115,7 @@ def download_model_from_hf() -> str:
         EnvironmentError: If ``MODEL_DIRECTORY_PATH`` is not set.
     """
     model_directory_path = os.environ.get("MODEL_DIRECTORY_PATH")
-    model_id = os.environ.get("MODEL_ID", "TomoroAI/tomoro-colqwen3-embed-4b")
+    model_id = os.environ.get("MODEL_ID", "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq")
 
     if not model_directory_path:
         raise EnvironmentError(

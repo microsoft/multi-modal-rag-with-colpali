@@ -1,6 +1,44 @@
 # ColPali Inference Service
 
-GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model producing 320-dim per-token vectors. Alternative checkpoints require compatible retrieval-processor helpers and image prompts as well as vLLM support; changing `MODEL_ID` alone is not sufficient.
+GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)** — a W4A16-quantized, 4B-parameter ColQwen3 model producing 320-dim per-token vectors. Alternative checkpoints require compatible retrieval-processor helpers and image prompts as well as vLLM support; changing `MODEL_ID` alone is not sufficient.
+
+## Quantized checkpoint and GPU memory
+
+Only the language-model linear layers are quantized; the vision encoder and
+embedding projection remain unquantized. All model weights stay on the GPU.
+CPU image preparation, tokenization and output pooling are not model-weight
+offloading and remain part of the service.
+
+Despite the `-awq` repository name, the published checkpoint's
+[`config.json`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq/blob/309474f5f30f6d8631457680ec640557fe8ad573/config.json)
+declares `quant_method: auto-round`, `packing_format: auto_round:auto_gptq`,
+4 bits and group size 128. vLLM 0.19.1 handles this through its native INC
+quantization implementation, which can select GPTQ Marlin kernels on supported
+GPUs. Leave quantization auto-detection enabled: **do not force
+`--quantization awq`, rewrite the packing metadata, or install AutoAWQ in the
+CPU shim**. The downloader's tied-embedding config fix preserves this metadata.
+
+The publisher reports approximately 3.5 GB model memory versus 8.4 GB for the
+original checkpoint, not a peak-runtime VRAM requirement. Vision activations,
+input resolution and concurrent requests need additional headroom. The target
+is a 12 GB A10 GPU with no CPU weight offload; verify startup, image and text
+embeddings, peak VRAM and sustained mixed traffic on that hardware before
+rollout. Smaller weights alone do not establish a latency or throughput gain.
+Keep the CUDA 12-compatible vLLM 0.19.1 image on driver-570 deployments.
+
+**Existing deployments:** rebuild the inference images and set
+`colpaliInference.modelId` to the quantized ID explicitly if saved Helm values
+still select the original checkpoint. The init container downloads into a new
+basename directory on the PVC; it does not overwrite the original model cache.
+Allow disk space for both snapshots during the transition. Remove any local
+CPU-offload launch overrides rather than carrying them into the new deployment.
+
+Quantization changes numerical embeddings even though their dimension remains
+320. Reindex into a separate collection, validate retrieval quality, then switch
+query inference and the index together; do not silently mix original and
+quantized vectors. Keep the original model/index available for rollback and
+invalidate any external query-embedding caches. Deploying the new model does
+not migrate existing Qdrant vectors.
 
 ## Architecture: CPU shim + GPU vLLM sidecar
 
@@ -40,7 +78,7 @@ Running FastAPI and the model together can load a separate model copy per worker
 
 1. **`model-downloader` (initContainer)** — Runs `python -m colpali_inference.app download`. Pulls `MODEL_ID` from HuggingFace Hub into `${MODEL_DIRECTORY_PATH}/$(basename MODEL_ID)` on the shared PVC. Blocks pod startup if the download fails.
 2. **`colpali-inference` (CPU shim)** — FastAPI app on port `8000`. Reads `VLLM_BASE_URL=http://localhost:8001`, `MODEL_ID`, `IMAGE_SHM_DIR=/shm`. Sets `HF_HUB_OFFLINE=1` to use weights from the PVC without contacting HuggingFace Hub.
-3. **`vllm` (GPU sidecar)** — `vllm/vllm-openai:v0.19.1`. Launch flags (`--task embed`, `--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
+3. **`vllm` (GPU sidecar)** — `vllm/vllm-openai:v0.19.1`. Launch flags (`--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. The pooling task and checkpoint quantization are auto-detected. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
 
 ### Why a StatefulSet (not Deployment)?
 
@@ -72,7 +110,7 @@ Returns service status and model readiness:
   "status": "healthy",
   "model_loaded": true,
   "model_info": {
-    "model_name": "TomoroAI/tomoro-colqwen3-embed-4b",
+    "model_name": "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq",
     "vllm_base_url": "http://localhost:8001"
   }
 }
@@ -132,7 +170,7 @@ See the main README for full architecture details.
 
 ### Reference preprocessing, pooling and rollout
 
-- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b/blob/13517a29e8c5e408f7f2684337ed407df3acb212/processing_colqwen3.py):
+- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq/blob/309474f5f30f6d8631457680ec640557fe8ad573/processing_colqwen3.py):
   `<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe the image.<|im_end|><|endoftext|>`.
   vLLM expands the image placeholder. Tokenization and embedding share one
   request builder; `continue_final_message` preserves the explicit retrieval

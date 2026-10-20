@@ -57,7 +57,7 @@ spec:
         command: ["python", "-m", "colpali_inference.app", "download"]
         env:
         - name: MODEL_ID
-          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq" | quote }}
         - name: MODEL_DIRECTORY_PATH
           value: {{ .Values.colpaliInference.modelDirectoryPath | default "/mnt/models/offline" | quote }}
         - name: HF_HOME
@@ -91,7 +91,7 @@ spec:
         image: "{{ .Values.acrServer }}/colpali-inference:{{ .Values.colpaliInference.imageTag }}"
         env:
         - name: MODEL_ID
-          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq" | quote }}
         - name: MODEL_DIRECTORY_PATH
           value: {{ .Values.colpaliInference.modelDirectoryPath | default "/mnt/models/offline" | quote }}
         - name: HF_HOME
@@ -173,7 +173,7 @@ spec:
         # are passed here so the image is the single source of truth.
         env:
         - name: MODEL_ID
-          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-colqwen3-embed-4b" | quote }}
+          value: {{ .Values.colpaliInference.modelId | default "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq" | quote }}
         - name: MODEL_DIRECTORY_PATH
           value: {{ .Values.colpaliInference.modelDirectoryPath | default "/mnt/models/offline" | quote }}
         - name: VLLM_MAX_MODEL_LEN

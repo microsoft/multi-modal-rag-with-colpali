@@ -7,7 +7,7 @@ Helm chart for deploying the ColPali/ColQwen multi-modal RAG stack.
 This chart deploys the following components:
 
 ### Core Services
-- **ColQwen3 Inference** (`TomoroAI/tomoro-colqwen3-embed-4b`) - Late-interaction embedding service: GPU vLLM sidecar (`/pooling` endpoint) + CPU FastAPI shim for tokenization and pooling (StatefulSet)
+- **Quantized ColQwen3 Inference** (`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`) - Late-interaction embedding service: GPU vLLM sidecar (`/pooling` endpoint, no CPU weight offload) + CPU FastAPI shim for tokenization and pooling (StatefulSet). See the [model-switch rollout guidance](../../colpali_inference/README.md#quantized-checkpoint-and-gpu-memory) before upgrading an existing index.
 - **Document Processor** - Processes documents, creates embeddings, stores vectors in Qdrant and images in Blob Storage
 - **Agent API** - REST API for querying documents using RAG
 - **Agent UI** - Chainlit-based chat interface for interacting with the RAG system
