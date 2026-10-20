@@ -2,15 +2,13 @@
 
 [![CI](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/multi-modal-rag-with-colpali/actions/workflows/ci.yml)
 
-For a write-up of a production deployment, with full ablation studies comparing design choices, see **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**.
-
-> [!NOTE]
+> [!TIP]
 >
-> This is an **accelerator** to help you get started with multi-modal RAG using [ColPali](https://github.com/illuin-tech/colpali). ColPali was created by the research team at [Illuin Technology](https://www.illuin.tech/) — this repository provides Azure infrastructure, deployment scripts, and examples to help you use it.
+> For a write-up of a production deployment, with full ablation studies comparing design choices, see **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**.
 
 > [!WARNING]
 >
-> This code is provided as an accelerator implementation and should be carefully reviewed and adjusted before being used in your environments. This is a demonstration, and is **not a production ready solution**.
+> This **accelerator** uses [ColPali](https://github.com/illuin-tech/colpali), created by the research team at [Illuin Technology](https://www.illuin.tech/). It is **not a production-ready solution**. Review and adjust the code before using it in your environments.
 
 This repository provides a multi-modal RAG (Retrieval-Augmented Generation) solution that processes document pages as images. Each page produces hundreds of token-level embeddings rather than a single vector. Late interaction compares query tokens directly with these embeddings, helping retrieve content from text, charts, tables, and page layouts.
 
