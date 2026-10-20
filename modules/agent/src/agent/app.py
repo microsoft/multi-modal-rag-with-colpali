@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .agent import ColPaliAgent
+from .agent import INTERNAL_ERROR_MESSAGE, ColPaliAgent
 from .document_retriever import DocumentRetriever
 from .models import (
     ChatRequest,
@@ -184,11 +184,14 @@ async def chat(request: ChatRequest):
             "sources": sources,
         }
 
-    except Exception as e:
-        logger.error(f"Error in chat: {str(e)}", exc_info=True)
+    except Exception:
+        logger.exception("Error in chat")
         return JSONResponse(
             status_code=500,
-            content={"error": "Internal server error", "detail": str(e)},
+            content={
+                "error": "Internal server error",
+                "detail": INTERNAL_ERROR_MESSAGE,
+            },
         )
 
 
@@ -222,6 +225,9 @@ async def chat_stream(request: ChatRequest):
                 message=request.message,
                 history=request.history,
             ):
+                if event.get("type") == "error":
+                    raise RuntimeError(event.get("content", "Unknown error"))
+
                 # Yield SSE event in correct format
                 event_json = json.dumps(event)
                 sse_line = f"data: {event_json}\n\n"
@@ -232,12 +238,12 @@ async def chat_stream(request: ChatRequest):
 
             logger.info("Streaming completed successfully")
 
-        except Exception as e:
-            logger.error(f"Error in streaming: {str(e)}", exc_info=True)
+        except Exception:
+            logger.exception("Error in streaming")
             # Send error event
             error_event = {
                 "type": "error",
-                "content": str(e),
+                "content": INTERNAL_ERROR_MESSAGE,
                 "timestamp": datetime.utcnow().isoformat(),
             }
             error_json = json.dumps(error_event)
@@ -258,10 +264,10 @@ async def chat_stream(request: ChatRequest):
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """Global exception handler for unhandled errors in FastAPI endpoints."""
-    logger.error(f"Unhandled exception: {exc}")
+    logger.error("Unhandled exception", exc_info=(type(exc), exc, exc.__traceback__))
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal server error", "detail": str(exc)},
+        content={"error": "Internal server error", "detail": INTERNAL_ERROR_MESSAGE},
     )
 
 

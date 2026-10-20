@@ -11,7 +11,7 @@ The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredenti
 
 ## Architecture Overview
 
-This service uses a **distributed architecture** for separation of concerns and flexible scaling:
+The agent uses these services:
 
 1. **Agent API** – FastAPI backend exposing chat and health endpoints
 2. **Agent UI** – Chainlit-based chat interface for interactive document Q&A
@@ -20,7 +20,7 @@ This service uses a **distributed architecture** for separation of concerns and 
 
 ## Retrieval Strategy
 
-Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy (optimal based on benchmarking):
+Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
@@ -34,3 +34,19 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy (op
 3. Retrieve relevant pages using ColPali + Qdrant
 4. Generate answer with Azure OpenAI using retrieved context
 5. Return response with source citations
+
+## API Error Responses
+
+Internal failures return a generic message; exception details and tracebacks are
+logged server-side, not sent to clients. The agent's `run_stream` error events
+also use this generic message, so exception details never enter the event payload
+passed to API consumers.
+
+- `/chat` and unhandled API failures return HTTP 500 with `error` and `detail` fields.
+- `/chat/stream` keeps the SSE response and emits a terminal `error` event with
+  generic `content` and a `timestamp`, including when the agent yields an error event.
+
+## API Tests
+
+Run `uv run --frozen pytest tests` from `modules/agent`. The API tests replace the
+agent and do not require Azure credentials or running backend services.

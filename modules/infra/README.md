@@ -54,14 +54,12 @@ flowchart TB
         end
     end
 
-    %% End-to-End Flow (integrated, no separate box)
     DOCS[PDF Documents] --> DOCPROC
     DOCPROC --> COLPALI
     COLPALI --> QDRANT
     QUERY[User Query] --> QDRANT
     QDRANT --> RESULTS[Search Results]
 
-    %% Node Styling
     classDef azure fill:#e8f4f8,stroke:#0078d4,stroke-width:2px
     classDef k8s fill:#f0f8ff,stroke:#326ce5,stroke-width:2px
     classDef flow fill:#f0fff0,stroke:#28a745,stroke-width:2px
@@ -100,7 +98,7 @@ The following services are deployed to the AKS cluster via Helm charts (see `/mo
 | ColPali Model Download | Init Container | Downloads ColPali models from HuggingFace and persists to Persistent Volume Claims before inference pods start. |
 | ColPali Inference | Deployment | StatefulSet running ColPali inference pods with PVCs for model storage, serving multi-modal embedding API. |
 | Document Processor | Deployment | FastAPI application handling PDF ingestion, image extraction, blob storage upload, and vector indexing workflows. |
-| Qdrant Vector Database | StatefulSet | High-performance vector database for storing document embeddings, metadata, and blob storage URLs for similarity search operations. |
+| Qdrant Vector Database | StatefulSet | Stores document embeddings, metadata, and blob storage URLs for similarity search. |
 
 ## Infrastructure Structure
 
@@ -124,12 +122,6 @@ src/k8s/                      # Kubernetes cluster bootstrap manifests
 ├── nvidia-device-plugin.yaml        # NVIDIA device plugin for GPU scheduling
 └── dcgm-exporter.yaml               # GPU metrics exporter for Prometheus
 ```
-
-**Azure Infrastructure**: These Bicep modules provision the Azure managed services that support the Kubernetes workloads.
-
-**Kubernetes Bootstrap**: The `k8s/` folder contains cluster-level Kubernetes manifests that are applied immediately after AKS creation by the `deploy_infra` script. These are infrastructure components (not application workloads) that enable GPU scheduling and monitoring.
-
-**Kubernetes Applications**: The actual ColPali services (inference, document processing, vector database) are deployed separately to AKS via Helm charts located in the `/modules` directory.
 
 ## Azure Verified Modules
 
@@ -191,7 +183,7 @@ az deployment group what-if --resource-group $ResourceGroup `
 
 ## Kubernetes Bootstrap Resources
 
-The following cluster-level resources are deployed by `deploy_infra` after the AKS cluster is created. These are infrastructure prerequisites that must exist before application Helm charts can be deployed.
+The `deploy_infra` script applies the `k8s/` manifests after creating the AKS cluster. These resources enable GPU scheduling and monitoring and must exist before deploying the application Helm charts.
 
 | Resource | File | Purpose |
 |----------|------|---------|
@@ -204,7 +196,7 @@ The DCGM ServiceMonitor uses `azmonitoring.coreos.com/v1`, provided by the AKS
 managed Prometheus add-on enabled in the Bicep template. It does not require a
 separate Prometheus Operator installation.
 
-> **Note**: These resources were moved from the Helm chart to infrastructure because they are cluster-level components deployed once per cluster, not per-application release. They don't require Helm templating and must exist before application workloads can be scheduled.
+> **Note**: These resources are deployed once per cluster, not with each application release.
 
 ## Naming Conventions
 
