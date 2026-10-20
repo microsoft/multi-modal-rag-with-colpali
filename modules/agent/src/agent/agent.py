@@ -18,6 +18,8 @@ from azure.identity import DefaultAzureCredential
 from .document_retriever import DocumentRetriever
 from .models import ChatTurn
 
+INTERNAL_ERROR_MESSAGE = "An unexpected error occurred. Please try again later."
+
 
 class ColPaliAgent:
     def __init__(self, deployment_name: Optional[str] = None):
@@ -227,7 +229,8 @@ class ColPaliAgent:
 
         Yields:
             dict: Streaming events (text deltas, steps, sources, and
-            completion markers) for the caller to render.
+            completion markers) for the caller to render. Failures emit a
+            terminal error event with a generic message; details are logged.
         """
         logging.debug(
             "[Agent] Starting run_stream. Message_len=%d, history_turns=%d",
@@ -508,7 +511,7 @@ class ColPaliAgent:
             logging.error("Error occurred at message: %s", message)
             yield {
                 "type": "error",
-                "content": str(e),
+                "content": INTERNAL_ERROR_MESSAGE,
             }
 
     async def cleanup(self):

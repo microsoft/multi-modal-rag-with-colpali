@@ -35,13 +35,13 @@ USER app
 COPY --chown=app:app pyproject.toml uv.lock* README.md ./
 
 # Install dependencies - UV handles virtual environment creation
-RUN uv sync --locked --no-install-project --no-editable --no-dev --prerelease=allow
+RUN uv sync --locked --no-install-project --no-editable --no-dev
 
 # Copy application code
 COPY --chown=app:app src/ ./src/
 
 # Install the project itself in non-editable mode
-RUN uv sync --locked --no-editable --no-dev --prerelease=allow
+RUN uv sync --locked --no-editable --no-dev
 
 # Set PATH to include virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
