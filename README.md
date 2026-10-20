@@ -4,7 +4,7 @@
 
 > [!TIP]
 >
-> For a write-up of a production deployment, with full ablation studies comparing design choices, see **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**.
+> **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)** describes a downstream production system built on this accelerator's vLLM serving and Helm/AKS deployment. Its production extensions and measured results do not describe an out-of-the-box deployment of this repository. See [Relationship to PULSAR](#relationship-to-pulsar).
 
 > [!WARNING]
 >
@@ -188,7 +188,7 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 
 Two techniques make these token-level embeddings practical at scale:
 
-**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces embedding dimensions by ~3x while maintaining retrieval quality.
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces the number of vectors by approximately the pooling factor (3 by default), not their dimensionality. Retrieval quality should be evaluated for the chosen model and corpus.
 
 **Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
@@ -196,7 +196,24 @@ Two techniques make these token-level embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). This gave the best balance of latency and retrieval quality in our benchmarks.
+**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with binary-quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). L2 uses unquantized hierarchical-pooled vectors for MaxSim scoring of the shortlist; "exact" scoring at this stage does not make the approximate candidate selection or pooled representation lossless.
+
+### Relationship to PULSAR
+
+[Section 3.2 of PULSAR](https://arxiv.org/html/2608.28572#S3.SS2) credits this accelerator for vLLM serving and Helm/AKS deployment. The paper combines these foundations with production ingestion, retrieval tuning, and evaluation. It supports the two-stage design, but it is not a reproduction guide or a production-readiness certification for this repository.
+
+The paper reports the following results under different measurement conditions:
+
+| Result | Scope and qualification |
+|--------|-------------------------|
+| **15.1x lower median vector-search latency** | On ViDoRe V3, quantized mean-pooled prefetch plus hierarchical-pooled reranking took 49.9 ms versus 752.7 ms unpooled, with absolute NDCG@10 and Recall@10 losses of 0.0088 and 0.0074. These are single-stream search measurements, not end-to-end answer latency ([Section 5.2](https://arxiv.org/html/2608.28572#S5.SS2)). |
+| **156 ms production median vector-search latency** | Measured over a seven-day window on PULSAR's production infrastructure and corpus; not an accelerator service-level guarantee ([Section 5.3](https://arxiv.org/html/2608.28572#S5.SS3)). |
+| **Approximately 20x lower ingestion cost per page** | A call-count estimate priced at list rates against the replaced OCR-plus-verbalisation pipeline, not metered cloud spend. It excludes standing serving costs and answer-time inference ([Section 5.4](https://arxiv.org/html/2608.28572#S5.SS4)). |
+| **More than double answer-fact recall at production top-k** | An evaluation of 75 expert-authored questions across seven deals against one OCR-plus-verbalisation baseline, not evidence of superiority over every text or vision-first system ([Section 5.7](https://arxiv.org/html/2608.28572#S5.SS7)). |
+
+PULSAR also separates **150-DPI embedding images from 500-DPI answer images**. Its embedding-DPI study raised the visual-token cap to avoid resolution clipping; changing render DPI alone does not reproduce that setup. The zero page-legibility errors at 500 DPI were observed on 516 questions from just two decks, with the source page supplied directly to the answering model, so they do not establish error-free end-to-end RAG ([Sections 5.1](https://arxiv.org/html/2608.28572#S5.SS1) and [5.6](https://arxiv.org/html/2608.28572#S5.SS6)).
+
+For production ingestion, the paper describes bounded rasterization, document/page content hashes for skipping and resuming work, document-completion visibility gating, and priority scheduling. Treat these as design considerations to verify against the implemented processor, not features implied by the paper citation. See the [Document Processor Guide](modules/document_processor/README.md) for the current ingestion contract, the [Inference Service Guide](modules/colpali_inference/README.md) for preprocessing constraints, and the [Agent Guide](modules/agent/README.md) for search settings. Benchmark retrieval quality, image legibility, memory, and latency on your own workload before adopting the paper's operating points.
 
 ## Quick Start
 
