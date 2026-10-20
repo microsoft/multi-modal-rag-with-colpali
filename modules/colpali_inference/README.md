@@ -129,3 +129,41 @@ The API supports multiple pooling strategies for different use cases:
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
 See the main README for full architecture details.
+
+## Dependency compatibility checks
+
+The shim's security baseline uses Torch 2.13 / torchvision 0.28,
+Transformers 5.17, colpali-engine 0.3.18, and Hugging Face Hub 1.x.
+These dependencies load the CPU processor and run pooling; the GPU model
+still loads in the unchanged vLLM sidecar. Hub 1.x includes `hf-xet` without
+the former optional extra. Transitive security floors live in
+`tool.uv.constraint-dependencies`; `uv.lock` pins the tested versions.
+The prerelease setting matches the existing lock because Azure Monitor
+depends on beta OpenTelemetry instrumentation packages.
+
+Run the CPU compatibility suite from this module:
+
+```powershell
+uv sync --locked
+$env:PYTHONPATH = "$PWD\src"
+uv run --locked python -m unittest discover -s tests -v
+```
+
+The suite exercises real hierarchical/mean pooling, image decoding and
+cleanup, an HTTP round trip to a local test server, upstream errors, API
+validation, downloader arguments, and Transformers' refusal to download
+custom generation code without trust consent.
+
+To also check the actual model processor, point
+`COLPALI_TEST_MODEL_DIRECTORY` at a directory containing
+`tomoro-colqwen3-embed-4b` with the trusted model's processor/tokenizer files
+and custom Python modules (weights are unnecessary). That test loads the
+processor offline using the same `AutoProcessor` path as production and
+checks square/rectangular image token counts against the patch grid.
+Without this variable, only the real-snapshot test is skipped.
+
+These CPU checks do not validate GPU weight loading or end-to-end vLLM
+embeddings; those require the deployed sidecar and a GPU. Accelerate's
+checkpoint traversal advisory GHSA-4j2p-28q2-5m79 remains unresolved:
+the published 1.15.0 implementation still joins untrusted shard paths,
+so it is not treated as a security fix.
