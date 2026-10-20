@@ -1,6 +1,6 @@
 # ColPali Inference Service
 
-GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model producing 320-dim per-token vectors — but any HuggingFace checkpoint that vLLM can load with `--task embed` will work by changing `MODEL_ID`.
+GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model producing 320-dim per-token vectors. Alternative checkpoints require compatible retrieval-processor helpers and image prompts as well as vLLM support; changing `MODEL_ID` alone is not sufficient.
 
 ## Architecture: CPU shim + GPU vLLM sidecar
 
@@ -12,8 +12,8 @@ The service runs as a Kubernetes **StatefulSet**. Each pod has two long-running 
 client ───▶│ colpali-inference  (CPU shim, FastAPI/uvicorn, port 8000)         │
   POST    │  │  • validates EmbedRequest                                       │
   /embeddings  │  │  • decodes base64 images → PNG bytes → /shm/<uuid>.png         │
-          │  │  • calls vLLM /tokenize  (image mean-pooling alignment only)    │
-          │  │  • calls vLLM /pooling  (direct text path; also image path)     │
+          │  │  • calls vLLM /tokenize  (all image-prompt alignment)          │
+          │  │  • calls vLLM /pooling  (augmented query IDs or image prompt)   │
           │  │  • hierarchical / mean-row / mean-col pooling on CPU            │
           │  │                                                                 │
           │  └── localhost:8001 ──▶ vllm  (GPU, vllm/vllm-openai:v0.19.1)        │
@@ -87,11 +87,11 @@ POST /embeddings
 ```json
 {
   "images": ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."],
-  "pooling_type": ["hierarchical_pooling", "mean_pooling"]
+  "pooling_type": ["none", "hierarchical_pooling", "mean_pooling"]
 }
 ```
 
-Returns structured embeddings (each field is a `batch x patches x embedding_dim` array, present only when requested):
+Returns structured embeddings (each field is a `batch x vectors x embedding_dim` array, present only when requested; sequence lengths can vary within a batch):
 ```json
 {
   "embeddings": [[[0.1, 0.2, ...]]],
@@ -101,7 +101,7 @@ Returns structured embeddings (each field is a `batch x patches x embedding_dim`
 }
 ```
 
-**Text Processing** (single embeddings only):
+**Query Text Processing** (per-token embeddings, without pooling):
 ```json
 {
   "texts": ["Find machine learning documents"],
@@ -120,7 +120,7 @@ Returns query embeddings:
 
 The API supports multiple pooling strategies for different use cases:
 
-**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** reduces embedding dimensions by ~3x while maintaining retrieval quality.
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** reduces the number of vectors by approximately the pooling factor; vector dimensions are unchanged.
 
 **Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
@@ -129,3 +129,49 @@ The API supports multiple pooling strategies for different use cases:
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
 See the main README for full architecture details.
+
+### Reference preprocessing, pooling and rollout
+
+- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b/blob/13517a29e8c5e408f7f2684337ed407df3acb212/processing_colqwen3.py):
+  `<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe the image.<|im_end|><|endoftext|>`.
+  vLLM expands the image placeholder. Tokenization and embedding share one
+  request builder; `continue_final_message` preserves the explicit retrieval
+  suffix instead of adding the generic chat ending.
+- Raw image outputs retain every active prompt position. Hierarchical pooling
+  clusters that complete sequence. Delimiters and prompt words carry contextual
+  information after attention; they are not masked padding.
+- Row/column pooling is an application extension: average only the visual grid,
+  retaining active contextual prefix/suffix vectors separately in both outputs.
+- Queries use the installed processor's `process_texts` preprocessing. ColQwen3
+  appends ten active query-augmentation tokens. Keep them even though their ID
+  also serves as the padding ID. Only attention-mask-zero batch padding is
+  removed before sending token IDs to vLLM.
+- Every image output mode checks vLLM's token IDs against the installed
+  processor's retrieval prompt and patch grid. Query outputs must match the
+  active input lengths. Prompt/count mismatches, non-finite vectors and
+  unexpected all-zero rows fail explicitly; zero rows are not silently removed.
+- **Rollout requires reindexing.** Existing image vectors produced with the
+  generic chat prompt are not rewritten by deploying this API. Regenerate
+  affected vectors in a separately approved migration, preserving source
+  images and document/page identities. Coordinate inference and retrieval
+  rollout so old and new representations are not mixed.
+- This repository does not implement a query-embedding cache. If external
+  consumers cache embeddings, rotate their cache namespace/version and restart
+  them before switching query traffic; do not reuse old query-cache entries or
+  clear unrelated cache data.
+- The image-resolution cap and vLLM backend are unchanged. Matching reference
+  prompt IDs is not full Hugging Face/vLLM numerical parity or a demonstrated
+  relevance gain; validate those separately before production rollout.
+
+### Regression checks
+
+With the inference dependencies installed, run from this module's directory:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+```
+
+These checks cover active-token selection, rectangular spatial pooling, invalid
+upstream vectors, and HTTP request parity using a local fake vLLM server. They
+do not require model weights or a GPU.

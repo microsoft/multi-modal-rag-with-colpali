@@ -12,10 +12,10 @@ on every request.
 
 The endpoint contract is:
   POST {VLLM_BASE_URL}/pooling
-  Body (text):       {"model": "...", "input": ["text1", "text2", ...]}
-  Body (image):      {"model": "...", "input": [{"content": [{"type":
-                       "image_url", "image_url": {"url": "file:///shm/..."}}]},
-                       ...]}
+  Body (text):       {"model": "...", "input": [[token_id, ...], ...],
+                       "add_special_tokens": false}
+  Body (image):      {"model": "...", "messages": [...], ...}
+                     One retrieval-prompt conversation per image.
   Response:          {"data": [{"data": [[...embedding rows...]], ...}, ...]}
 
 Per-token embeddings are returned as float lists, already L2-normalized by
@@ -30,7 +30,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 import torch
@@ -154,13 +154,13 @@ class VLLMEmbeddingClient:
                 )
             await asyncio.sleep(poll_interval_seconds)
 
-    async def embed_texts(
-        self, texts: List[str], priority: Optional[int] = None
+    async def embed_token_ids(
+        self, token_ids: List[List[int]], priority: Optional[int] = None
     ) -> List[torch.Tensor]:
-        """Pool texts through vLLM.
+        """Pool unpadded, reference-processor token sequences through vLLM.
 
         Args:
-            texts: Non-empty list of input strings.
+            token_ids: Non-empty sequences, including active augmentation tokens.
             priority: vLLM scheduling priority (lower = higher priority).
                 Defaults to ``VLLM_TEXT_PRIORITY`` env (default 0). Only
                 honoured when vLLM is started with
@@ -171,16 +171,38 @@ class VLLMEmbeddingClient:
             (seq_len_i, embed_dim) on CPU. vLLM does not pad across the
             batch — each input keeps its natural sequence length.
         """
-        if not texts:
-            raise ValueError("texts must be non-empty")
+        if not token_ids or any(not ids for ids in token_ids):
+            raise ValueError("token_ids must contain non-empty sequences")
 
         body = {
             "model": self.model_id,
-            "input": list(texts),
+            "input": token_ids,
+            "add_special_tokens": False,
             "priority": priority if priority is not None else self.text_priority,
         }
         data = await self._post_pooling(body)
         return _decode_pooling_response(data)
+
+    def _image_request(self, url: str) -> Dict[str, Any]:
+        return {
+            "model": self.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": url}},
+                        {
+                            "type": "text",
+                            "text": "Describe the image.<|im_end|><|endoftext|>",
+                        },
+                    ],
+                }
+            ],
+            # Preserve the retrieval suffix, not the generic chat ending.
+            "continue_final_message": True,
+            "add_generation_prompt": False,
+            "add_special_tokens": False,
+        }
 
     async def embed_images(
         self, images: List[Image.Image], priority: Optional[int] = None
@@ -216,18 +238,8 @@ class VLLMEmbeddingClient:
             )
 
             async def _embed_one(url: str) -> List[Any]:
-                body = {
-                    "model": self.model_id,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": url}}
-                            ],
-                        }
-                    ],
-                    "priority": effective_priority,
-                }
+                body = self._image_request(url)
+                body["priority"] = effective_priority
                 return await self._post_pooling(body)
 
             results = await asyncio.gather(*(_embed_one(url) for url in image_urls))
@@ -240,27 +252,11 @@ class VLLMEmbeddingClient:
         """Return the exact token-id sequence vLLM uses for a single-image
         chat request, matching the structure :meth:`embed_images` sends.
 
-        This is the authoritative tokenization for that input — using the
-        local HF processor in the shim is not reliable for multimodal models
-        because vLLM applies the model's chat template (different prompt
-        structure than colpali_engine's image-only template). Mean pooling
-        in inference.py needs exact alignment between the embedding length
-        returned by /pooling and the input_ids it ran against, which only
-        the /tokenize endpoint can guarantee.
+        The caller checks this against the installed retrieval processor's
+        prompt and patch grid before accepting any output representation.
         """
         async with self._stage_images([image]) as image_urls:
-            url = image_urls[0]
-            body = {
-                "model": self.model_id,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": url}}],
-                    }
-                ],
-                "add_generation_prompt": False,
-                "add_special_tokens": False,
-            }
+            body = self._image_request(image_urls[0])
             payload = await self._post_json("/tokenize", body)
         tokens = payload.get("tokens")
         if not isinstance(tokens, list):
@@ -364,7 +360,22 @@ def _decode_pooling_response(data: List[Any]) -> List[torch.Tensor]:
         rows = entry["data"]
         if not rows:
             raise VLLMClientError("vLLM /pooling entry has empty embedding list")
-        sequences.append(torch.tensor(rows, dtype=torch.float32))
+        try:
+            sequence = torch.tensor(rows, dtype=torch.float32)
+        except (TypeError, ValueError) as exc:
+            raise VLLMClientError(
+                "vLLM /pooling returned a malformed embedding matrix"
+            ) from exc
+        if (
+            sequence.ndim != 2
+            or sequence.shape[1] == 0
+            or not torch.isfinite(sequence).all()
+            or (sequence.abs().sum(dim=1) == 0).any()
+        ):
+            raise VLLMClientError(
+                "vLLM /pooling returned invalid vectors or zero-padding rows"
+            )
+        sequences.append(sequence)
     return sequences
 
 
