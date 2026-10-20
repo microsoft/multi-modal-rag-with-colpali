@@ -21,6 +21,7 @@ from transformers.generation.utils import GenerationMixin
 from colpali_inference.app import app
 from colpali_inference.download_model import download_model_from_hf
 from colpali_inference.inference import ColPaliInference
+from colpali_inference.models import EmbedRequest
 from colpali_inference.vllm_client import (
     VLLMEmbeddingClient,
     VLLMUpstreamError,
@@ -170,7 +171,7 @@ class HTTPCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         async def pooling(request):
             body = await request.json()
             requests.append(body)
-            if body["input"] == ["busy"]:
+            if body["input"] == [[999]]:
                 return web.Response(
                     status=429, text="busy", headers={"Retry-After": "2"}
                 )
@@ -183,13 +184,19 @@ class HTTPCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 base_url=str(server.make_url("/")), model_id="test"
             )
             try:
-                embeddings = await client.embed_texts(["query"])
+                embeddings = await client.embed_token_ids([[101, 102]])
                 torch.testing.assert_close(embeddings[0], torch.eye(2))
                 self.assertEqual(
-                    requests[0], {"model": "test", "input": ["query"], "priority": 0}
+                    requests[0],
+                    {
+                        "model": "test",
+                        "input": [[101, 102]],
+                        "add_special_tokens": False,
+                        "priority": 0,
+                    },
                 )
                 with self.assertRaises(VLLMUpstreamError) as caught:
-                    await client.embed_texts(["busy"])
+                    await client.embed_token_ids([[999]])
                 self.assertEqual(caught.exception.status_code, 429)
                 self.assertEqual(caught.exception.retry_after, "2")
             finally:
@@ -207,6 +214,123 @@ class HTTPCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(image.mode, "RGB")
                     raise RuntimeError("upstream failed")
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    @unittest.skipUnless(
+        os.getenv("COLPALI_TEST_MODEL_DIRECTORY"),
+        "Set COLPALI_TEST_MODEL_DIRECTORY to a downloaded processor's parent directory",
+    )
+    async def test_real_processor_query_and_image_shim_round_trip(self):
+        requests = []
+        image_ids = []
+
+        async def handle(request):
+            body = await request.json()
+            requests.append(body)
+            if "input" in body:
+                self.assertIs(body["add_special_tokens"], False)
+                sequences = body["input"]
+            else:
+                content = body["messages"][0]["content"]
+                path = content[0]["image_url"]["url"].removeprefix("file://")
+                with Image.open(path) as image:
+                    sequences = handler.processor.process_images([image])[
+                        "input_ids"
+                    ].tolist()
+                image_ids[:] = sequences[0]
+                if request.path == "/tokenize":
+                    return web.json_response({"tokens": sequences[0]})
+            # Synthetic vectors exercise the shim, not GPU model numerical parity.
+            return web.json_response(
+                {
+                    "data": [
+                        {
+                            "data": torch.nn.functional.normalize(
+                                torch.arange(
+                                    1, len(ids) * 4 + 1, dtype=torch.float32
+                                ).reshape(len(ids), 4),
+                                dim=-1,
+                            ).tolist()
+                        }
+                        for ids in sequences
+                    ]
+                }
+            )
+
+        server_app = web.Application()
+        server_app.router.add_post("/tokenize", handle)
+        server_app.router.add_post("/pooling", handle)
+        with tempfile.TemporaryDirectory() as directory:
+            async with TestServer(server_app) as server:
+                client = VLLMEmbeddingClient(
+                    base_url=str(server.make_url("/")), image_shm_dir=directory
+                )
+                try:
+                    handler = ColPaliInference(
+                        model_id="TomoroAI/tomoro-colqwen3-embed-4b",
+                        vllm_client=client,
+                    )
+                    with patch.dict(
+                        os.environ,
+                        {
+                            "MODEL_DIRECTORY_PATH": os.environ[
+                                "COLPALI_TEST_MODEL_DIRECTORY"
+                            ],
+                            "HF_HUB_OFFLINE": "1",
+                        },
+                    ):
+                        handler.initialize()
+                    queries = ["short", "a substantially longer retrieval query"]
+                    batch = handler.processor.process_texts(queries)
+                    expected_ids = [
+                        ids[mask.bool()].tolist()
+                        for ids, mask in zip(
+                            batch["input_ids"], batch["attention_mask"]
+                        )
+                    ]
+                    response = await handler.generate_embeddings(
+                        EmbedRequest(texts=queries)
+                    )
+                    self.assertEqual(requests[0]["input"], expected_ids)
+                    self.assertEqual(
+                        [len(rows) for rows in response.embeddings],
+                        [len(ids) for ids in expected_ids],
+                    )
+                    for ids in expected_ids:
+                        self.assertEqual(
+                            ids[-10:], [handler.processor.tokenizer.pad_token_id] * 10
+                        )
+
+                    stream = BytesIO()
+                    with Image.new("RGB", (448, 224), "white") as image:
+                        image.save(stream, format="PNG")
+                    response = await handler.generate_embeddings(
+                        EmbedRequest(
+                            images=[base64.b64encode(stream.getvalue()).decode()],
+                            pooling_type=[
+                                "none",
+                                "mean_pooling",
+                                "hierarchical_pooling",
+                            ],
+                        )
+                    )
+                    x_patches, y_patches = handler._get_patches((448, 224))
+                    context_tokens = len(image_ids) - x_patches * y_patches
+                    self.assertEqual(len(response.embeddings[0]), len(image_ids))
+                    self.assertEqual(
+                        len(response.mean_row_pooled_embeddings[0]),
+                        context_tokens + y_patches,
+                    )
+                    self.assertEqual(
+                        len(response.mean_column_pooled_embeddings[0]),
+                        context_tokens + x_patches,
+                    )
+                    self.assertEqual(
+                        len(response.hierarchical_pooled_embeddings[0]),
+                        len(image_ids) // 3,
+                    )
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+                finally:
+                    await client.close()
 
 
 class APICompatibilityTests(unittest.TestCase):
