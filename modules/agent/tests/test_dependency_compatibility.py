@@ -11,13 +11,17 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+import aiohttp
+import fsspec
 import jwt
 from agent_framework import ChatMessage, DataContent, Role, TextContent
 from agent_framework.azure import AzureOpenAIChatClient
+from aiohttp import web
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from huggingface_hub import HfFileSystem
 from msal.oauth2cli.assertion import JwtAssertionCreator
 from openai.types.chat import ChatCompletion
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -29,6 +33,34 @@ from agent.agent import ColPaliAgent
 
 
 class FrameworkCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_aiohttp_preserves_duplicate_headers(self):
+        async def respond(request):
+            self.assertEqual(request.headers.getall("X-Input"), ["one", "two"])
+            return web.Response(
+                text="ok", headers=[("X-Output", "first"), ("X-Output", "second")]
+            )
+
+        app = web.Application()
+        app.router.add_get("/", respond)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = runner.addresses[0][1]
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{port}/",
+                    headers=[("X-Input", "one"), ("X-Input", "two")],
+                ) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(await response.text(), "ok")
+                    self.assertEqual(
+                        response.headers.getall("X-Output"), ["first", "second"]
+                    )
+        finally:
+            await runner.cleanup()
+
     async def test_real_agent_uses_core_azure_chat_client(self):
         credential = Mock()
         qdrant = AsyncMock()
@@ -166,6 +198,13 @@ class ApiCompatibilityTests(unittest.TestCase):
 
 
 class DependencyCompatibilityTests(unittest.TestCase):
+    def test_fsspec_reference_and_huggingface_filesystems(self):
+        references = fsspec.filesystem(
+            "reference", fo={"version": 1, "refs": {"document": "sample text"}}
+        )
+        self.assertEqual(references.cat_file("document"), b"sample text")
+        self.assertIsInstance(HfFileSystem(token=False), fsspec.AbstractFileSystem)
+
     def test_only_core_framework_distribution_is_required(self):
         core = distribution("agent-framework-core")
         self.assertEqual(core.version, "1.0.0b251120")
