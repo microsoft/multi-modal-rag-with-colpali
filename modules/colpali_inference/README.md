@@ -26,7 +26,38 @@ embeddings, peak VRAM and sustained mixed traffic on that hardware before
 rollout. Smaller weights alone do not establish a latency or throughput gain.
 Keep the CUDA 12.9-compatible vLLM 0.32.0 image on driver-570 deployments.
 
-**Existing deployments:** rebuild the inference images and set
+### Bounded A10 comparison
+
+A functional comparison on a 12 GiB A10-12Q with vLLM 0.32.0/CUDA 12.9
+successfully served this checkpoint without CPU weight offloading. Startup
+reported 3.45 GiB model-loading memory and 5.91 GiB available KV-cache memory.
+The original and quantized runs used the same settings: eager execution,
+2,048-token context, 8,192 batched tokens, 16 sequences and 0.89 GPU utilization.
+Both returned finite 320-dimensional vectors for text and all image pooling
+modes.
+
+The following warm, loopback HTTP timings include the CPU shim and response
+serialization. They are a small synthetic comparison, not a throughput or
+retrieval-quality benchmark:
+
+| Workload | Samples per model | Original | Quantized |
+| --- | --- | --- | --- |
+| Short query, median | 5 | 54.5 ms | 42.4 ms |
+| 300 x 300 image, all pooling modes, median | 3 | 125.3 ms | 110.8 ms |
+| 1000 x 1600 image, all pooling modes, median | 3 | 1.471 s | 1.470 s |
+| Concurrent two queries and two large images, total wall time | 1 batch | 2.019 s | 1.993 s |
+
+This shows reduced query latency in this sample, but no meaningful improvement
+for large-image or mixed-request latency. Do not infer a blanket speedup.
+Sampled total GPU memory peaked at 9,871 MiB for the original and 10,470 MiB for
+the quantized model: vLLM can use the freed weight memory for its KV cache, so
+lower model memory does not imply lower total GPU reservation at the same
+utilization setting. Validate sustained load and retrieval quality on your
+actual documents before production rollout.
+
+### Model-switch rollout
+
+For existing deployments, rebuild the inference images and set
 `colpaliInference.modelId` to the quantized ID explicitly if saved Helm values
 still select the original checkpoint. The init container downloads into a new
 basename directory on the PVC; it does not overwrite the original model cache.
