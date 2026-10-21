@@ -8,7 +8,7 @@
 
 > [!WARNING]
 >
-> This **accelerator** defaults to [TomoroAI's](https://huggingface.co/TomoroAI) [ColQwen3 model (`tomoro-colqwen3-embed-4b`)](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b), building on the foundational [ColPali approach and tooling](https://github.com/illuin-tech/colpali) from [Illuin Technology](https://www.illuin.tech/), including hierarchical token pooling. It is **not a production-ready solution**. Review and adjust the code before using it in your environments.
+> This **accelerator** defaults to [TomoroAI's](https://huggingface.co/TomoroAI) [quantized ColQwen3 model (`tomoro-ai-colqwen3-embed-4b-awq`)](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq), building on the foundational [ColPali approach and tooling](https://github.com/illuin-tech/colpali) from [Illuin Technology](https://www.illuin.tech/), including hierarchical token pooling. It is **not a production-ready solution**. Review and adjust the code before using it in your environments.
 
 This repository provides a multi-modal RAG (Retrieval-Augmented Generation) solution that processes document pages as images. Each page produces hundreds of token-level embeddings rather than a single vector. Late interaction compares query tokens directly with these embeddings, helping retrieve content from text, charts, tables, and page layouts.
 
@@ -33,7 +33,9 @@ ColPali is a multi-modal document understanding model that processes documents a
 - **Multi-Modal**: Understands both text and visual elements like tables, charts, and document structure
 - **No OCR Required**: Bypasses text extraction preprocessing steps
 
-This implementation ships with **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model with 320-dimensional token embeddings. [vLLM](https://github.com/vllm-project/vllm) runs inference on the GPU; a CPU service handles image preparation and pooling. To use another compatible ColQwen2/ColQwen3 late-interaction model, change `colpaliInference.modelId` in the Helm values. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for details.
+This implementation ships with **[`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)** — a quantized 4B-parameter ColQwen3 model producing 320-dimensional token embeddings. [vLLM](https://github.com/vllm-project/vllm) runs inference on the GPU; a CPU service handles image preparation and pooling.
+
+We chose quantization for performance and memory efficiency on our **12 GB A10 GPU nodes**. You can use the [non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible model with suitable hardware and settings. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for configuration and reindexing guidance.
 
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 
@@ -43,7 +45,7 @@ This repository includes model serving, document indexing, and deployment script
 
 **Components:**
 - Event-driven document processing pipeline (Blob Storage → Event Grid → Service Bus)
-- ColQwen3 (`TomoroAI/tomoro-colqwen3-embed-4b`) inference service on AKS — vLLM GPU sidecar + CPU pooling shim, with model weights cached on a shared PVC
+- Quantized ColQwen3 (`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`) inference service on AKS — vLLM GPU sidecar + CPU pooling shim, with model weights cached on a shared PVC
 - Qdrant vector database for similarity search
 - Complete infrastructure as code (Bicep templates)
 - Docker images and Helm charts for all services
@@ -56,7 +58,7 @@ This repository includes model serving, document indexing, and deployment script
 2. **Event Trigger** → Storage generates blob events, routed by Event Grid to Service Bus
 3. **Async Processing** → Document Processor consumes queue messages and reads documents
 4. **Image Extraction** → Documents converted to high-resolution page images
-5. **AI Inference** → `tomoro-colqwen3-embed-4b` (served via vLLM) generates multi-modal embeddings on AKS pods
+5. **AI Inference** → `tomoro-ai-colqwen3-embed-4b-awq` (served via vLLM) generates multi-modal embeddings on AKS pods
 6. **Image Storage** → Page images uploaded to Azure Blob Storage for retrieval
 7. **Vector Storage** → Embeddings stored in Qdrant with metadata and image URLs
 
@@ -102,7 +104,7 @@ flowchart TB
         end
 
         subgraph APP_SERVICES ["Application Services"]
-            COLQWEN["tomoro-colqwen3-embed-4b Inference<br/>StatefulSet (vLLM + shim)"]
+            COLQWEN["tomoro-ai-colqwen3-embed-4b-awq Inference<br/>StatefulSet (vLLM + shim)"]
             DOCPROC[Document Processor<br/>Deployment]
             QDRANT[Qdrant Vector DB<br/>StatefulSet]
             AGENT_API[Agent API<br/>Deployment]
