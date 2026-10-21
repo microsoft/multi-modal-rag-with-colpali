@@ -7,7 +7,7 @@ authors = [
     {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "agent-framework==1.0.0b251112.post1",
     "azure-identity>=1.25.1",
@@ -41,7 +41,7 @@ test = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
@@ -49,6 +49,7 @@ ignore = ["E501"]
 
 [tool.uv]
 default-groups = ["dev"]
+prerelease = "allow"
 
 [build-system]
 requires = ["hatchling"]
