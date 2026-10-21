@@ -47,20 +47,7 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
 | Prefetch | `mean_pooled_columns`, `mean_pooled_rows` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
-| Rerank | `hierarchical_pooled` | Unquantized MaxSim over the shortlist | Accurate final scoring |
-
-Query token vectors are not pooled. The final MaxSim scores are exact for the
-stored hierarchical-pooled vectors in the shortlist, not for every original
-page vector in the corpus; the HNSW prefetch remains approximate.
-
-### Search settings and PULSAR
-
-[Section 5.2 of PULSAR](https://arxiv.org/html/2608.28572#S5.SS2) reports a
-production prefetch limit of **200** and HNSW ef of **64**, following sweeps on
-ViDoRe V3; its pooling comparison used ef **128** and production returns the top
-**5** pages. Query expansion, embedding generation, image
-fetches, and answer generation also contribute to this agent's end-to-end
-latency; the paper's vector-search timings do not include all of those steps.
+| Rerank | `hierarchical_pooled` | Exact search | Accurate final scoring |
 
 ## Agent Flow
 

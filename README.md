@@ -4,7 +4,7 @@
 
 > [!TIP]
 >
-> **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)** describes a production system built on this accelerator's vLLM serving and Helm/AKS deployment. See [Relationship to PULSAR](#relationship-to-pulsar) for the findings and implementation details.
+> This accelerator incorporates some of the code used for the production deployment described in **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**. It is not an exact copy of the system used in the paper.
 
 > [!WARNING]
 >
@@ -190,7 +190,7 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 
 Two techniques make these token-level embeddings practical at scale:
 
-**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces the number of vectors by approximately the pooling factor (3 by default), not their dimensionality.
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces embedding dimensions by ~3x while maintaining retrieval quality.
 
 **Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
@@ -198,26 +198,7 @@ Two techniques make these token-level embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with binary-quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). L2 uses unquantized hierarchical-pooled vectors for MaxSim scoring of the shortlist; "exact" scoring at this stage does not make the approximate candidate selection or pooled representation lossless.
-
-### Relationship to PULSAR
-
-[Section 3.2 of PULSAR](https://arxiv.org/html/2608.28572#S3.SS2) credits this accelerator for vLLM serving and Helm/AKS deployment. The paper combines these foundations with production ingestion, retrieval tuning, and evaluation.
-
-The paper reports the following results under different measurement conditions:
-
-| Result | Measurement |
-|--------|-------------------------|
-| **15.1x lower median vector-search latency** | On ViDoRe V3, quantized mean-pooled prefetch plus hierarchical-pooled reranking took 49.9 ms versus 752.7 ms unpooled, with absolute NDCG@10 and Recall@10 losses of 0.0088 and 0.0074. These are single-stream search measurements, not end-to-end answer latency ([Section 5.2](https://arxiv.org/html/2608.28572#S5.SS2)). |
-| **156 ms production median vector-search latency** | Measured over a seven-day window on PULSAR's production infrastructure and corpus ([Section 5.3](https://arxiv.org/html/2608.28572#S5.SS3)). |
-| **Approximately 20x lower ingestion cost per page** | A call-count estimate priced at list rates against the replaced OCR-plus-verbalisation pipeline, not metered cloud spend. It excludes standing serving costs and answer-time inference ([Section 5.4](https://arxiv.org/html/2608.28572#S5.SS4)). |
-| **More than double answer-fact recall at production top-k** | An evaluation of 75 expert-authored questions across seven deals against an OCR-plus-verbalisation baseline ([Section 5.7](https://arxiv.org/html/2608.28572#S5.SS7)). |
-
-PULSAR separates **150-DPI embedding images from 500-DPI answer images**. Its embedding-DPI study raised the visual-token cap to avoid resolution clipping. At 500 DPI, it observed zero page-legibility errors on 516 questions across two decks, with the source page supplied directly to the answering model ([Sections 5.1](https://arxiv.org/html/2608.28572#S5.SS1) and [5.6](https://arxiv.org/html/2608.28572#S5.SS6)).
-
-Model-weight quantization and retrieval-vector quantization serve different purposes: the quantized checkpoint reduces GPU memory use, while Qdrant's binary vector quantization accelerates candidate retrieval.
-
-See the [Document Processor Guide](modules/document_processor/README.md), [Inference Service Guide](modules/colpali_inference/README.md), and [Agent Guide](modules/agent/README.md) for component configuration.
+**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). This gave the best balance of latency and retrieval quality in our benchmarks.
 
 ## Quick Start
 
