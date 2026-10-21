@@ -57,6 +57,82 @@ lower model memory does not imply lower total GPU reservation at the same
 utilization setting. Validate sustained load and retrieval quality on your
 actual documents before production rollout.
 
+### A4 indexing concurrency and memory headroom
+
+A subsequent concurrent-page trial exhausted GPU memory in the unquantized
+vision encoder at `gpuMemoryUtilization: "0.89"` with eight simultaneous A4
+image requests. A large KV-cache allocation is **not** proof that concurrent
+vision activations fit. The quantized default is therefore **0.75**, preserving
+more activation headroom rather than maximizing cache reservation.
+
+On the same 12 GiB A10/runtime, 0.75 provided 4.26 GiB of KV-cache memory
+(31,024 tokens). It completed a 576-page embedding sweep: 24 synthetic A4 pages
+per configuration, three repetitions, hierarchical plus spatial pooling.
+Inputs were 1240 x 1754 pixels (150 DPI), using the checkpoint's 1,280-visual-token
+cap and the unchanged 2,048-token sequence limit, 8,192 batched-token limit,
+16-sequence scheduler limit and four CPU shim workers. No CPU weight offload
+was enabled.
+
+| Images per HTTP request | Aggregate concurrent requests | Median pages/second |
+| --- | --- | --- |
+| 1 | 1 | 0.74 |
+| 1 | 2 | 1.19 |
+| 1 | 4 | 1.53 |
+| 1 | 8 | 1.67 |
+| 1 | 10 | 1.72 |
+| 1 | 16 | 1.70 |
+| 2 | 4 | 1.48 |
+| 4 | 2 | 1.20 |
+
+Keep the existing two document-processor replicas, five concurrent embedding
+requests per replica and one page per request: ten aggregate requests were
+the best measured point, but their throughput range overlapped sixteen.
+Increasing concurrency or HTTP batch size did not establish a further gain.
+These are embedding-stage measurements with the quantized model, not evidence
+of an end-to-end indexing speedup over the original model.
+
+A further three 32-page runs at ten concurrent requests included search traffic
+and completed without request errors. Query latency reached 5.15 seconds;
+the worst run's query p95 was 4.45 seconds. This is not a low-latency search
+guarantee: GPU scheduling priority does not eliminate CPU-shim contention.
+Sampled GPU memory peaked at 10,447 MiB across the completed runs. The validated
+profile does not cover larger token caps, cropped-page pipelines, or increased
+processor replica counts; remeasure those workloads rather than extrapolating.
+
+### Reproducing indexing throughput
+
+Use `scripts/benchmark_indexing.py` against an isolated, already-running shim.
+It sends synthetic A4-sized pages at 150 DPI (1240 x 1754 pixels), requesting
+the indexer's hierarchical and spatial pooling modes. It validates every
+response and reports completed pages/second and request latency as JSON Lines.
+It does not write to Qdrant, Blob Storage or Service Bus, and therefore measures
+the embedding stage, not end-to-end document indexing or retrieval quality.
+
+From this module directory, with the shim forwarded to local port 18080:
+
+```powershell
+uv run --locked python scripts\benchmark_indexing.py --url http://127.0.0.1:18080 --pages 24 --repeats 3 --configurations "1:1,1:2,1:4,1:8,1:10,1:16,2:4,4:2"
+```
+
+Each configuration is `images_per_request:concurrent_requests`, measured
+across the whole benchmark, not per processor replica. The first pass increases
+in-flight pages gradually; subsequent passes randomize configuration order.
+Requests use fresh connections, matching the current document processor, and
+fail immediately on HTTP, transport or invalid-vector errors without retries.
+Record the model, runtime, image-token cap and serving settings with the results.
+Run only during an agreed isolated window: large batches can exhaust GPU memory.
+
+Repeat selected configurations with `--query-interval 0.25` to include one
+sequential search client with a 250 ms pause between completed queries. This is
+not a fixed arrival-rate load test. `--sample-gpu` additionally samples memory
+and utilization once per second using `nvidia-smi`; use it only when the
+benchmark runs on the server with the single GPU being measured.
+
+The current rolling document-processing loop submits one page per request;
+`COLPALI_BATCH_SIZE` alone does not change it. Even a multi-image shim request
+fans out to one vLLM pooling call per image. Keep HTTP batching, aggregate
+client concurrency and GPU scheduler limits distinct when interpreting results.
+
 ### Model-switch rollout
 
 For existing deployments, rebuild the inference images and set
@@ -65,6 +141,10 @@ still select the original checkpoint. The init container downloads into a new
 basename directory on the PVC; it does not overwrite the original model cache.
 Allow disk space for both snapshots during the transition. Remove any local
 CPU-offload launch overrides rather than carrying them into the new deployment.
+Also set `colpaliInference.vllm.gpuMemoryUtilization` to `"0.75"` if saved Helm
+values still contain `"0.89"`. This budget is tuned for the quantized checkpoint;
+restore the original model's memory-budget settings along with its model ID
+when rolling back, rather than applying the quantized budget to BF16 weights.
 
 Quantization changes numerical embeddings even though their dimension remains
 320. Reindex into a separate collection, validate retrieval quality, then switch

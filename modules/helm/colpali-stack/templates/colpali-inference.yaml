@@ -179,7 +179,7 @@ spec:
         - name: VLLM_MAX_MODEL_LEN
           value: {{ .Values.colpaliInference.vllm.maxModelLen | default "2048" | quote }}
         - name: VLLM_GPU_MEMORY_UTILIZATION
-          value: {{ .Values.colpaliInference.vllm.gpuMemoryUtilization | default "0.89" | quote }}
+          value: {{ .Values.colpaliInference.vllm.gpuMemoryUtilization | default "0.75" | quote }}
         ports:
         - containerPort: 8001
           name: vllm-http

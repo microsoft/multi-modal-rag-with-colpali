@@ -43,7 +43,8 @@ ENV VLLM_USAGE_SOURCE=production-docker-image
 ENV MODEL_DIRECTORY_PATH=/mnt/models/offline
 ENV MODEL_ID=TomoroAI/tomoro-ai-colqwen3-embed-4b-awq
 ENV VLLM_MAX_MODEL_LEN=2048
-ENV VLLM_GPU_MEMORY_UTILIZATION=0.89
+# Leave activation headroom for concurrent pages in the unquantized vision tower.
+ENV VLLM_GPU_MEMORY_UTILIZATION=0.75
 # Path whitelisted for file:// image URLs sent by the shim (tmpfs shared
 # volume mounted at /shm in both shim and vllm containers).
 ENV VLLM_ALLOWED_LOCAL_MEDIA_PATH=/shm

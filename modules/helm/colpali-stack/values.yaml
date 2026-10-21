@@ -202,7 +202,8 @@ colpaliInference:
   vllm:
     imageTag: "latest"
     maxModelLen: "2048"
-    gpuMemoryUtilization: "0.89"
+    # Quantized model: preserve vision-activation headroom under concurrent load.
+    gpuMemoryUtilization: "0.75"
     resources:
       requests:
         memory: "32Gi"
