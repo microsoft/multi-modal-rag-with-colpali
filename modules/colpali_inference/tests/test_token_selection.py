@@ -3,16 +3,18 @@
 
 import asyncio
 import base64
+import os
 import threading
 import unittest
 from io import BytesIO
 from itertools import product
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import torch
 from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
 from PIL import Image
+from transformers import AutoProcessor, Qwen2VLImageProcessorFast
 
 from colpali_inference.inference import ColPaliInference
 from colpali_inference.models import EmbedRequest
@@ -71,6 +73,34 @@ def text_inference():
 
 
 class TokenSelectionTests(unittest.IsolatedAsyncioTestCase):
+    def test_production_preprocessing_preserves_a4_and_bounds_oversized_images(self):
+        inference, _, _ = image_inference()
+        processor = Qwen2VLImageProcessorFast(
+            patch_size=16, merge_size=2, min_pixels=65536, max_pixels=1310720
+        )
+        inference.processor.image_processor = processor
+        with patch.dict(os.environ):
+            os.environ.pop("COLPALI_MAX_IMAGE_PIXELS", None)
+            inference._configure_image_cap()
+            for size, expected_grid in (
+                ((1240, 1754), [1, 110, 78]),
+                ((2400, 2400), [1, 128, 128]),
+            ):
+                with self.subTest(size=size), Image.new("RGB", size) as image:
+                    output = processor(images=image, return_tensors="pt")
+                    self.assertEqual(
+                        output["image_grid_thw"][0].tolist(), expected_grid
+                    )
+            os.environ["COLPALI_MAX_IMAGE_PIXELS"] = "1048576"
+            inference._configure_image_cap()
+            with Image.new("RGB", (2400, 2400)) as image:
+                output = processor(images=image, return_tensors="pt")
+                self.assertEqual(output["image_grid_thw"][0].tolist(), [1, 64, 64])
+            for invalid in ("0", "-1", "true", "4.5"):
+                os.environ["COLPALI_MAX_IMAGE_PIXELS"] = invalid
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    inference._configure_image_cap()
+
     async def test_every_image_output_retains_active_contextual_tokens(self):
         for modes in (
             ["none"],
@@ -164,7 +194,9 @@ class TokenSelectionTests(unittest.IsolatedAsyncioTestCase):
                 inference.processor.process_texts.assert_called_once_with(
                     ["short", "longer query"]
                 )
-                client.embed_token_ids.assert_awaited_once_with([active, other])
+                client.embed_token_ids.assert_awaited_once_with(
+                    [active, other], priority=None
+                )
                 self.assertEqual(
                     [len(matrix) for matrix in response.embeddings], [12, 14]
                 )
@@ -197,6 +229,46 @@ class TokenSelectionTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(RuntimeError, "mismatch|empty active"):
                     await inference.generate_embeddings(EmbedRequest(texts=["a", "b"]))
                 client.embed_token_ids.assert_not_awaited()
+
+
+@unittest.skipUnless(
+    os.getenv("TEST_PROCESSOR_PATH"), "Requires a local checkpoint processor snapshot"
+)
+class CheckpointQueryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_checkpoint_keeps_query_augmentation_without_batch_padding(self):
+        processor = AutoProcessor.from_pretrained(
+            os.environ["TEST_PROCESSOR_PATH"],
+            local_files_only=True,
+            trust_remote_code=True,
+        )
+        queries = ["short", "a much longer retrieval query about document indexing"]
+        expected = []
+        for query in queries:
+            batch = processor.process_texts([query])
+            expected.append(
+                batch["input_ids"][0][batch["attention_mask"][0].bool()].tolist()
+            )
+        self.assertNotEqual(len(expected[0]), len(expected[1]))
+
+        async def embed_token_ids(token_ids, **kwargs):
+            self.assertEqual(token_ids, expected)
+            return [torch.ones(len(ids), 320) for ids in token_ids]
+
+        inference = ColPaliInference(
+            vllm_client=SimpleNamespace(embed_token_ids=embed_token_ids)
+        )
+        inference.processor = processor
+        inference.is_initialized = True
+        for padding_side in ("left", "right"):
+            with self.subTest(padding_side=padding_side):
+                processor.tokenizer.padding_side = padding_side
+                response = await inference.generate_embeddings(
+                    EmbedRequest(texts=queries)
+                )
+                self.assertEqual(
+                    [len(rows) for rows in response.embeddings],
+                    [len(ids) for ids in expected],
+                )
 
 
 class TokenizerConcurrencyTests(unittest.IsolatedAsyncioTestCase):

@@ -19,7 +19,7 @@ dependencies = [
     "pillow>=13.0.0",
     "pydantic>=2.11.0",
     "python-dotenv>=1.2.2",
-    "qdrant-client==1.16.2",
+    "qdrant-client==1.19.1",
     "requests>=2.32.5",
     "sse-starlette>=2.0.0",
     "tenacity>=9.0.0",

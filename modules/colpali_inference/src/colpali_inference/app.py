@@ -34,7 +34,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .inference import get_inference_instance
 from .models import EmbedHealthResponse, EmbedRequest, EmbedResponse
 from .setup_logging import configure_telemetry, trace_operation
-from .vllm_client import VLLMUpstreamError, get_client
+from .vllm_client import VLLMUpstreamError, get_client, token_limit_detail
 
 # Find and load .env file from the project root
 load_dotenv(find_dotenv())
@@ -62,25 +62,8 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Starting ColPali inference shim...")
 
-    # Sweep any stale image files left in IMAGE_SHM_DIR by a previous
-    # container instance that was killed mid-request (kill -9, OOM, segfault)
-    # before its `_stage_images` finally-block could unlink them. emptyDir
-    # tmpfs survives in-place container restarts, so without this sweep the
-    # 2Gi /shm would slowly fill across restarts.
-    try:
-        shm_dir = vllm_client.image_shm_dir
-        shm_dir.mkdir(parents=True, exist_ok=True)
-        stale = list(shm_dir.glob("*.png"))
-        for p in stale:
-            try:
-                p.unlink(missing_ok=True)
-            except OSError as e:
-                logger.warning("Failed to remove stale shm file %s: %s", p, e)
-        if stale:
-            logger.info("Cleared %d stale image(s) from %s", len(stale), shm_dir)
-    except Exception as e:
-        logger.warning("Stale shm sweep failed: %s", e)
-
+    # Other workers may still own staged files; only the age-based janitor
+    # may sweep shared tmpfs across worker restarts.
     # Processor load is fast on CPU; do it inline so the worker is ready
     # to serve as soon as vLLM is also ready.
     try:
@@ -248,6 +231,10 @@ async def generate_embeddings_endpoint(request: EmbedRequest, raw_request: Reque
         logger.error("Embedding generation failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except VLLMUpstreamError as e:
+        if e.status_code == 400:
+            detail = token_limit_detail(e.body)
+            if detail is not None:
+                raise HTTPException(status_code=422, detail=detail)
         # Surface vLLM rejections verbatim so callers (indexer, search) can
         # back off appropriately. The shim does not retry.
         if e.status_code == 429:
@@ -317,6 +304,9 @@ def server_mode() -> None:
     workers = int(os.getenv("UVICORN_WORKERS", "4"))
     limit_concurrency_str = os.getenv("LIMIT_CONCURRENCY")
     limit_concurrency = int(limit_concurrency_str) if limit_concurrency_str else None
+    worker_healthcheck_timeout = int(
+        os.getenv("UVICORN_TIMEOUT_WORKER_HEALTHCHECK", "60")
+    )
 
     logger.info("Starting ColPali inference shim on %s:%s", host, port)
     logger.info("Log level: %s", log_level)
@@ -335,6 +325,7 @@ def server_mode() -> None:
         workers=workers,
         reload=False,
         limit_concurrency=limit_concurrency,
+        timeout_worker_healthcheck=worker_healthcheck_timeout,
     )
 
 

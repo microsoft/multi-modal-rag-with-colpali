@@ -61,6 +61,9 @@ class DocumentChunk(BaseModel):
     """Represents a retrieved document chunk with citation information."""
 
     source_file: str = Field(..., description="Source file name")
+    document_id: Optional[str] = Field(
+        None, description="Canonical document identity from the index payload"
+    )
     page_number: int = Field(..., description="Page number in the document")
     page_image_url: Optional[str] = Field(
         None, description="Blob storage URL for the page image"
@@ -82,3 +85,7 @@ class DocumentChunk(BaseModel):
     metadata: Optional[Dict] = Field(
         None, description="Additional metadata from payload"
     )
+
+    @property
+    def page_key(self) -> tuple[str, int]:
+        return self.document_id or self.source_file, self.page_number

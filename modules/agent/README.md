@@ -9,9 +9,9 @@ A containerized chat interface for document Q&A using Azure OpenAI and ColPali-b
 For local development, set `AZURE_TOKEN_CREDENTIALS=dev` before starting the agent.
 The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredential`.
 
-## Dependency compatibility checks
+## Development
 
-Use Python 3.14 and the committed lockfile:
+From `modules/agent`, use Python 3.14 and the committed lockfile:
 
 ```shell
 uv sync --locked --no-editable --no-dev --group test
@@ -21,15 +21,7 @@ uv run --locked --no-dev --group test python -m pytest tests -q
 These offline-service tests cover API startup/shutdown, chat and SSE responses,
 request validation, CORS, OpenTelemetry middleware, the Chainlit UI and Engine.IO
 handshake, MSAL assertion signing, and the real agent's framework client.
-Telemetry setup is patched before importing the API, including when an
-Application Insights connection string is configured. They do not call Azure or
-the inference service. Prerelease handling is configured in `pyproject.toml` for
-both local and container installs. Transitive security floors are recorded in
-`tool.uv.constraint-dependencies`.
-
-Only `agent-framework-core` is required for the chat types and
-`AzureOpenAIChatClient`. It is pinned to the previously resolved core version;
-the umbrella package and its unused integrations (including Mem0) are not installed.
+They do not call Azure or the inference service.
 
 ## Architecture Overview
 
@@ -46,8 +38,8 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
-| Prefetch | `mean_pooled_columns`, `mean_pooled_rows` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
-| Rerank | `hierarchical_pooled` | Exact search | Accurate final scoring |
+| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
+| Rerank | `hierarchical_pooled` | MaxSim over the candidate union, HNSW disabled | Final scoring with pooled token vectors |
 
 ## Agent Flow
 
@@ -56,6 +48,38 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 3. Retrieve relevant pages using ColPali + Qdrant
 4. Generate answer with Azure OpenAI using retrieved context
 5. Return response with source citations
+
+## Implemented Retrieval Defaults
+
+Single-query and query-expanded retrieval return at most **5 unique pages** by
+default. Each query prefetches **200 candidates per mean-pooled vector**, using
+HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch rescoring is
+enabled with **2x oversampling** against the full-precision mean vectors on disk.
+The candidate union is then scored using `hierarchical_pooled` (pooling factor
+3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
+pool; requests above 200 expand each prefetch to at least `top_k`.
+
+The chart pins Qdrant **1.19.1**; newly created mean-vector indexes explicitly use
+HNSW `m=16` and `ef_construct=100`. Full-precision vectors remain on disk, with
+binary mean-vector copies in RAM. `indexed_only` can exclude unoptimized
+segments: allow indexing/optimization to catch up when validating newly
+ingested data, and check server behavior for small collections. This is not
+document-completion filtering or atomic publication; individual pages can
+become searchable before a whole document is complete.
+
+The retriever reads nested `source` and `metadata` payloads, fetches the stored
+page image from `source.page_image_url`, and deduplicates citations using document
+identity plus page number. `QDRANT_COLLECTION_NAME` must match the indexer's
+collection, and query inference must use the model that produced those vectors.
+
+The search settings above are implementation defaults in
+`src/agent/document_retriever.py`; they are not all Helm/environment overrides.
+For `top_k=5`, the candidate union contains up to 400 distinct pages before
+reranking returns the best five. A candidate is a page/Qdrant
+point, not an individual token vector or an entire document. Each prefetch uses
+`max(200, top_k)`, so it grows only when more than 200 final results are requested.
+The available deployment controls are listed in the
+[Helm tuning guide](../helm/colpali-stack/README.md#indexing-and-inference-tuning).
 
 ## API Error Responses
 
@@ -67,8 +91,3 @@ passed to API consumers.
 - `/chat` and unhandled API failures return HTTP 500 with `error` and `detail` fields.
 - `/chat/stream` keeps the SSE response and emits a terminal `error` event with
   generic `content` and a `timestamp`, including when the agent yields an error event.
-
-## API Tests
-
-Run `uv run --frozen pytest tests` from `modules/agent`. The API tests replace the
-agent and do not require Azure credentials or running backend services.

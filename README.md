@@ -35,7 +35,7 @@ ColPali is a multi-modal document understanding model that processes documents a
 
 This implementation ships with **[`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)** — a quantized 4B-parameter ColQwen3 model producing 320-dimensional token embeddings. [vLLM](https://github.com/vllm-project/vllm) runs inference on the GPU; a CPU service handles image preparation and pooling.
 
-We chose quantization for performance and memory efficiency on our **12 GB A10 GPU nodes**. You can use the [non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible model with suitable hardware and settings. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for configuration and reindexing guidance.
+We chose quantization for performance and memory efficiency on our **12 GB A10 GPU nodes**. You can use the [non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible model with suitable hardware and settings. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for configuration and tuning.
 
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 
@@ -44,12 +44,18 @@ ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with
 This repository includes model serving, document indexing, and deployment scripts for Azure.
 
 **Components:**
-- Event-driven document processing pipeline (Blob Storage → Event Grid → Service Bus)
+- Event-driven, incremental document processing (Blob Storage → Event Grid → Service Bus), with bounded rendering, hash-based resume, and explicit message settlement
 - Quantized ColQwen3 (`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`) inference service on AKS — vLLM GPU sidecar + CPU pooling shim, with model weights cached on a shared PVC
 - Qdrant vector database for similarity search
 - Complete infrastructure as code (Bicep templates)
 - Docker images and Helm charts for all services
 - Agent API and UI for querying
+
+Indexing and retrieval share a **320-dimensional pooled-vector contract**.
+The [processor guide](modules/document_processor/README.md) describes incremental
+ingestion, and the
+[Helm tuning guide](modules/helm/colpali-stack/README.md#indexing-and-inference-tuning)
+maps concurrency, batching, rendering, and serving controls.
 
 ### Architecture Overview
 
@@ -63,8 +69,8 @@ This repository includes model serving, document indexing, and deployment script
 7. **Vector Storage** → Embeddings stored in Qdrant with metadata and image URLs
 
 #### Query & Retrieval
-8. **User Queries** → Submitted via NGINX Ingress to Qdrant vector database
-9. **Semantic Search** → Vector similarity search returns relevant document sections with image URLs
+8. **User Queries** → Submitted through Agent UI to Agent API, which generates query embeddings
+9. **Semantic Search** → Mean-vector candidate retrieval and hierarchical reranking in Qdrant return relevant pages with image URLs
 10. **Image Retrieval** → Page images fetched from Azure Blob Storage using stored URLs
 11. **RAG Integration** → AI Foundry models use retrieved pages to answer the query
 
@@ -95,7 +101,7 @@ flowchart TB
         INFRA --> ACR[Container Registry]
     end
 
-    subgraph K8S_LAYER ["AKS Cluster - colpali Namespace"]
+    subgraph K8S_LAYER ["AKS Cluster - colpali-stack Namespace"]
         direction TB
 
         subgraph MODEL_SETUP ["Model Setup"]
@@ -130,8 +136,9 @@ flowchart TB
         QUERY[User Query] --> INGRESS
         INGRESS --> AGENT_UI
         AGENT_UI --> AGENT_API
+        AGENT_API -->|Query embeddings| COLQWEN
         AGENT_API --> QDRANT
-        QDRANT -->|Vector Search| RESULTS[Relevant Documents]
+        QDRANT -->|Vector Search| RESULTS[Relevant Pages]
         RESULTS --> AGENT_API
     end
 
@@ -169,18 +176,18 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 >
 > AI Search also supports [multi-modal RAG](https://learn.microsoft.com/en-us/azure/search/multimodal-search-overview). In our benchmarks, ColPali-based approaches gave better retrieval quality and higher indexing throughput at scale. Results vary, so benchmark your own use case.
 
-### Why AKS over Container Apps?
-- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure at the time of experimentation.
+### Why AKS?
+- **Managed Disk Support**: Qdrant uses persistent managed disks rather than NFS volumes.
 - **Simpler Setup**: No need to setup multiple Azure Services to host the different services, everything can run inside the same AKS cluster.
-- **Shared Compute Costs**: Multiple services (document processor + ColQwen3 inference) share the same node pool.
+- **Shared Compute Costs**: CPU services share `cpupool`; GPU inference runs on `gpupool` in the same cluster.
 
 ## Project Structure
 
 ```
 ├── modules/
 │   ├── agent/          # RAG agent application
-│   ├── colpali_inference/   # tomoro-colqwen3-embed-4b inference service (vLLM sidecar + CPU shim)
-│   ├── document_processor/  # FastAPI document processing service
+│   ├── colpali_inference/   # Quantized ColQwen3 inference (vLLM sidecar + CPU shim)
+│   ├── document_processor/  # Incremental Service Bus document consumer
 │   ├── helm/           # Helm charts for AKS deployment
 │   └── infra/          # Bicep infrastructure templates
 └── scripts/            # Deployment automation
@@ -190,7 +197,7 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 
 Two techniques make these token-level embeddings practical at scale:
 
-**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces embedding dimensions by ~3x while maintaining retrieval quality.
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces the number of token vectors by approximately 3x; each vector remains 320-dimensional.
 
 **Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
@@ -198,7 +205,7 @@ Two techniques make these token-level embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). This gave the best balance of latency and retrieval quality in our benchmarks.
+**Chosen approach:** Row/column mean pooling for L1 and hierarchical pooling for L2, with binary-quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`).
 
 ## Quick Start
 
@@ -214,8 +221,7 @@ All application Dockerfiles use base images from Microsoft Container Registry
 (`mcr.microsoft.com`). The agent API/UI, document processor, and inference shim
 use the MCR Ubuntu 24.04 mirror; the GPU sidecar uses the Azure ML CUDA 12.8
 Ubuntu 24.04 image with matching CUDA 12.9 vLLM/PyTorch wheels. Each installs
-Python 3.14 with pinned uv 0.13.1, rather than
-depending on the older Python bundled with the base OS. uv is downloaded from
+Python 3.14 with pinned uv 0.13.1. uv is downloaded from
 Astral; Python packages come from PyPI, PyTorch's CUDA index, and the official
 vLLM GitHub release; no build stages pull images
 from Docker Hub or GHCR.

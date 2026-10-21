@@ -93,10 +93,21 @@ class ColPaliInference:
             local_files_only=True,
             trust_remote_code=True,
         )
+        self._configure_image_cap()
 
         self.hierarchical_pooler = HierarchicalTokenPooler()
         self.is_initialized = True
         logger.info("ColQwen3 processor initialization complete")
+
+    def _configure_image_cap(self) -> None:
+        """Match the vLLM max_pixels override, not the checkpoint's smaller cap."""
+        maximum = int(os.getenv("COLPALI_MAX_IMAGE_PIXELS", "4194304"))
+        if maximum <= 0:
+            raise ValueError("COLPALI_MAX_IMAGE_PIXELS must be a positive integer")
+        image_processor = self.processor.image_processor
+        image_processor.max_pixels = maximum
+        image_processor.size["longest_edge"] = maximum
+        logger.info("Configured shim image pixel cap: %s", maximum)
 
     def base64_to_image(self, base64_string: str) -> Image.Image:
         """Convert a base64 string (optionally data-URI-prefixed) to a PIL Image."""
@@ -235,13 +246,23 @@ class ColPaliInference:
 
         # Decode base64 → PIL.
         images: List[Image.Image] = []
-        for i, image_data in enumerate(request.images):
-            try:
-                images.append(self.base64_to_image(image_data))
-            except Exception as e:
-                logger.error("Failed to process image at index %s: %s", i, e)
-                raise ValueError(f"Failed to process image at index {i}: {e}")
+        try:
+            for i, image_data in enumerate(request.images):
+                try:
+                    images.append(self.base64_to_image(image_data))
+                except Exception as e:
+                    logger.error("Failed to process image at index %s: %s", i, e)
+                    raise ValueError(
+                        f"Failed to process image at index {i}: {e}"
+                    ) from e
+            return await self._process_images(request, images)
+        finally:
+            for image in images:
+                image.close()
 
+    async def _process_images(
+        self, request: EmbedRequest, images: List[Image.Image]
+    ) -> EmbedResponse:
         logger.debug("Processing %d images", len(images))
 
         pooling_types = set(request.pooling_type)
@@ -255,7 +276,9 @@ class ColPaliInference:
         ]
 
         # Call vLLM for embeddings (one variable-length tensor per image).
-        embeddings_per_image = await self.vllm_client.embed_images(images)
+        embeddings_per_image = await self.vllm_client.embed_images(
+            images, priority=request.priority
+        )
 
         if len(embeddings_per_image) != len(images):
             raise RuntimeError(
@@ -373,7 +396,9 @@ class ColPaliInference:
         ]
         if any(not ids for ids in token_ids):
             raise RuntimeError("Query tokenization produced an empty active sequence")
-        embeddings_per_text = await self.vllm_client.embed_token_ids(token_ids)
+        embeddings_per_text = await self.vllm_client.embed_token_ids(
+            token_ids, priority=request.priority
+        )
         if len(embeddings_per_text) != len(token_ids):
             raise RuntimeError("Query embedding batch count mismatch")
         for embedding, ids in zip(embeddings_per_text, token_ids):

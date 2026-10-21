@@ -88,8 +88,38 @@ spec:
           value: {{ .Values.serviceBusQueueName | default "document-processing" }}
         - name: AZURE_CLIENT_ID
           value: {{ .Values.aksIdentityClientId }}
+        - name: AZURE_TOKEN_CREDENTIALS
+          value: "WorkloadIdentityCredential"
         - name: QDRANT_ENDPOINT
           value: "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"
+        - name: QDRANT_COLLECTION_NAME
+          value: {{ .Values.qdrantCollectionName | default "colpali-documents" | quote }}
+        - name: MODEL_ID
+          value: {{ .Values.colpaliInference.modelId | quote }}
+        - name: COLPALI_EMBEDDING_DIMENSION
+          value: {{ .Values.documentProcessor.processing.embeddingDimension | default 320 | quote }}
+        - name: COLPALI_STORAGE_DPI
+          value: {{ .Values.documentProcessor.processing.storageDpi | default 500 | quote }}
+        - name: COLPALI_EMBEDDING_DPI
+          value: {{ .Values.documentProcessor.processing.embeddingDpi | default 150 | quote }}
+        - name: COLPALI_MAX_IMAGE_PIXELS
+          value: {{ .Values.colpaliInference.maxImagePixels | default 4194304 | int64 | quote }}
+        - name: RENDER_BUFFER_MAX_PAGES
+          value: {{ .Values.documentProcessor.processing.renderBufferMaxPages | default 4 | quote }}
+        - name: PDF_MAX_RENDER_PIXELS
+          value: {{ .Values.documentProcessor.processing.maxRenderPixels | default 75000000 | int64 | quote }}
+        - name: COLPALI_CROP_WHITESPACE
+          value: {{ .Values.documentProcessor.processing.cropWhitespace | quote }}
+        - name: INDEXING_REVISION
+          value: {{ .Values.documentProcessor.processing.indexingRevision | default "1" | quote }}
+        - name: DOCUMENT_TIMEOUT_SECONDS
+          value: {{ .Values.documentProcessor.processing.documentTimeoutSeconds | default 1200 | quote }}
+        - name: SERVICE_BUS_OPERATION_TIMEOUT_SECONDS
+          value: {{ .Values.documentProcessor.processing.serviceBusOperationTimeoutSeconds | default 30 | quote }}
+        - name: SERVICE_BUS_CANCELLATION_TIMEOUT_SECONDS
+          value: {{ .Values.documentProcessor.processing.serviceBusCancellationTimeoutSeconds | default 5 | quote }}
+        - name: SERVICE_BUS_POISON_DELIVERY_THRESHOLD
+          value: {{ .Values.documentProcessor.processing.poisonDeliveryThreshold | default 10 | quote }}
         - name: QDRANT_API_KEY
           valueFrom:
             secretKeyRef:

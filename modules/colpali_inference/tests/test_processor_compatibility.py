@@ -54,7 +54,7 @@ class ProcessorCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             for ids in expected_queries
         ]
 
-        async def embed_queries(token_ids):
+        async def embed_queries(token_ids, *, priority=None):
             self.assertEqual(token_ids, expected_queries)
             await asyncio.sleep(0)
             return query_vectors

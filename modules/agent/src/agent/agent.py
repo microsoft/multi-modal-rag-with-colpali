@@ -452,7 +452,7 @@ class ColPaliAgent:
                 num = int(num_str)
                 if 1 <= num <= len(document_chunks):
                     chunk = document_chunks[num - 1]  # Convert to 0-indexed
-                    chunk_id = f"{chunk.source_file}_{chunk.page_number}"
+                    chunk_id = chunk.page_key
 
                     # Replace [n] with the same numeric citation in text
                     citation_map[f"[{num}]"] = f"[{num}]"

@@ -6,9 +6,9 @@ Async HTTP client for the vLLM `/pooling` endpoint.
 The shim talks to vLLM over loopback HTTP (sidecar container in the same pod).
 Images are transported via a shared tmpfs volume (`emptyDir { medium: Memory }`
 mounted at /shm in both containers) — the shim writes each image to a UUID
-filename, sends `file:///shm/<uuid>.png` to vLLM, then deletes the file in a
-finally block. This avoids base64 encode/decode overhead and HTTP body bloat
-on every request.
+filename and sends `file:///shm/<uuid>.png` to vLLM. Files remain until every
+upstream read finishes; interrupted transports leave cleanup to the age-based
+janitor. This avoids base64 encode/decode overhead and HTTP body bloat.
 
 The endpoint contract is:
   POST {VLLM_BASE_URL}/pooling
@@ -25,18 +25,70 @@ vLLM (matches the current HF transformers behaviour).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    TypeVar,
+)
 
 import aiohttp
 import torch
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def token_limit_detail(body: str) -> dict[str, str | int] | None:
+    """Recognize vLLM's token overflow errors without classifying arbitrary 400s."""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(message, str):
+        return None
+    match = re.match(
+        r"The decoder prompt \(length (?P<input_tokens>[1-9][0-9]*)\) is longer than the "
+        r"maximum model length of (?P<max_tokens>[1-9][0-9]*)\.(?:\s|$)",
+        message,
+    )
+    if match is None:
+        match = re.match(
+            r"This model's maximum context length is (?P<max_tokens>[1-9][0-9]*) "
+            r"tokens\. However, you requested (?P<output_tokens>0|[1-9][0-9]*) "
+            r"output tokens and your prompt contains (?P<lower_bound>(?:at least )?)"
+            r"(?P<input_tokens>[1-9][0-9]*) input tokens, for a total of "
+            r"(?P=lower_bound)(?P<total_tokens>[1-9][0-9]*) tokens\.(?:\s|$)",
+            message,
+        )
+    if match is None:
+        return None
+    actual, maximum = int(match["input_tokens"]), int(match["max_tokens"])
+    if actual <= maximum:
+        return None
+    if "total_tokens" in match.groupdict() and int(
+        match["total_tokens"]
+    ) != actual + int(match["output_tokens"]):
+        return None
+    return {
+        "code": "embedding_token_limit_exceeded",
+        "input_tokens": actual,
+        "max_tokens": maximum,
+    }
 
 
 class VLLMClientError(RuntimeError):
@@ -95,6 +147,12 @@ class VLLMEmbeddingClient:
         self.image_priority = int(os.getenv("VLLM_IMAGE_PRIORITY", "10"))
         self._session: Optional[aiohttp.ClientSession] = None
         self._session_lock = asyncio.Lock()
+        self._detached_tasks: set[asyncio.Task] = set()
+        image_capacity = int(os.getenv("LIMIT_CONCURRENCY", "36"))
+        if image_capacity <= 0:
+            raise ValueError("LIMIT_CONCURRENCY must be positive")
+        self._image_slots = asyncio.Semaphore(image_capacity)
+        self._closing = False
 
         logger.info(
             "VLLMEmbeddingClient configured: base_url=%s model_id=%s "
@@ -116,10 +174,22 @@ class VLLMEmbeddingClient:
             async with self._session_lock:
                 if self._session is None or self._session.closed:
                     timeout = aiohttp.ClientTimeout(total=self.request_timeout_seconds)
-                    self._session = aiohttp.ClientSession(timeout=timeout)
+                    self._session = aiohttp.ClientSession(
+                        timeout=timeout,
+                        connector=aiohttp.TCPConnector(keepalive_timeout=4),
+                    )
         return self._session
 
     async def close(self) -> None:
+        self._closing = True
+        if self._detached_tasks:
+            _, pending = await asyncio.wait(
+                self._detached_tasks, timeout=self.request_timeout_seconds + 5
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         if self._session is not None and not self._session.closed:
             await self._session.close()
             self._session = None
@@ -210,7 +280,8 @@ class VLLMEmbeddingClient:
         """Pool images through vLLM via tmpfs file transport.
 
         Each image is written to /shm/<uuid>.png, vLLM reads it via
-        file:// URL, then the file is deleted in a finally block.
+        file:// URL, then the file is deleted after upstream reads finish.
+        Interrupted transports retain files for the age-based janitor.
 
         Args:
             images: Non-empty list of PIL images.
@@ -226,7 +297,7 @@ class VLLMEmbeddingClient:
         if not images:
             raise ValueError("images must be non-empty")
 
-        async with self._stage_images(images) as image_urls:
+        async def embed_staged(image_urls):
             # vLLM's /pooling endpoint accepts either PoolingCompletionRequest
             # (input: str | list[str] | list[int] | list[list[int]]) or
             # PoolingChatRequest (messages: [...]). Multimodal content blocks
@@ -242,7 +313,23 @@ class VLLMEmbeddingClient:
                 body["priority"] = effective_priority
                 return await self._post_pooling(body)
 
-            results = await asyncio.gather(*(_embed_one(url) for url in image_urls))
+            # A rejected image must not unlink files still used by sibling calls.
+            results = await asyncio.gather(
+                *(_embed_one(url) for url in image_urls), return_exceptions=True
+            )
+            # An HTTP rejection must not hide a sibling whose upstream read
+            # may still be active after a disconnected transport.
+            for result in results:
+                if isinstance(
+                    result, (asyncio.CancelledError, TimeoutError, aiohttp.ClientError)
+                ):
+                    raise result
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            return results
+
+        results = await self._run_with_staged_images(images, embed_staged)
         # Each per-image response has exactly one entry; flatten to a single
         # list whose order matches the input images.
         flattened = [entry for resp in results for entry in resp]
@@ -255,9 +342,12 @@ class VLLMEmbeddingClient:
         The caller checks this against the installed retrieval processor's
         prompt and patch grid before accepting any output representation.
         """
-        async with self._stage_images([image]) as image_urls:
+
+        async def tokenize_staged(image_urls):
             body = self._image_request(image_urls[0])
-            payload = await self._post_json("/tokenize", body)
+            return await self._post_json("/tokenize", body)
+
+        payload = await self._run_with_staged_images([image], tokenize_staged)
         tokens = payload.get("tokens")
         if not isinstance(tokens, list):
             raise VLLMClientError(
@@ -265,26 +355,94 @@ class VLLMEmbeddingClient:
             )
         return [int(t) for t in tokens]
 
+    async def _run_with_staged_images(
+        self, images: List[Image.Image], operation: Callable[[List[str]], Awaitable[T]]
+    ) -> T:
+        if self._closing:
+            raise RuntimeError("Inference client is closing")
+        await self._image_slots.acquire()
+        # The detached operation owns its bitmaps even if the caller closes theirs.
+        owned_images = []
+        try:
+            if self._closing:
+                raise RuntimeError("Inference client is closing")
+            for image in images:
+                owned_images.append(image.copy())
+        except BaseException:
+            for image in owned_images:
+                image.close()
+            self._image_slots.release()
+            raise
+
+        async def run():
+            async with self._stage_images(owned_images) as urls:
+                return await operation(urls)
+
+        task = asyncio.create_task(run())
+        self._detached_tasks.add(task)
+        caller_cancelled = False
+
+        def finished(done):
+            self._detached_tasks.discard(done)
+            for image in owned_images:
+                image.close()
+            self._image_slots.release()
+            if not done.cancelled():
+                error = done.exception()
+                if error is not None and caller_cancelled:
+                    logger.warning(
+                        "Detached image request failed: %s", type(error).__name__
+                    )
+
+        task.add_done_callback(finished)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            caller_cancelled = True
+            raise
+
     @asynccontextmanager
     async def _stage_images(
         self, images: List[Image.Image]
     ) -> AsyncIterator[List[str]]:
         """Write images to tmpfs, yield file:// URLs, delete on exit.
 
-        Files are deleted whether the request succeeds, fails, or is cancelled.
+        Cancellation or transport failure can leave upstream reads in flight.
+        In that case retain files for the age-based janitor instead of unlinking.
         """
         self.image_shm_dir.mkdir(parents=True, exist_ok=True)
         staged_paths: List[Path] = []
+        retain = False
+        dispatched = False
         try:
             for img in images:
                 path = self.image_shm_dir / f"{uuid.uuid4().hex}.png"
                 # PIL save is sync; offload to default executor so we don't
                 # block the event loop on disk (tmpfs, but still a syscall).
-                await asyncio.to_thread(_save_image_png, img, path)
                 staged_paths.append(path)
+                saving = asyncio.create_task(
+                    asyncio.to_thread(_save_image_png, img, path)
+                )
+                cancelled = False
+                while not saving.done():
+                    try:
+                        await asyncio.shield(saving)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                saving.result()
+                if cancelled:
+                    raise asyncio.CancelledError
+            dispatched = True
             yield [f"file://{p}" for p in staged_paths]
+        except (asyncio.CancelledError, asyncio.TimeoutError, aiohttp.ClientError):
+            retain = dispatched
+            if retain:
+                logger.warning(
+                    "Retaining staged images after interrupted upstream operation for janitor cleanup"
+                )
+            raise
         finally:
-            for path in staged_paths:
+            for path in [] if retain else staged_paths:
                 try:
                     path.unlink(missing_ok=True)
                 except OSError as e:
@@ -338,8 +496,10 @@ class VLLMEmbeddingClient:
 def _save_image_png(img: Image.Image, path: Path) -> None:
     """Save a PIL image as PNG to the given path. Runs in a worker thread."""
     if img.mode != "RGB":
-        img = img.convert("RGB")
-    img.save(path, format="PNG")
+        with img.convert("RGB") as converted:
+            converted.save(path, format="PNG")
+    else:
+        img.save(path, format="PNG")
 
 
 def _decode_pooling_response(data: List[Any]) -> List[torch.Tensor]:
