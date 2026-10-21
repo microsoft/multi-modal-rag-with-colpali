@@ -4,43 +4,19 @@ GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-styl
 
 ## Quantized checkpoint and GPU memory
 
-Only the language-model linear layers are quantized; the vision encoder and
-embedding projection remain unquantized. All model weights stay on the GPU.
-CPU image preparation, tokenization and output pooling are not model-weight
-offloading and remain part of the service.
+The quantized checkpoint is the default for performance and memory efficiency on the 12 GB A10 nodes used to validate this accelerator. Quantization is not required: you can select the [original non-quantized model](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible late-interaction model with `colpaliInference.modelId`. Adjust GPU sizing and serving settings for the chosen model, verify its retrieval processor and pooling compatibility, and follow the model-switch rollout guidance below.
 
-Despite the `-awq` repository name, the published checkpoint's
-[`config.json`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq/blob/309474f5f30f6d8631457680ec640557fe8ad573/config.json)
-declares `quant_method: auto-round`, `packing_format: auto_round:auto_gptq`,
-4 bits and group size 128. vLLM handles this through its native AutoRound
-quantization support, which can select GPTQ Marlin kernels on supported
-GPUs. Leave quantization auto-detection enabled: **do not force
-`--quantization awq`, rewrite the packing metadata, or install AutoAWQ in the
-CPU shim**. The downloader's tied-embedding config fix preserves this metadata.
+Only the language-model linear layers are quantized; the vision encoder and embedding projection remain unquantized. All model weights stay on the GPU. CPU image preparation, tokenization and output pooling are not model-weight offloading and remain part of the service.
 
-The publisher reports approximately 3.5 GB model memory versus 8.4 GB for the
-original checkpoint, not a peak-runtime VRAM requirement. Vision activations,
-input resolution and concurrent requests need additional headroom. The target
-is a 12 GB A10 GPU with no CPU weight offload; verify startup, image and text
-embeddings, peak VRAM and sustained mixed traffic on that hardware before
-rollout. Smaller weights alone do not establish a latency or throughput gain.
-Keep the CUDA 12.9-compatible vLLM 0.32.0 image on driver-570 deployments.
+Despite the `-awq` repository name, the published checkpoint's [`config.json`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq/blob/309474f5f30f6d8631457680ec640557fe8ad573/config.json) declares `quant_method: auto-round`, `packing_format: auto_round:auto_gptq`, 4 bits and group size 128. vLLM handles this through its native AutoRound quantization support, which can select GPTQ Marlin kernels on supported GPUs. Leave quantization auto-detection enabled: **do not force `--quantization awq`, rewrite the packing metadata, or install AutoAWQ in the CPU shim**. The downloader's tied-embedding config fix preserves this metadata.
+
+The publisher reports approximately 3.5 GB model memory versus 8.4 GB for the original checkpoint, not a peak-runtime VRAM requirement. Vision activations, input resolution and concurrent requests need additional headroom. The target is a 12 GB A10 GPU with no CPU weight offload; verify startup, image and text embeddings, peak VRAM and sustained mixed traffic on that hardware before rollout. Smaller weights alone do not establish a latency or throughput gain. Keep the CUDA 12.9-compatible vLLM 0.32.0 image on driver-570 deployments.
 
 ### Bounded A10 comparison
 
-A functional comparison on a 12 GiB A10-12Q with vLLM 0.32.0/CUDA 12.9
-successfully served this checkpoint without CPU weight offloading. Startup
-reported 3.45 GiB model-loading memory and 5.91 GiB available KV-cache memory,
-compared with 8.53 GiB and 0.36 GiB respectively after restoring the original
-checkpoint on the same GPU (managed driver 570.237).
-The original and quantized runs used the same settings: eager execution,
-2,048-token context, 8,192 batched tokens, 16 sequences and 0.89 GPU utilization.
-Both returned finite 320-dimensional vectors for text and all image pooling
-modes.
+A functional comparison on a 12 GiB A10-12Q with vLLM 0.32.0/CUDA 12.9 successfully served this checkpoint without CPU weight offloading. Startup reported 3.45 GiB model-loading memory and 5.91 GiB available KV-cache memory, compared with 8.53 GiB and 0.36 GiB respectively after restoring the original checkpoint on the same GPU (managed driver 570.237). The original and quantized runs used the same settings: eager execution, 2,048-token context, 8,192 batched tokens, 16 sequences and 0.89 GPU utilization. Both returned finite 320-dimensional vectors for text and all image pooling modes.
 
-The following warm, loopback HTTP timings include the CPU shim and response
-serialization. They are a small synthetic comparison, not a throughput or
-retrieval-quality benchmark:
+The following warm, loopback HTTP timings include the CPU shim and response serialization. They are a small synthetic comparison, not a throughput or retrieval-quality benchmark:
 
 | Workload | Samples per model | Original | Quantized |
 | --- | --- | --- | --- |
@@ -49,29 +25,13 @@ retrieval-quality benchmark:
 | 1000 x 1600 image, all pooling modes, median | 3 | 1.471 s | 1.470 s |
 | Concurrent two queries and two large images, total wall time | 1 batch | 2.019 s | 1.993 s |
 
-This shows reduced query latency in this sample, but no meaningful improvement
-for large-image or mixed-request latency. Do not infer a blanket speedup.
-Sampled total GPU memory peaked at 9,871 MiB for the original and 10,470 MiB for
-the quantized model: vLLM can use the freed weight memory for its KV cache, so
-lower model memory does not imply lower total GPU reservation at the same
-utilization setting. Validate sustained load and retrieval quality on your
-actual documents before production rollout.
+This shows reduced query latency in this sample, but no meaningful improvement for large-image or mixed-request latency. Do not infer a blanket speedup. Sampled total GPU memory peaked at 9,871 MiB for the original and 10,470 MiB for the quantized model: vLLM can use the freed weight memory for its KV cache, so lower model memory does not imply lower total GPU reservation at the same utilization setting. Validate sustained load and retrieval quality on your actual documents before production rollout.
 
 ### A4 indexing concurrency and memory headroom
 
-A subsequent concurrent-page trial exhausted GPU memory in the unquantized
-vision encoder at `gpuMemoryUtilization: "0.89"` with eight simultaneous A4
-image requests. A large KV-cache allocation is **not** proof that concurrent
-vision activations fit. The quantized default is therefore **0.75**, preserving
-more activation headroom rather than maximizing cache reservation.
+A subsequent concurrent-page trial exhausted GPU memory in the unquantized vision encoder at `gpuMemoryUtilization: "0.89"` with eight simultaneous A4 image requests. A large KV-cache allocation is **not** proof that concurrent vision activations fit. The quantized default is therefore **0.75**, preserving more activation headroom rather than maximizing cache reservation.
 
-On the same 12 GiB A10/runtime, 0.75 provided 4.26 GiB of KV-cache memory
-(31,024 tokens). It completed a 576-page embedding sweep: 24 synthetic A4 pages
-per configuration, three repetitions, hierarchical plus spatial pooling.
-Inputs were 1240 x 1754 pixels (150 DPI), using the checkpoint's 1,280-visual-token
-cap and the unchanged 2,048-token sequence limit, 8,192 batched-token limit,
-16-sequence scheduler limit and four CPU shim workers. No CPU weight offload
-was enabled.
+On the same 12 GiB A10/runtime, 0.75 provided 4.26 GiB of KV-cache memory (31,024 tokens). It completed a 576-page embedding sweep: 24 synthetic A4 pages per configuration, three repetitions, hierarchical plus spatial pooling. Inputs were 1240 x 1754 pixels (150 DPI), using the checkpoint's 1,280-visual-token cap and the unchanged 2,048-token sequence limit, 8,192 batched-token limit, 16-sequence scheduler limit and four CPU shim workers. No CPU weight offload was enabled.
 
 | Images per HTTP request | Aggregate concurrent requests | Median pages/second |
 | --- | --- | --- |
@@ -84,74 +44,15 @@ was enabled.
 | 2 | 4 | 1.48 |
 | 4 | 2 | 1.20 |
 
-Keep the existing two document-processor replicas, five concurrent embedding
-requests per replica and one page per request: ten aggregate requests were
-the best measured point, but their throughput range overlapped sixteen.
-Increasing concurrency or HTTP batch size did not establish a further gain.
-These are embedding-stage measurements with the quantized model, not evidence
-of an end-to-end indexing speedup over the original model.
+Keep the existing two document-processor replicas, five concurrent embedding requests per replica and one page per request: ten aggregate requests were the best measured point, but their throughput range overlapped sixteen. Increasing concurrency or HTTP batch size did not establish a further gain. These are embedding-stage measurements with the quantized model, not evidence of an end-to-end indexing speedup over the original model.
 
-A further three 32-page runs at ten concurrent requests included search traffic
-and completed without request errors. Query latency reached 5.15 seconds;
-the worst run's query p95 was 4.45 seconds. This is not a low-latency search
-guarantee: GPU scheduling priority does not eliminate CPU-shim contention.
-Sampled GPU memory peaked at 10,447 MiB across the completed runs. The validated
-profile does not cover larger token caps, cropped-page pipelines, or increased
-processor replica counts; remeasure those workloads rather than extrapolating.
-
-### Reproducing indexing throughput
-
-Use `scripts/benchmark_indexing.py` against an isolated, already-running shim.
-It sends synthetic A4-sized pages at 150 DPI (1240 x 1754 pixels), requesting
-the indexer's hierarchical and spatial pooling modes. It validates every
-response and reports completed pages/second and request latency as JSON Lines.
-It does not write to Qdrant, Blob Storage or Service Bus, and therefore measures
-the embedding stage, not end-to-end document indexing or retrieval quality.
-
-From this module directory, with the shim forwarded to local port 18080:
-
-```powershell
-uv run --locked python scripts\benchmark_indexing.py --url http://127.0.0.1:18080 --pages 24 --repeats 3 --configurations "1:1,1:2,1:4,1:8,1:10,1:16,2:4,4:2"
-```
-
-Each configuration is `images_per_request:concurrent_requests`, measured
-across the whole benchmark, not per processor replica. The first pass increases
-in-flight pages gradually; subsequent passes randomize configuration order.
-Requests use fresh connections, matching the current document processor, and
-fail immediately on HTTP, transport or invalid-vector errors without retries.
-Record the model, runtime, image-token cap and serving settings with the results.
-Run only during an agreed isolated window: large batches can exhaust GPU memory.
-
-Repeat selected configurations with `--query-interval 0.25` to include one
-sequential search client with a 250 ms pause between completed queries. This is
-not a fixed arrival-rate load test. `--sample-gpu` additionally samples memory
-and utilization once per second using `nvidia-smi`; use it only when the
-benchmark runs on the server with the single GPU being measured.
-
-The current rolling document-processing loop submits one page per request;
-`COLPALI_BATCH_SIZE` alone does not change it. Even a multi-image shim request
-fans out to one vLLM pooling call per image. Keep HTTP batching, aggregate
-client concurrency and GPU scheduler limits distinct when interpreting results.
+A further three 32-page runs at ten concurrent requests included search traffic and completed without request errors. Query latency reached 5.15 seconds; the worst run's query p95 was 4.45 seconds. This is not a low-latency search guarantee: GPU scheduling priority does not eliminate CPU-shim contention. Sampled GPU memory peaked at 10,447 MiB across the completed runs. The validated profile does not cover larger token caps, cropped-page pipelines, or increased processor replica counts; remeasure those workloads rather than extrapolating.
 
 ### Model-switch rollout
 
-For existing deployments, rebuild the inference images and set
-`colpaliInference.modelId` to the quantized ID explicitly if saved Helm values
-still select the original checkpoint. The init container downloads into a new
-basename directory on the PVC; it does not overwrite the original model cache.
-Allow disk space for both snapshots during the transition. Remove any local
-CPU-offload launch overrides rather than carrying them into the new deployment.
-Also set `colpaliInference.vllm.gpuMemoryUtilization` to `"0.75"` if saved Helm
-values still contain `"0.89"`. This budget is tuned for the quantized checkpoint;
-restore the original model's memory-budget settings along with its model ID
-when rolling back, rather than applying the quantized budget to BF16 weights.
+For existing deployments, rebuild the inference images and set `colpaliInference.modelId` to the quantized ID explicitly if saved Helm values still select the original checkpoint. The init container downloads into a new basename directory on the PVC; it does not overwrite the original model cache. Allow disk space for both snapshots during the transition. Remove any local CPU-offload launch overrides rather than carrying them into the new deployment. Also set `colpaliInference.vllm.gpuMemoryUtilization` to `"0.75"` if saved Helm values still contain `"0.89"`. This budget is tuned for the quantized checkpoint; restore the original model's memory-budget settings along with its model ID when rolling back, rather than applying the quantized budget to BF16 weights.
 
-Quantization changes numerical embeddings even though their dimension remains
-320. Reindex into a separate collection, validate retrieval quality, then switch
-query inference and the index together; do not silently mix original and
-quantized vectors. Keep the original model/index available for rollback and
-invalidate any external query-embedding caches. Deploying the new model does
-not migrate existing Qdrant vectors.
+Quantization changes numerical embeddings even though their dimension remains 320. Reindex into a separate collection, validate retrieval quality, then switch query inference and the index together; do not silently mix original and quantized vectors. Keep the original model/index available for rollback and invalidate any external query-embedding caches. Deploying the new model does not migrate existing Qdrant vectors.
 
 ## Architecture: CPU shim + GPU vLLM sidecar
 

@@ -35,6 +35,8 @@ ColPali is a multi-modal document understanding model that processes documents a
 
 This implementation ships with **[`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)** — a 4B-parameter ColQwen3 model with 4-bit text weights and 320-dimensional token embeddings. [vLLM](https://github.com/vllm-project/vllm) runs inference on the GPU without CPU weight offloading; a CPU service handles image preparation and pooling. The vision encoder remains unquantized. Despite the checkpoint's name, its published metadata uses AutoRound/GPTQ packing, which vLLM detects automatically. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for runtime requirements and model-switch rollout guidance.
 
+The quantized default is a performance and memory-efficiency choice for the **12 GB A10 GPU nodes used to validate this accelerator**, not a requirement of the architecture. You can use the [original, non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible late-interaction embedding model by setting `colpaliInference.modelId` and adjusting GPU resources and serving settings for your hardware. Verify processor and pooling compatibility, evaluate performance and retrieval quality, and reindex when changing models; a different model is not necessarily a drop-in replacement.
+
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 
 ## What's Included
