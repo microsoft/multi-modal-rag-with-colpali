@@ -25,7 +25,7 @@ below in **PowerShell 7** from the repository root.
   and Spot `Standard_NV18ads_A10_v5`. The GPU pool can be evicted.
   The template also deploys `gpt-4.1` Global Standard with capacity 100 in **UK South**;
   check that model's quota there before deploying.
-- Python 3.12 and uv are needed only for local development/tests.
+- Python 3.14 and uv are needed only for local development/tests.
 
 ```powershell
 git clone https://github.com/microsoft/multi-modal-rag-with-colpali.git
