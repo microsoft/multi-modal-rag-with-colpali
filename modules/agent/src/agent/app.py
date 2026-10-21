@@ -173,8 +173,10 @@ async def chat(request: ChatRequest):
         ):
             if event.get("type") == "text_delta":
                 response_content += event.get("content", "")
+            elif event.get("type") == "source_delta":
+                sources.append(event["source"])
             elif event.get("type") == "done":
-                sources = event.get("sources", [])
+                sources = event.get("sources", sources)
                 break
             elif event.get("type") == "error":
                 raise RuntimeError(event.get("content", "Unknown error"))

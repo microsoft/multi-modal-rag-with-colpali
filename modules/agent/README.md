@@ -23,6 +23,11 @@ request validation, CORS, OpenTelemetry middleware, the Chainlit UI and Engine.I
 handshake, MSAL assertion signing, and the real agent's framework client.
 They do not call Azure or the inference service.
 
+The UI runs as `uvicorn agent.ui_app:app --loop asyncio`, using Chainlit's ASGI
+mounting API. Avoid the Chainlit CLI on Python 3.14: its `nest_asyncio` loop patch
+breaks async-library detection during static asset requests and can leave the
+browser blank even when `/` returns HTTP 200.
+
 ## Architecture Overview
 
 The agent uses these services:
@@ -48,6 +53,10 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 3. Retrieve relevant pages using ColPali + Qdrant
 4. Generate answer with Azure OpenAI using retrieved context
 5. Return response with source citations
+
+`/chat` returns the complete answer and cited pages in `sources`, including page
+images when available. `/chat/stream` emits those same pages as `source_delta`
+events before its terminal `done` event.
 
 ## Implemented Retrieval Defaults
 

@@ -3,9 +3,12 @@
 
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -13,6 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 import fsspec
+import httpx
 import jwt
 from agent_framework import ChatMessage, DataContent, Role, TextContent
 from agent_framework.azure import AzureOpenAIChatClient
@@ -198,6 +202,80 @@ class ApiCompatibilityTests(unittest.TestCase):
 
 
 class DependencyCompatibilityTests(unittest.TestCase):
+    def test_ui_server_serves_browser_assets_and_socket_handshake(self):
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(Path(api.__file__).resolve().parents[1])
+            # Uvicorn inherits the reserved socket on Linux, as in the image.
+            if sys.platform == "win32":
+                listener.close()
+                address = ["--host", "127.0.0.1", "--port", str(port)]
+                process_options = {}
+            else:
+                address = ["--fd", str(listener.fileno())]
+                process_options = {"pass_fds": (listener.fileno(),)}
+            with tempfile.TemporaryFile(mode="w+") as log:
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "uvicorn",
+                        "agent.ui_app:app",
+                        "--loop",
+                        "asyncio",
+                        *address,
+                    ],
+                    cwd=directory,
+                    env=environment,
+                    stdout=log,
+                    stderr=log,
+                    **process_options,
+                )
+                try:
+                    with httpx.Client(
+                        base_url=f"http://127.0.0.1:{port}", timeout=2
+                    ) as client:
+                        deadline = time.monotonic() + 30
+                        while True:
+                            try:
+                                response = client.get("/")
+                                break
+                            except httpx.TransportError:
+                                if (
+                                    process.poll() is not None
+                                    or time.monotonic() > deadline
+                                ):
+                                    log.seek(0)
+                                    self.fail(f"UI failed to start:\n{log.read()}")
+                                time.sleep(0.1)
+                        self.assertEqual(response.status_code, 200)
+                        assets = re.findall(
+                            r'(?:src|href)="([^"]+\.(?:js|css))"', response.text
+                        )
+                        self.assertTrue(
+                            assets, "UI HTML must reference its application assets"
+                        )
+                        for asset in assets:
+                            with self.subTest(asset=asset):
+                                result = client.get(asset)
+                                self.assertEqual(
+                                    result.status_code, 200, result.text[:200]
+                                )
+                                self.assertTrue(result.content)
+                        response = client.get("/ws/socket.io/?EIO=4&transport=polling")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn("sid", json.loads(response.text[1:]))
+                finally:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+
     def test_fsspec_reference_and_huggingface_filesystems(self):
         references = fsspec.filesystem(
             "reference", fo={"version": 1, "refs": {"document": "sample text"}}
