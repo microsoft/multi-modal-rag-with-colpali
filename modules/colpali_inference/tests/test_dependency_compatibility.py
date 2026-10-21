@@ -108,7 +108,9 @@ class PoolingCompatibilityTests(unittest.TestCase):
                 "HF_HUB_OFFLINE": "1",
             },
         ):
-            handler = ColPaliInference(model_id="TomoroAI/tomoro-colqwen3-embed-4b")
+            handler = ColPaliInference(
+                model_id="TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"
+            )
             handler.initialize()
             self.assertTrue(handler.is_initialized)
             self.assertIsInstance(handler._get_image_token_id(), int)
@@ -266,7 +268,7 @@ class HTTPCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 )
                 try:
                     handler = ColPaliInference(
-                        model_id="TomoroAI/tomoro-colqwen3-embed-4b",
+                        model_id="TomoroAI/tomoro-ai-colqwen3-embed-4b-awq",
                         vllm_client=client,
                     )
                     with patch.dict(

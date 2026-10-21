@@ -1,6 +1,18 @@
 # ColPali Inference Service
 
-GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-colqwen3-embed-4b`](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b)** — a 4B-parameter ColQwen3 model producing 320-dim per-token vectors. Alternative checkpoints require compatible retrieval-processor helpers and image prompts as well as vLLM support; changing `MODEL_ID` alone is not sufficient.
+GPU inference service for [ColPali](https://github.com/illuin-tech/colpali)-style late-interaction embedding models. Ships configured for **[`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)** — a W4A16-quantized, 4B-parameter ColQwen3 model producing 320-dim per-token vectors. Alternative checkpoints require compatible retrieval-processor helpers and image prompts as well as vLLM support; changing `MODEL_ID` alone is not sufficient.
+
+## Quantized checkpoint and GPU memory
+
+We use the quantized checkpoint for performance and memory efficiency on our 12 GB A10 validation nodes. You can choose the [original non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible late-interaction model through `colpaliInference.modelId`, with GPU resources and serving settings suited to that model.
+
+All model weights remain on the GPU. The default `gpuMemoryUtilization: "0.75"` leaves headroom for concurrent image processing. vLLM automatically detects the checkpoint's AutoRound/GPTQ format despite its `-awq` name; do not force `--quantization awq`.
+
+### Model-switch rollout
+
+Rebuild the inference images and update saved Helm values for `colpaliInference.modelId` and `colpaliInference.vllm.gpuMemoryUtilization`. The quantized default uses `"0.75"` without CPU weight offloading; other models may need different memory settings.
+
+When changing models, reindex into a separate collection, validate retrieval quality, and switch query inference and the index together. Do not mix embeddings from different models. Keep the previous model, index and serving settings for rollback, and invalidate any query-embedding caches.
 
 ## Architecture: CPU shim + GPU vLLM sidecar
 
@@ -40,7 +52,7 @@ Running FastAPI and the model together can load a separate model copy per worker
 
 1. **`model-downloader` (initContainer)** — Runs `python -m colpali_inference.app download`. Pulls `MODEL_ID` from HuggingFace Hub into `${MODEL_DIRECTORY_PATH}/$(basename MODEL_ID)` on the shared PVC. Blocks pod startup if the download fails.
 2. **`colpali-inference` (CPU shim)** — FastAPI app on port `8000`. Reads `VLLM_BASE_URL=http://localhost:8001`, `MODEL_ID`, `IMAGE_SHM_DIR=/shm`. Sets `HF_HUB_OFFLINE=1` to use weights from the PVC without contacting HuggingFace Hub.
-3. **`vllm` (GPU sidecar)** — vLLM `0.32.0+cu129` on Python 3.14, installed on `mcr.microsoft.com/azureml/openmpi5.0-cuda12.8-ubuntu24.04:20261018.v1`. Launch flags (`--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
+3. **`vllm` (GPU sidecar)** — vLLM `0.32.0+cu129` on Python 3.14, installed on `mcr.microsoft.com/azureml/openmpi5.0-cuda12.8-ubuntu24.04:20261018.v1`. Launch flags (`--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. The pooling task and checkpoint quantization are auto-detected. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
 
 ### Runtime upgrade requirements
 
@@ -62,7 +74,7 @@ application build does not install or upgrade host drivers.
 
 Validated on an AKS NVIDIA A10-12Q (12 GiB) with managed driver 570.237:
 Python 3.14.8, vLLM 0.32.0, PyTorch 2.13.0+cu129, and shim Transformers 5.19.0.
-The default unquantized ColQwen3-4B model passed live text and synthetic-image
+The original unquantized ColQwen3-4B checkpoint passed live text and synthetic-image
 embedding checks, including all pooling modes, without CPU weight offload.
 This is a functional compatibility check, not a throughput or retrieval-quality
 benchmark, and does not replace validation on other GPUs or drivers.
@@ -115,7 +127,7 @@ Returns service status and model readiness:
   "status": "healthy",
   "model_loaded": true,
   "model_info": {
-    "model_name": "TomoroAI/tomoro-colqwen3-embed-4b",
+    "model_name": "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq",
     "vllm_base_url": "http://localhost:8001"
   }
 }
@@ -175,7 +187,7 @@ See the main README for full architecture details.
 
 ### Reference preprocessing, pooling and rollout
 
-- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b/blob/13517a29e8c5e408f7f2684337ed407df3acb212/processing_colqwen3.py): `<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe the image.<|im_end|><|endoftext|>`. vLLM expands the image placeholder. Tokenization and embedding share one request builder; `continue_final_message` preserves the explicit retrieval suffix instead of adding the generic chat ending.
+- Images follow the checkpoint's [retrieval processor](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq/blob/309474f5f30f6d8631457680ec640557fe8ad573/processing_colqwen3.py): `<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe the image.<|im_end|><|endoftext|>`. vLLM expands the image placeholder. Tokenization and embedding share one request builder; `continue_final_message` preserves the explicit retrieval suffix instead of adding the generic chat ending.
 - Raw image outputs retain every active prompt position. Hierarchical pooling clusters that complete sequence. Delimiters and prompt words carry contextual information after attention; they are not masked padding.
 - Row/column pooling is an application extension: average only the visual grid, retaining active contextual prefix/suffix vectors separately in both outputs.
 - Queries use the installed processor's `process_texts` preprocessing. ColQwen3 appends ten active query-augmentation tokens. Keep them even though their ID also serves as the padding ID. Only attention-mask-zero batch padding is removed before sending token IDs to vLLM.
@@ -209,6 +221,6 @@ uv run --locked python -m unittest discover -s tests -v
 
 The suite exercises real hierarchical/mean pooling, image decoding and cleanup, an HTTP round trip to a local test server, upstream errors, API validation, downloader arguments, and Transformers' refusal to download custom generation code without trust consent.
 
-To also check the actual model processor, point `COLPALI_TEST_MODEL_DIRECTORY` at a directory containing `tomoro-colqwen3-embed-4b` with the trusted model's processor/tokenizer files and custom Python modules (weights are unnecessary). These tests load the processor offline using the same `AutoProcessor` path as production and check square/rectangular image token counts against the patch grid and the query/image shim paths through a local fake vLLM server. Without this variable, the real-snapshot tests are skipped.
+To also check the default quantized model's actual processor, point `COLPALI_TEST_MODEL_DIRECTORY` at a directory containing `tomoro-ai-colqwen3-embed-4b-awq` with the trusted model's processor/tokenizer files and custom Python modules (weights are unnecessary). These tests use `TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`, not the original unquantized reference checkpoint. They load the processor offline using the same `AutoProcessor` path as production and check square/rectangular image token counts against the patch grid and the query/image shim paths through a local fake vLLM server. Without this variable, the real-snapshot tests are skipped.
 
 These CPU checks do not validate GPU weight loading or end-to-end vLLM embeddings; those require the deployed sidecar and a GPU. Accelerate's checkpoint traversal advisory GHSA-4j2p-28q2-5m79 remains unresolved: the published 1.15.0 implementation still joins untrusted shard paths, so it is not treated as a security fix.
