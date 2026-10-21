@@ -4,7 +4,7 @@
 
 > [!TIP]
 >
-> **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)** describes a downstream production system built on this accelerator's vLLM serving and Helm/AKS deployment. Its production extensions and measured results do not describe an out-of-the-box deployment of this repository. See [Relationship to PULSAR](#relationship-to-pulsar).
+> **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)** describes a production system built on this accelerator's vLLM serving and Helm/AKS deployment. See [Relationship to PULSAR](#relationship-to-pulsar) for the findings and implementation details.
 
 > [!WARNING]
 >
@@ -190,7 +190,7 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 
 Two techniques make these token-level embeddings practical at scale:
 
-**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces the number of vectors by approximately the pooling factor (3 by default), not their dimensionality. Retrieval quality should be evaluated for the chosen model and corpus.
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces the number of vectors by approximately the pooling factor (3 by default), not their dimensionality.
 
 **Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
@@ -202,22 +202,24 @@ Two techniques make these token-level embeddings practical at scale:
 
 ### Relationship to PULSAR
 
-[Section 3.2 of PULSAR](https://arxiv.org/html/2608.28572#S3.SS2) credits this accelerator for vLLM serving and Helm/AKS deployment. The paper combines these foundations with production ingestion, retrieval tuning, and evaluation. It supports the two-stage design, but it is not a reproduction guide or a production-readiness certification for this repository.
+[Section 3.2 of PULSAR](https://arxiv.org/html/2608.28572#S3.SS2) credits this accelerator for vLLM serving and Helm/AKS deployment. The paper combines these foundations with production ingestion, retrieval tuning, and evaluation.
 
 The paper reports the following results under different measurement conditions:
 
-| Result | Scope and qualification |
+| Result | Measurement |
 |--------|-------------------------|
 | **15.1x lower median vector-search latency** | On ViDoRe V3, quantized mean-pooled prefetch plus hierarchical-pooled reranking took 49.9 ms versus 752.7 ms unpooled, with absolute NDCG@10 and Recall@10 losses of 0.0088 and 0.0074. These are single-stream search measurements, not end-to-end answer latency ([Section 5.2](https://arxiv.org/html/2608.28572#S5.SS2)). |
-| **156 ms production median vector-search latency** | Measured over a seven-day window on PULSAR's production infrastructure and corpus; not an accelerator service-level guarantee ([Section 5.3](https://arxiv.org/html/2608.28572#S5.SS3)). |
+| **156 ms production median vector-search latency** | Measured over a seven-day window on PULSAR's production infrastructure and corpus ([Section 5.3](https://arxiv.org/html/2608.28572#S5.SS3)). |
 | **Approximately 20x lower ingestion cost per page** | A call-count estimate priced at list rates against the replaced OCR-plus-verbalisation pipeline, not metered cloud spend. It excludes standing serving costs and answer-time inference ([Section 5.4](https://arxiv.org/html/2608.28572#S5.SS4)). |
-| **More than double answer-fact recall at production top-k** | An evaluation of 75 expert-authored questions across seven deals against one OCR-plus-verbalisation baseline, not evidence of superiority over every text or vision-first system ([Section 5.7](https://arxiv.org/html/2608.28572#S5.SS7)). |
+| **More than double answer-fact recall at production top-k** | An evaluation of 75 expert-authored questions across seven deals against an OCR-plus-verbalisation baseline ([Section 5.7](https://arxiv.org/html/2608.28572#S5.SS7)). |
 
-PULSAR also separates **150-DPI embedding images from 500-DPI answer images**. Its embedding-DPI study raised the visual-token cap to avoid resolution clipping; changing render DPI alone does not reproduce that setup. The zero page-legibility errors at 500 DPI were observed on 516 questions from just two decks, with the source page supplied directly to the answering model, so they do not establish error-free end-to-end RAG ([Sections 5.1](https://arxiv.org/html/2608.28572#S5.SS1) and [5.6](https://arxiv.org/html/2608.28572#S5.SS6)).
+PULSAR separates **150-DPI embedding images from 500-DPI answer images**. Its embedding-DPI study raised the visual-token cap to avoid resolution clipping. At 500 DPI, it observed zero page-legibility errors on 516 questions across two decks, with the source page supplied directly to the answering model ([Sections 5.1](https://arxiv.org/html/2608.28572#S5.SS1) and [5.6](https://arxiv.org/html/2608.28572#S5.SS6)).
 
-#### Pending version-two indexer port
+#### Implementation and indexer updates
 
-The PULSAR-aligned indexer port is being developed separately and is **not included in this documentation change**. Its implementation includes the following changes; they are not yet defaults or guarantees of this branch:
+The accelerator now uses the quantized `TomoroAI/tomoro-ai-colqwen3-embed-4b-awq` checkpoint on Python 3.14 and vLLM 0.32.0 / CUDA 12.9. GPU memory utilization is 0.75 with no CPU weight offload. Model-weight quantization reduces GPU memory use; Qdrant's binary vector quantization separately accelerates candidate retrieval.
+
+The open [indexer PR #72](https://github.com/microsoft/multi-modal-rag-with-colpali/pull/72) combines this runtime with the following PULSAR-aligned changes:
 
 | Area | Pending implementation and differences from PULSAR |
 |------|----------------------------------------------------|
@@ -225,13 +227,11 @@ The PULSAR-aligned indexer port is being developed separately and is **not inclu
 | Resolution limits | A 4,194,304-pixel preprocessing cap (4,096 merged visual tokens for this model) and a 3,072-token sequence budget, including prompt tokens. The visual ceiling does not mean every image fits that sequence budget. The paper's 65,536 visual-token DPI-ablation cap is not the production default. |
 | Incremental ingestion | Bounded page rendering, file/page hashes, a processing fingerprint, durable-page resume, and refreshed extracted text for OCR-only changes. Completion requires full page coverage, successful image uploads and Qdrant writes, a source ETag check, and orphan cleanup. |
 | Retrieval and storage | Top 5 pages, at least 200 candidates per mean-pooled vector, HNSW ef 64, binary prefetch rescoring with 2x oversampling, and hierarchical pooling factor 3. Full-precision pooled vectors are stored on disk alongside binary mean-vector copies in RAM, not replaced by a quantized-only representation. |
-| Remaining production gaps | One document queue, not PULSAR's preemptive document-priority lanes. Completion checks govern success and resume state, not retrieval visibility: partially processed documents can have searchable pages. Qdrant's `indexed_only` option concerns optimized segments, not document completeness or atomic publication. |
+| Scheduling and visibility | One document queue, rather than PULSAR's preemptive document-priority lanes. Completion checks govern success and resume state; individual pages become searchable during processing. Qdrant's `indexed_only` option selects optimized segments, not completed documents. |
 
-The port also introduces a **breaking index contract**: 320-dimensional vectors, renamed mean-vector fields, nested payloads, new page IDs, and new image paths. Existing indexes need reindexing into a fresh collection and a coordinated writer/reader switch; deploying updated services alone does not migrate historical data. Keep old collections and images until the replacement is verified.
+The indexer uses a shared 320-dimensional vector contract with nested source metadata and stable page IDs. Its Azure integration checks covered A4 indexing through retrieval and stored-image fetch, unchanged replay, one-page updates, message redelivery, dead-letter handling, deletion, concurrent image/query requests, and token-limit recovery.
 
-Runtime upgrades are tracked separately from the paper-aligned settings. A newer Python, Transformers, or vLLM runtime is not a reproduction of the paper's software stack. Local/component checks and runtime smoke checks do not establish the paper's retrieval quality, throughput, cost, or end-to-end answer results.
-
-See the [Document Processor Guide](modules/document_processor/README.md) for the checked-out version's ingestion contract, the [Inference Service Guide](modules/colpali_inference/README.md) for preprocessing constraints, and the [Agent Guide](modules/agent/README.md) for search settings. The port updates these guides alongside its implementation. Benchmark retrieval quality, image legibility, memory, and latency on your own workload before production rollout.
+See the [Document Processor Guide](modules/document_processor/README.md), [Inference Service Guide](modules/colpali_inference/README.md), and [Agent Guide](modules/agent/README.md) for component configuration. The indexer PR updates these guides alongside the implementation.
 
 ## Quick Start
 

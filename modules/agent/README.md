@@ -57,30 +57,25 @@ page vector in the corpus; the HNSW prefetch remains approximate.
 
 [Section 5.2 of PULSAR](https://arxiv.org/html/2608.28572#S5.SS2) reports a
 production prefetch limit of **200** and HNSW ef of **64**, following sweeps on
-ViDoRe V3; its pooling comparison used ef **128**. Those settings and the paper's
-production `top_k=5` are reference operating points, not universally optimal
-values. Evaluate candidate recall and search latency on
-your corpus before changing them. Query expansion, embedding generation, image
+ViDoRe V3; its pooling comparison used ef **128** and production returns the top
+**5** pages. Query expansion, embedding generation, image
 fetches, and answer generation also contribute to this agent's end-to-end
 latency; the paper's vector-search timings do not include all of those steps.
 
 ### Pending indexer-port integration
 
-The separate version-two indexer port adopts those production operating points;
-it is not included in this documentation change. Both single-query and expanded
+The open [indexer PR #72](https://github.com/microsoft/multi-modal-rag-with-colpali/pull/72)
+adopts those production operating points. Both single-query and expanded
 query paths default to 5 unique pages, with `max(200, top_k)` candidates per
 mean-vector prefetch, `hnsw_ef=64`, `exact=False`, `indexed_only=True`, and binary
 rescoring enabled with 2x oversampling.
 
 That port changes the mean-vector names to `mean_row_pooled` and
-`mean_column_pooled` and reads the nested version-two payload contract. Migrate
-the writer and reader together using a freshly indexed collection; renaming
-vectors in documentation or switching the model alone is not a migration.
+`mean_column_pooled` and reads nested source metadata, including the stored
+page-image URL. Citations are deduplicated by document identity and page number.
 
-`indexed_only` can exclude unoptimized Qdrant segments, so allow optimization
-to catch up when checking newly ingested data. It does not filter on a completed
-document hash: individual pages can become searchable before the document is
-complete. The port does not provide atomic document publication.
+`indexed_only` selects optimized Qdrant segments rather than filtering on a
+completed document hash. Individual pages become searchable during processing.
 
 ## Agent Flow
 
