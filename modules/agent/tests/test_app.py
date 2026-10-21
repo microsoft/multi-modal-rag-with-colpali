@@ -196,6 +196,59 @@ def test_successful_chat_responses_are_unchanged(client, monkeypatch, endpoint):
         assert parse_events(response) == events
 
 
+@pytest.mark.parametrize("endpoint", ["/chat", "/chat/stream"])
+def test_real_agent_preserves_cited_page_sources(
+    client, monkeypatch, tmp_path, endpoint
+):
+    async def get_streaming_response(messages):
+        yield SimpleNamespace(text="The rendezvous code is MARIGOLD-7319 [1].")
+
+    agent = ColPaliAgent.__new__(ColPaliAgent)
+    agent._initialized = True
+    agent._chat_client = SimpleNamespace(
+        get_response=AsyncMock(return_value=SimpleNamespace(text="rendezvous code")),
+        get_streaming_response=get_streaming_response,
+    )
+    agent.query_agent_instructions = "Generate search queries."
+    agent.response_agent_instructions = "Answer with citations."
+    agent.deployment_name = "test-model"
+    agent.debug_images_dir = str(tmp_path)
+    agent.document_retriever = SimpleNamespace(
+        search_documents_batch=AsyncMock(
+            return_value=[
+                DocumentChunk(
+                    source_file="synthetic.pdf",
+                    page_number=1,
+                    page_image_base64="c3ludGhldGljLWltYWdl",
+                    score=0.9,
+                )
+            ]
+        )
+    )
+    monkeypatch.setattr(api, "agent", agent)
+
+    response = client.post(endpoint, json={"message": "What is the rendezvous code?"})
+
+    assert response.status_code == 200
+    if endpoint == "/chat":
+        answer = response.json()["response"]
+        sources = response.json()["sources"]
+    else:
+        events = parse_events(response)
+        assert events[-1]["type"] == "done"
+        answer = "".join(e["content"] for e in events if e["type"] == "text_delta")
+        sources = [e["source"] for e in events if e["type"] == "source_delta"]
+    assert "MARIGOLD-7319 [1]" in answer
+    assert sources == [
+        {
+            "title": "synthetic.pdf (page 1)",
+            "score": "0.900",
+            "source": "source_1",
+            "base64_image": "c3ludGhldGljLWltYWdl",
+        }
+    ]
+
+
 def test_global_exception_handler_sanitizes_response(caplog):
     test_app = FastAPI()
     test_app.add_exception_handler(Exception, api.app.exception_handlers[Exception])
