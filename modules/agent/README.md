@@ -9,6 +9,28 @@ A containerized chat interface for document Q&A using Azure OpenAI and ColPali-b
 For local development, set `AZURE_TOKEN_CREDENTIALS=dev` before starting the agent.
 The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredential`.
 
+## Dependency compatibility checks
+
+Use Python 3.14 and the committed lockfile:
+
+```shell
+uv sync --locked --no-editable --no-dev --group test
+uv run --locked --no-dev --group test python -m pytest tests -q
+```
+
+These offline-service tests cover API startup/shutdown, chat and SSE responses,
+request validation, CORS, OpenTelemetry middleware, the Chainlit UI and Engine.IO
+handshake, MSAL assertion signing, and the real agent's framework client.
+Telemetry setup is patched before importing the API, including when an
+Application Insights connection string is configured. They do not call Azure or
+the inference service. Prerelease handling is configured in `pyproject.toml` for
+both local and container installs. Transitive security floors are recorded in
+`tool.uv.constraint-dependencies`.
+
+Only `agent-framework-core` is required for the chat types and
+`AzureOpenAIChatClient`. It is pinned to the previously resolved core version;
+the umbrella package and its unused integrations (including Mem0) are not installed.
+
 ## Architecture Overview
 
 The agent uses these services:
@@ -45,7 +67,7 @@ The candidate union is then scored using `hierarchical_pooled` (pooling factor
 3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
 pool; requests above 200 expand each prefetch to at least `top_k`.
 
-The chart pins Qdrant **1.17.1**; newly created mean-vector indexes explicitly use
+The chart pins Qdrant **1.19.1**; newly created mean-vector indexes explicitly use
 HNSW `m=16` and `ef_construct=100`. Full-precision vectors remain on disk, with
 binary mean-vector copies in RAM. `indexed_only` can exclude unoptimized
 segments: allow indexing/optimization to catch up when validating newly
@@ -57,9 +79,6 @@ The retriever reads nested `source` and `metadata` payloads, fetches the stored
 page image from `source.page_image_url`, and deduplicates citations using document
 identity plus page number. `QDRANT_COLLECTION_NAME` must match the indexer's
 collection, and query inference must use the model that produced those vectors.
-Follow the [migration guide](../document_processor/README.md#migrating-an-existing-index)
-when switching schema or model; changing the model without rebuilding its index
-is not a compatible upgrade.
 
 The search settings above are implementation defaults in
 `src/agent/document_retriever.py`; they are not all Helm/environment overrides.

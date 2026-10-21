@@ -52,9 +52,6 @@ This repository includes model serving, document indexing, and deployment script
 - Agent API and UI for querying
 
 Indexing and retrieval share a **320-dimensional pooled-vector contract**.
-Existing indexes using the old vector names, payloads, or model must be rebuilt
-into a separate collection before cutover; see the
-[index migration guide](modules/document_processor/README.md#migrating-an-existing-index).
 The [processor guide](modules/document_processor/README.md) describes the selected
 ingestion improvements, and the
 [Helm tuning guide](modules/helm/colpali-stack/README.md#indexing-and-inference-tuning)

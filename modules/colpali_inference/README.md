@@ -45,6 +45,7 @@ Running FastAPI and the model together can load a separate model copy per worker
 
 - **vLLM owns the GPU.** It handles batching and inference with one process and one GPU per pod.
 - **The shim is stateless and CPU-bound.** It can run `UVICORN_WORKERS` (default 4) processes against the same vLLM sidecar over `localhost`. Tokenization and pooling run across CPU cores.
+- **Local tokenizer access is serialized per worker.** Query preprocessing and image-prompt validation share a lock in offloaded threads because the fast tokenizer mutates backend settings. Cancelling a request does not release that lock before tokenization finishes; waiting for it does not block the event loop. vLLM calls remain concurrent.
 - **Pooling stays out of the model server.** Hierarchical and mean row/col pooling are pure NumPy/Torch math on the raw token embeddings. Doing them in the shim means we can change pooling strategies without touching vLLM.
 - **Images travel as files, not JSON.** The shim writes decoded PNG images to shared memory at `/shm` and passes `file:///shm/<uuid>.png` to vLLM (`--allowed-local-media-path /shm`). This avoids re-encoding images as base64 between containers.
 
@@ -205,11 +206,6 @@ See the main README for full architecture details.
   processor's retrieval prompt and patch grid. Query outputs must match the
   active input lengths. Prompt/count mismatches, non-finite vectors and
   unexpected all-zero rows fail explicitly; zero rows are not silently removed.
-- **Rollout requires reindexing.** Existing image vectors produced with the
-  generic chat prompt are not rewritten by deploying this API. Regenerate
-  affected vectors in a separately approved migration, preserving source
-  images and document/page identities. Coordinate inference and retrieval
-  rollout so old and new representations are not mixed.
 - This repository does not implement a query-embedding cache. If external
   consumers cache embeddings, rotate their cache namespace/version and restart
   them before switching query traffic; do not reuse old query-cache entries or
@@ -307,7 +303,8 @@ python -m unittest discover -s tests -v
 ```
 
 These checks cover active-token selection, rectangular spatial pooling, invalid
-upstream vectors, and HTTP request parity using a local fake vLLM server. They
+upstream vectors, tokenizer concurrency and cancellation, and HTTP request parity
+using a local fake vLLM server. They
 also exercise the real shim over HTTP to verify token-limit recovery responses,
 retryable errors and backoff headers, plus staged-file ownership during failures
 and cancellation. Both this suite and the document-processing workflow suite run
@@ -320,3 +317,22 @@ snapshot before running the suite. This opt-in check loads its custom processor
 code locally without downloading model weights or making inference requests.
 It catches checkpoint/runtime API incompatibilities that a fake processor cannot.
 Use the runtime versions selected by the inference dependency lock.
+To also check concurrent query/image tokenization against a checkpoint's actual processor, set `COLPALI_TEST_PROCESSOR_PATH` to a trusted local processor snapshot before running the suite. This opt-in check loads the checkpoint's processor code offline and verifies reference token sequences, query augmentation and padding selection with the vLLM boundary mocked; it does not load model weights or prove GPU embedding parity.
+
+## Dependency compatibility checks
+
+The security updates preserve the Python 3.14 runtime baseline: Torch 2.13 / torchvision 0.28, Transformers 5.19, colpali-engine 0.3.18, and Hugging Face Hub 1.33. These dependencies load the CPU processor and run pooling; GPU inference remains in the separate vLLM 0.32.0 CUDA 12.9 sidecar. The standard Linux shim Torch wheel reports CUDA 13.0 support but executes only CPU operations; it does not determine the sidecar's CUDA requirements. Transitive security floors live in `tool.uv.constraint-dependencies`; `uv.lock` pins the tested versions. Transformers' minimum is 5.17 for the verified custom-generation consent fix, without lowering the locked 5.19 version or changing the runtime baseline's upper bound.
+
+Run the CPU compatibility suite from this module:
+
+```powershell
+uv sync --locked
+$env:PYTHONPATH = "$PWD\src"
+uv run --locked python -m unittest discover -s tests -v
+```
+
+The suite exercises real hierarchical/mean pooling, image decoding and cleanup, an HTTP round trip to a local test server, upstream errors, API validation, downloader arguments, and Transformers' refusal to download custom generation code without trust consent.
+
+To also check the default quantized model's actual processor, point `COLPALI_TEST_MODEL_DIRECTORY` at a directory containing `tomoro-ai-colqwen3-embed-4b-awq` with the trusted model's processor/tokenizer files and custom Python modules (weights are unnecessary). These tests use `TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`, not the original unquantized reference checkpoint. They load the processor offline using the same `AutoProcessor` path as production and check square/rectangular image token counts against the patch grid and the query/image shim paths through a local fake vLLM server. Without this variable, the real-snapshot tests are skipped.
+
+These CPU checks do not validate GPU weight loading or end-to-end vLLM embeddings; those require the deployed sidecar and a GPU. Accelerate's checkpoint traversal advisory GHSA-4j2p-28q2-5m79 remains unresolved: the published 1.15.0 implementation still joins untrusted shard paths, so it is not treated as a security fix.

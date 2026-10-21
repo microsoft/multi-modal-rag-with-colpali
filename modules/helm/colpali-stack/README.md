@@ -7,7 +7,7 @@ Helm chart for deploying the ColPali/ColQwen multi-modal RAG stack.
 This chart deploys the following components:
 
 ### Core Services
-- **Quantized ColQwen3 Inference** (`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`) - Late-interaction embedding service: GPU vLLM sidecar (`/pooling` endpoint, no CPU weight offload) + CPU FastAPI shim for tokenization and pooling (StatefulSet). See the [model-switch rollout guidance](../../colpali_inference/README.md#quantized-checkpoint-and-gpu-memory) before upgrading an existing index.
+- **Quantized ColQwen3 Inference** (`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`) - Late-interaction embedding service: GPU vLLM sidecar (`/pooling` endpoint, no CPU weight offload) + CPU FastAPI shim for tokenization and pooling (StatefulSet). See the [model and GPU memory guidance](../../colpali_inference/README.md#quantized-checkpoint-and-gpu-memory) for tuning.
 - **Document Processor** - Processes documents, creates embeddings, stores vectors in Qdrant and images in Blob Storage
 - **Agent API** - REST API for querying documents using RAG
 - **Agent UI** - Chainlit-based chat interface for interacting with the RAG system
@@ -42,11 +42,6 @@ annotations:
 The infrastructure uses `systempool` for cluster services, `cpupool` for CPU
 workloads, and `gpupool` for GPU workloads. The chart's CPU selectors target
 `cpupool`; `colpaliInference.nodePool` defaults to `gpupool`.
-
-Existing clusters using `gpuinference` must create the replacement GPU pool
-before switching this selector. During migration, retain the old selector with
-`--set colpaliInference.nodePool=gpuinference` when installing or upgrading the
-chart directly. AKS pool names cannot be changed in place.
 
 ## Deploy Everything
 
@@ -111,7 +106,7 @@ queued page images, not total memory across documents/replicas. GPU utilization
 is a model-memory budget, not a throughput percentage: preserve headroom for
 the unquantized vision encoder and validate representative page sizes.
 
-For an **already migrated deployment**, save an override file outside version
+For a deployed release, save an override file outside version
 control, for example `tuning.yaml`:
 
 ```yaml
@@ -139,16 +134,14 @@ helm upgrade colpali-stack .\modules\helm\colpali-stack `
     --reuse-values --values "C:\path\tuning.yaml" --wait --timeout 30m
 ```
 
-This is a tuning command, **not an old-schema migration**. Follow the
-[index migration guide](../../document_processor/README.md#migrating-an-existing-index)
-before changing model/schema or switching collections. Reuse the override file
+Reuse the override file
 on subsequent upgrades; `apply_helm.ps1` does not accept it automatically.
 Rendering/model changes can invalidate indexing fingerprints; changing settings
 does not enqueue existing documents. Reindex explicitly and compare retrieval
 quality as well as throughput, failures, GPU memory, and mixed-query latency.
 Keep the prior model/index and Helm configuration available for rollback.
 
-The Qdrant chart dependency is pinned to **1.17.1**. Retrieval defaults and their
+The Qdrant chart dependency is pinned to **1.19.1**. Retrieval defaults and their
 limits are documented in the [agent guide](../../agent/README.md#implemented-retrieval-defaults);
 not every search parameter is an environment-variable override.
 

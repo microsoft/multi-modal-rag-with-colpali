@@ -1,10 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import asyncio
 import base64
 import os
+import threading
 import unittest
 from io import BytesIO
+from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -259,11 +262,141 @@ class CheckpointQueryTests(unittest.IsolatedAsyncioTestCase):
         for padding_side in ("left", "right"):
             with self.subTest(padding_side=padding_side):
                 processor.tokenizer.padding_side = padding_side
-                response = await inference.generate_embeddings(EmbedRequest(texts=queries))
+                response = await inference.generate_embeddings(
+                    EmbedRequest(texts=queries)
+                )
                 self.assertEqual(
                     [len(rows) for rows in response.embeddings],
                     [len(ids) for ids in expected],
                 )
+
+
+class TokenizerConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def _exercise_contention(
+        self, first_kind, next_kind, *, cancel_first=False, fail_first=False
+    ):
+        inference, client, _ = image_inference()
+        batch = {
+            "input_ids": torch.tensor([[1, 2]]),
+            "attention_mask": torch.ones(1, 2),
+        }
+        client.embed_token_ids = AsyncMock(return_value=[torch.ones(2, 3)])
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        entered = asyncio.Event()
+        waiting = asyncio.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+        tokenizer_lock = inference._tokenizer_lock
+        test = self
+
+        class ObservedLock:
+            def __enter__(self):
+                test.assertNotEqual(threading.get_ident(), loop_thread)
+                if not tokenizer_lock.acquire(blocking=False):
+                    loop.call_soon_threadsafe(waiting.set)
+                    tokenizer_lock.acquire()
+
+            def __exit__(self, *exc):
+                tokenizer_lock.release()
+
+        inference._tokenizer_lock = ObservedLock()
+
+        def tokenize(kind, result):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            calls.append(kind)
+            if len(calls) == 1:
+                loop.call_soon_threadsafe(entered.set)
+                try:
+                    if not release.wait(timeout=10):
+                        raise AssertionError("Test did not release the tokenizer")
+                    if fail_first:
+                        raise ValueError("Tokenizer failure")
+                finally:
+                    finished.set()
+            else:
+                self.assertTrue(finished.is_set(), "Tokenizer calls overlapped")
+            return result
+
+        inference.processor.process_texts = Mock(
+            side_effect=lambda texts: tokenize("text", batch)
+        )
+        image_ids = client.tokenize_chat_image.return_value
+        inference.processor.tokenizer.encode.side_effect = lambda *args, **kwargs: (
+            tokenize("image", image_ids)
+        )
+        requests = {
+            "text": EmbedRequest(texts=["query"]),
+            "image": image_request(["none"]),
+        }
+        tasks = []
+        try:
+            first = asyncio.create_task(
+                inference.generate_embeddings(requests[first_kind])
+            )
+            tasks.append(first)
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            if cancel_first:
+                first.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await first
+                self.assertFalse(finished.is_set())
+                self.assertTrue(tokenizer_lock.locked())
+
+            next_request = asyncio.create_task(
+                inference.generate_embeddings(requests[next_kind])
+            )
+            tasks.append(next_request)
+            # Observe a real worker blocked on the shared lock, not a timed sleep.
+            await asyncio.wait_for(waiting.wait(), timeout=5)
+            self.assertEqual(calls, [first_kind])
+            self.assertFalse(next_request.done())
+            self.assertFalse(finished.is_set())
+
+            release.set()
+            if not cancel_first:
+                if fail_first:
+                    with self.assertRaisesRegex(ValueError, "Tokenizer failure"):
+                        await asyncio.wait_for(first, timeout=5)
+                else:
+                    await asyncio.wait_for(first, timeout=5)
+            response = await asyncio.wait_for(next_request, timeout=5)
+            expected = (
+                client.embed_images.return_value
+                if next_kind == "image"
+                else client.embed_token_ids.return_value
+            )
+            self.assertEqual(response.embeddings, [expected[0].tolist()])
+            self.assertEqual(calls, [first_kind, next_kind])
+            self.assertFalse(tokenizer_lock.locked())
+            if first_kind == "text" and (cancel_first or fail_first):
+                self.assertEqual(
+                    client.embed_token_ids.await_count, int(next_kind == "text")
+                )
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_concurrent_requests_serialize_both_tokenizer_entry_points(self):
+        for first_kind, next_kind in product(("text", "image"), repeat=2):
+            with self.subTest(first=first_kind, next=next_kind):
+                await self._exercise_contention(first_kind, next_kind)
+
+    async def test_cancellation_keeps_lock_until_tokenizer_worker_finishes(self):
+        for first_kind, next_kind in product(("text", "image"), repeat=2):
+            with self.subTest(first=first_kind, next=next_kind):
+                await self._exercise_contention(
+                    first_kind, next_kind, cancel_first=True
+                )
+
+    async def test_tokenizer_errors_release_lock_and_propagate(self):
+        for first_kind in ("text", "image"):
+            with self.subTest(first=first_kind):
+                await self._exercise_contention(first_kind, "text", fail_first=True)
 
 
 class MeanPoolingTests(unittest.TestCase):

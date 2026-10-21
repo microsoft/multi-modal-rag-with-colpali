@@ -10,11 +10,8 @@ below in **PowerShell 7** from the repository root.
 > non-sensitive demo documents. Delete the demo resource group when finished.
 
 > [!IMPORTANT]
-> The default model and indexer now use the same 320-dimensional pooled-vector
-> contract. Existing indexes with the old schema or another model require a new
-> collection and coordinated reindex/cutover; follow the
-> [index migration guide](../modules/document_processor/README.md#migrating-an-existing-index)
-> before upgrading an existing deployment. A fresh deployment creates the new schema.
+> The default model and indexer use the same 320-dimensional pooled-vector
+> contract. A fresh deployment creates the collection with the matching schema.
 
 ## 1. Prerequisites
 

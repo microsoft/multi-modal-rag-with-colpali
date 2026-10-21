@@ -1,7 +1,7 @@
 dependencies:
 - name: qdrant
   repository: https://qdrant.github.io/qdrant-helm
-  version: 1.17.1
+  version: 1.19.1
 - name: reloader
   repository: https://stakater.github.io/stakater-charts
   version: 1.2.1
@@ -14,5 +14,5 @@ dependencies:
 - name: ingress-nginx
   repository: https://kubernetes.github.io/ingress-nginx
   version: 4.8.3
-digest: sha256:fdd3079e2f8a02d17b5054aee5637467524b4f804a747d263607fd660f6cccb0
-generated: "2026-10-20T15:09:19.1515939+01:00"
+digest: sha256:a51ac5e2aa75c96a133583b2b87ffe86aa63bced48d1a92fe59d7a3a9ff5fab0
+generated: "2026-10-21T14:37:28.6779853+01:00"

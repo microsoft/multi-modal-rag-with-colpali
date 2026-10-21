@@ -19,6 +19,7 @@ import base64
 import logging
 import os
 from io import BytesIO
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import torch
@@ -48,6 +49,7 @@ class ColPaliInference:
         vllm_client: Optional[VLLMEmbeddingClient] = None,
     ):
         self.processor: Optional[Any] = None
+        self._tokenizer_lock = Lock()
         self.hierarchical_pooler: Optional[HierarchicalTokenPooler] = None
         self.is_initialized = False
 
@@ -199,6 +201,26 @@ class ColPaliInference:
             raise RuntimeError("Processor must be initialized")
         return self.processor.image_token_id
 
+    def _tokenize_texts(self, texts: List[str]) -> Dict[str, torch.Tensor]:
+        # Lock in the worker: cancelling its await does not stop tokenization.
+        with self._tokenizer_lock:
+            if self.processor is None:
+                raise RuntimeError("Processor must be initialized")
+            return self.processor.process_texts(texts)
+
+    def _tokenize_image_prompt(self, image_token_count: int) -> List[int]:
+        with self._tokenizer_lock:
+            if self.processor is None:
+                raise RuntimeError("Processor must be initialized")
+            prompt = (
+                self.processor.visual_prompt_prefix
+                + self.processor.visual_prompt_suffix
+            ).replace(
+                self.processor.image_token,
+                self.processor.image_token * image_token_count,
+            )
+            return self.processor.tokenizer.encode(prompt, add_special_tokens=False)
+
     @trace_operation("generate_embeddings")
     async def generate_embeddings(self, request: EmbedRequest) -> EmbedResponse:
         """Main async inference entrypoint called by the FastAPI handler."""
@@ -287,12 +309,8 @@ class ColPaliInference:
                     f"{embedding.shape[0]} vs {input_ids.shape[0]}. "
                     "vLLM and shim tokenization are out of sync."
                 )
-            prompt = (
-                self.processor.visual_prompt_prefix
-                + self.processor.visual_prompt_suffix
-            ).replace(self.processor.image_token, self.processor.image_token * expected)
-            reference_ids = self.processor.tokenizer.encode(
-                prompt, add_special_tokens=False
+            reference_ids = await asyncio.to_thread(
+                self._tokenize_image_prompt, expected
             )
             if input_ids.tolist() != reference_ids:
                 raise RuntimeError(
@@ -363,11 +381,7 @@ class ColPaliInference:
             raise ValueError("Request must contain 'texts' field with text content")
 
         logger.debug("Processing %d text queries", len(request.texts))
-        if self.processor is None:
-            raise RuntimeError("Processor must be initialized")
-        batch = await asyncio.to_thread(
-            self.processor.process_texts, list(request.texts)
-        )
+        batch = await asyncio.to_thread(self._tokenize_texts, list(request.texts))
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         if (

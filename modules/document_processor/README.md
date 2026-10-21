@@ -4,6 +4,24 @@ Consumes Azure Blob Created/Deleted events from Service Bus, renders PDF/JPEG/PN
 documents, generates ColQwen embeddings, stores JPEG page images in Blob Storage,
 and writes pages to a single configurable Qdrant collection.
 
+## Dependency compatibility checks
+
+Use Python 3.14 and the committed lockfile:
+
+```shell
+uv sync --locked --no-editable
+uv run --locked python -m unittest discover -s tests -p test_dependency_compatibility.py -v
+```
+
+These offline-service tests cover PDF rendering, PNG/JPEG ingestion, transparent
+image conversion, DPI downsampling, embedding image payloads, invalid image
+rejection, and MSAL assertion signing. They do not call Azure or the inference
+service. Transitive security floors are recorded in
+`tool.uv.constraint-dependencies`.
+
+The [workflow suite](#development) additionally exercises the incremental pipeline
+through retrieval and message settlement.
+
 ## Selected ingestion improvements
 
 This is a selective port of the agreed reusable capabilities, not a wholesale
@@ -152,24 +170,6 @@ Additional root fields are `page_id`, `text_content`, `indexed_at`, `file_hash`,
 `indexed_with_file_hash`, `page_hash`, and `processing_fingerprint`. The agent
 reads this nested contract and deduplicates by document identity plus page number.
 
-### Migrating an existing index
-
-This is a **breaking index format change** from the 128-dimensional schema,
-`mean_pooled_rows`/`mean_pooled_columns` names, flat payloads, old page UUIDs,
-and extensionless image directories. Do not mix formats in one collection.
-
-1. Prepare compatible inference separately from the old reader, or schedule a
-   maintenance window. Do not send queries for old vectors to a different model.
-2. Configure the processor with a new collection name, for example
-   `colpali-documents-v2`, and enqueue BlobCreated events for all source documents.
-3. Wait for successful indexing, then switch the agent's `QDRANT_COLLECTION_NAME`
-   and inference endpoint together. Both components use the shared Helm
-   `qdrantCollectionName` setting: changing that value in a single release is not
-   a staged migration. Keep the old reader/model available separately if
-   uninterrupted reads are required.
-4. Retain the old collection/images until the replacement has been verified.
-   Cleanup is a separate operator action, never an automatic migration.
-
 Initialization rejects incompatible vector names/dimensions. Compatible
 collections have full-precision vector storage moved to disk without deleting
 data or unrelated payload indexes. Existing document IDs/payloads are also
@@ -257,7 +257,7 @@ By default Qdrant runs in memory. To exercise the actual server, including
 optimized binary-vector retrieval, start a disposable local instance:
 
 ```powershell
-docker run --rm -d --name colpali-test-qdrant -p 127.0.0.1:46333:6333 -e QDRANT__TELEMETRY_DISABLED=true qdrant/qdrant:v1.17.1
+docker run --rm -d --name colpali-test-qdrant -p 127.0.0.1:46333:6333 -e QDRANT__TELEMETRY_DISABLED=true qdrant/qdrant:v1.19.1
 $env:TEST_QDRANT_URL = "http://127.0.0.1:46333"
 try {
     uv run --project modules\document_processor --frozen pytest modules\document_processor\tests
@@ -269,7 +269,7 @@ try {
 
 The server URL must be loopback-only. Each workflow owns a uniquely named
 collection and removes only that collection afterward. CI runs these workflows
-against Qdrant 1.17.1, matching the processor client and Helm server versions.
+against Qdrant 1.19.1, matching the processor client and Helm server versions.
 
 For a bounded check against deployed inference, establish an authorized
 loopback port-forward, set `TEST_INFERENCE_URL` to its base URL, and run only
@@ -289,7 +289,7 @@ Service Bus, and Qdrant 1.17.1. That check covered full A4 indexing and image
 retrieval, metadata-only redelivery, a single-page update, transient failure
 and redelivery, malformed-message dead-lettering, and document deletion with
 an empty queue afterward. Test data used a dedicated queue, collection, and
-containers; existing collections were not migrated or modified.
+containers; no existing collections were modified.
 
 Scenarios protect searchable page text/images and distinct citations, incremental
 updates without unnecessary embedding calls, forced reindexing, partial-failure

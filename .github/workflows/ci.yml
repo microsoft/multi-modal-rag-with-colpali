@@ -31,7 +31,7 @@ jobs:
       contents: read
     services:
       qdrant:
-        image: qdrant/qdrant:v1.17.1
+        image: qdrant/qdrant:v1.19.1
         env:
           QDRANT__TELEMETRY_DISABLED: "true"
         ports:

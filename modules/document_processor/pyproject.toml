@@ -16,11 +16,11 @@ dependencies = [
     # Azure AI Search
     "azure-search-documents>=11.4.0",
     # QDRANT vector database
-    "qdrant-client==1.17.1",
+    "qdrant-client==1.19.1",
     # HTTP and API requests
     "requests>=2.31.0",
     # Image processing
-    "Pillow>=10.1.0",
+    "Pillow>=13.0.0",
     "numpy>=1.24.0",
     # PDF processing
     "pymupdf>=1.23.0",
@@ -28,7 +28,7 @@ dependencies = [
     "aiohttp>=3.13.2",
     "tenacity>=9.1.2",
     # Environment variable management
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.2.2",
     # Azure Monitor OpenTelemetry for Application Insights
     "azure-monitor-opentelemetry>=1.6.0",
 ]
@@ -53,6 +53,17 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["../agent/src"]
+
+[tool.uv]
+# MSAL 1.39 permits the cryptography release containing all current fixes.
+constraint-dependencies = [
+    "certifi>=2026.10.19",
+    "cryptography>=50.0.0",
+    "h2>=4.4.1",
+    "hpack>=4.2.0",
+    "idna>=3.15",
+    "msal>=1.39.0",
+]
 
 [build-system]
 requires = ["hatchling"]
