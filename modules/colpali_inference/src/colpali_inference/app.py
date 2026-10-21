@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 inference_service = get_inference_instance()
 vllm_client = get_client()
 
-HEALTH_MODEL_NAME = os.getenv("MODEL_ID", "TomoroAI/tomoro-colqwen3-embed-4b")
+HEALTH_MODEL_NAME = os.getenv("MODEL_ID", "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq")
 VLLM_READY_TIMEOUT_SECONDS = float(os.getenv("VLLM_READY_TIMEOUT_SECONDS", "300"))
 
 
