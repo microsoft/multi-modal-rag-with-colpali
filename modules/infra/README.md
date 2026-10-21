@@ -98,7 +98,7 @@ The following services are deployed to the AKS cluster via Helm charts (see `/mo
 |-----------|------|---------|
 | ColPali Model Download | Init Container | Downloads ColPali models from HuggingFace and persists to Persistent Volume Claims before inference pods start. |
 | ColPali Inference | Deployment | StatefulSet running ColPali inference pods with PVCs for model storage, serving multi-modal embedding API. |
-| Document Processor | Deployment | FastAPI application handling PDF ingestion, image extraction, blob storage upload, and vector indexing workflows. |
+| Document Processor | Deployment | Service Bus consumer handling incremental PDF/image ingestion, bounded rendering, page-image storage, and durable vector indexing. |
 | Qdrant Vector Database | StatefulSet | Stores document embeddings, metadata, and blob storage URLs for similarity search. |
 
 ## Infrastructure Structure

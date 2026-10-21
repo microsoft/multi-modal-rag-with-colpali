@@ -4,6 +4,40 @@ Consumes Azure Blob Created/Deleted events from Service Bus, renders PDF/JPEG/PN
 documents, generates ColQwen embeddings, stores JPEG page images in Blob Storage,
 and writes pages to a single configurable Qdrant collection.
 
+## Selected ingestion improvements
+
+This is a selective port of the agreed reusable capabilities, not a wholesale
+copy of another deployment's APIs, operational policies, or business metadata.
+
+| Capability | Public implementation |
+|---|---|
+| Complete success/failure reporting | Validate every required vector and full page coverage before completion; failures remain retryable or go to the dead-letter queue |
+| Incremental indexing | File SHA-256, versioned JPEG page hashes, metadata/text refresh, and forced reindexing |
+| Interrupted-document resume | Reuse only durable pages tied to the same source bytes and processing fingerprint |
+| Bounded processing | Fixed page workers, bounded render queue, overlapping storage/inference I/O, and drained cancellation |
+| Service Bus resilience | Rolling slots, asynchronous lock renewal, operation/handler deadlines, reconnection, and explicit settlement |
+| Inference resilience | Pooled HTTP connections, strict response validation, HTTP 500/502 batch splitting, and bounded token-limit recovery |
+| Qdrant storage and writes | Full-precision pooled vectors on disk, binary mean vectors in RAM, storage reconciliation, and retried durable writes |
+| Text/image preparation | Markdown with raw-text fallback, independently configured storage/embedding DPI, cropping, and render-pixel bounds |
+| Shared core data contract | 320 dimensions, pooled vector names, nested source/metadata, UUID5 page IDs, and extension-preserving image paths |
+| Inference-port integration | Reference query/image token alignment, contextual-token pooling, request priorities, and cancellation-safe staged-image lifetime |
+
+Intentional adaptations strengthen safety: MuPDF calls are serialized rather
+than rendered concurrently across threads; Qdrant writes use `wait=True`;
+unrelated payload indexes are preserved; and ordinary permanent failures remain
+inspectable in the dead-letter queue rather than being silently completed.
+The shared image cap is configured without editing cached checkpoint files.
+Public AWQ/runtime defaults and the selected PULSAR settings replace the source
+deployment's model/render defaults; equivalent capabilities do not imply
+identical throughput, rendering bytes, or every optional payload field.
+
+Office conversion, business-specific collection routing/metadata, document
+priority lanes/preemption, operational process/backfill APIs, automatic backfill
+or DLQ replay/drop policies, downstream result queues, and completion-filtered
+retrieval are outside this port's selected scope. Generic file signatures,
+operational heartbeat APIs, and priority-specific diagnostics were not selected
+as separate features. Supported PDF/image decoders still validate their inputs.
+
 ## Incremental processing
 
 1. Download the document and compute its SHA-256 file hash.
@@ -37,6 +71,11 @@ does not support concurrent use from multiple threads. Rendering overlaps with
 embedding and storage I/O. A bounded page queue and fixed consumers limit live
 page images; the original document bytes and lightweight per-page state remain
 resident. Cancellation drains rendering before closing its images/documents.
+
+`ProcessingResult.indexed_count` is the total page coverage of the successfully
+completed index, including reused pages; `skipped_pages` reports reuse in this
+attempt. It is not a count of newly purchased embedding calls. Both counts can
+equal the page count after an unchanged-document replay.
 
 ### Relationship to PULSAR
 
@@ -119,13 +158,15 @@ This is a **breaking index format change** from the 128-dimensional schema,
 `mean_pooled_rows`/`mean_pooled_columns` names, flat payloads, old page UUIDs,
 and extensionless image directories. Do not mix formats in one collection.
 
-1. Deploy the compatible inference service.
+1. Prepare compatible inference separately from the old reader, or schedule a
+   maintenance window. Do not send queries for old vectors to a different model.
 2. Configure the processor with a new collection name, for example
    `colpali-documents-v2`, and enqueue BlobCreated events for all source documents.
 3. Wait for successful indexing, then switch the agent's `QDRANT_COLLECTION_NAME`
-   to that collection. Both components use the shared Helm `qdrantCollectionName`
-   setting; use a staged rollout if uninterrupted reads from the old deployment
-   are required.
+   and inference endpoint together. Both components use the shared Helm
+   `qdrantCollectionName` setting: changing that value in a single release is not
+   a staged migration. Keep the old reader/model available separately if
+   uninterrupted reads are required.
 4. Retain the old collection/images until the replacement has been verified.
    Cleanup is a separate operator action, never an automatic migration.
 
@@ -152,6 +193,12 @@ messages before opening their document bytes.
 No output queues, collection routing, automatic backfill, or automatic DLQ
 deletion are configured. Cancellation-resistant cleanup stops the listener
 rather than reusing a slot whose old work may still be active.
+
+The consumer accepts PDF/JPEG/PNG events, but the default infrastructure event
+subscription only forwards `.pdf` paths in the `documents` container. To ingest
+images, explicitly configure an appropriate event filter or send valid
+BlobCreated messages to the configured queue. Re-uploading historical documents
+or manually enqueueing their events is an operator action, not automatic backfill.
 
 ## Configuration
 
@@ -183,6 +230,14 @@ Existing `SERVICE_BUS_NAMESPACE_NAME`, `SERVICE_BUS_QUEUE_NAME`,
 | `SERVICE_BUS_OPERATION_TIMEOUT_SECONDS` | 30 | Receive/settlement/close deadline |
 | `SERVICE_BUS_CANCELLATION_TIMEOUT_SECONDS` | 5 | Cleanup deadline before stopping |
 | `SERVICE_BUS_POISON_DELIVERY_THRESHOLD` | 10 | Park messages above this delivery count |
+
+Concurrency limits are per processor process, not cluster-wide. With the
+default two replicas and `COLPALI_MAX_CONCURRENT=5`, up to ten one-page embedding
+requests can be active across replicas. Increasing `COLPALI_BATCH_SIZE` also
+increases images in flight: the shim sends one upstream pooling call per image,
+not one GPU operation per HTTP batch. See the
+[Helm tuning guide](../helm/colpali-stack/README.md#indexing-and-inference-tuning)
+for the corresponding chart values and override workflow.
 
 ## Development
 

@@ -25,7 +25,7 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
 | Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
-| Rerank | `hierarchical_pooled` | Exact search | Accurate final scoring |
+| Rerank | `hierarchical_pooled` | MaxSim over the candidate union, HNSW disabled | Final scoring with pooled token vectors |
 
 ## Agent Flow
 
@@ -52,6 +52,19 @@ segments: allow indexing/optimization to catch up when validating newly
 ingested data, and check server behavior for small collections. This is not
 document-completion filtering or atomic publication; individual pages can
 become searchable before a whole document is complete.
+
+The retriever reads nested `source` and `metadata` payloads, fetches the stored
+page image from `source.page_image_url`, and deduplicates citations using document
+identity plus page number. `QDRANT_COLLECTION_NAME` must match the indexer's
+collection, and query inference must use the model that produced those vectors.
+Follow the [migration guide](../document_processor/README.md#migrating-an-existing-index)
+when switching schema or model; changing the model without rebuilding its index
+is not a compatible upgrade.
+
+The search settings above are implementation defaults in
+`src/agent/document_retriever.py`; they are not all Helm/environment overrides.
+Callers can set `top_k`. The available deployment controls are listed in the
+[Helm tuning guide](../helm/colpali-stack/README.md#indexing-and-inference-tuning).
 
 ## API Error Responses
 

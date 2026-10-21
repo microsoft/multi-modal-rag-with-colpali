@@ -44,12 +44,21 @@ ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with
 This repository includes model serving, document indexing, and deployment scripts for Azure.
 
 **Components:**
-- Event-driven document processing pipeline (Blob Storage → Event Grid → Service Bus)
+- Event-driven, incremental document processing (Blob Storage → Event Grid → Service Bus), with bounded rendering, hash-based resume, and explicit message settlement
 - Quantized ColQwen3 (`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`) inference service on AKS — vLLM GPU sidecar + CPU pooling shim, with model weights cached on a shared PVC
 - Qdrant vector database for similarity search
 - Complete infrastructure as code (Bicep templates)
 - Docker images and Helm charts for all services
 - Agent API and UI for querying
+
+Indexing and retrieval share a **320-dimensional pooled-vector contract**.
+Existing indexes using the old vector names, payloads, or model must be rebuilt
+into a separate collection before cutover; see the
+[index migration guide](modules/document_processor/README.md#migrating-an-existing-index).
+The [processor guide](modules/document_processor/README.md) describes the selected
+ingestion improvements, and the
+[Helm tuning guide](modules/helm/colpali-stack/README.md#indexing-and-inference-tuning)
+maps concurrency, batching, rendering, and serving controls.
 
 ### Architecture Overview
 
@@ -63,8 +72,8 @@ This repository includes model serving, document indexing, and deployment script
 7. **Vector Storage** → Embeddings stored in Qdrant with metadata and image URLs
 
 #### Query & Retrieval
-8. **User Queries** → Submitted via NGINX Ingress to Qdrant vector database
-9. **Semantic Search** → Vector similarity search returns relevant document sections with image URLs
+8. **User Queries** → Submitted through Agent UI to Agent API, which generates query embeddings
+9. **Semantic Search** → Mean-vector candidate retrieval and hierarchical reranking in Qdrant return relevant pages with image URLs
 10. **Image Retrieval** → Page images fetched from Azure Blob Storage using stored URLs
 11. **RAG Integration** → AI Foundry models use retrieved pages to answer the query
 
@@ -179,8 +188,8 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 ```
 ├── modules/
 │   ├── agent/          # RAG agent application
-│   ├── colpali_inference/   # tomoro-colqwen3-embed-4b inference service (vLLM sidecar + CPU shim)
-│   ├── document_processor/  # FastAPI document processing service
+│   ├── colpali_inference/   # Quantized ColQwen3 inference (vLLM sidecar + CPU shim)
+│   ├── document_processor/  # Incremental Service Bus document consumer
 │   ├── helm/           # Helm charts for AKS deployment
 │   └── infra/          # Bicep infrastructure templates
 └── scripts/            # Deployment automation

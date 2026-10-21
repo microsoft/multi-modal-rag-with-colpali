@@ -10,10 +10,11 @@ below in **PowerShell 7** from the repository root.
 > non-sensitive demo documents. Delete the demo resource group when finished.
 
 > [!IMPORTANT]
-> Default-model indexing currently has a known blocker: the processor creates
-> 128-dimensional Qdrant vectors, but the default model emits 320 dimensions.
-> Resolve that mismatch before provisioning for an end-to-end demo. This guide
-> documents deployment steps; it does not change the model or index configuration.
+> The default model and indexer now use the same 320-dimensional pooled-vector
+> contract. Existing indexes with the old schema or another model require a new
+> collection and coordinated reindex/cutover; follow the
+> [index migration guide](../modules/document_processor/README.md#migrating-an-existing-index)
+> before upgrading an existing deployment. A fresh deployment creates the new schema.
 
 ## 1. Prerequisites
 
@@ -86,6 +87,12 @@ Only the specified environment file and kubeconfig are updated. Without these
 options, the script retains its repository `.env` and default kubeconfig behavior.
 Helm dependencies are restored from the chart lockfile.
 
+For batching, concurrency, DPI, model limits, and GPU memory settings, use the
+[Helm tuning guide](../modules/helm/colpali-stack/README.md#indexing-and-inference-tuning).
+The deployment script's `.env` contains connection settings and image tags; it
+does not automatically forward arbitrary application environment variables.
+Apply tuning through chart values and preserve those overrides on later upgrades.
+
 The scripts provision infrastructure, write connection settings to the ignored
 root `.env` file, build five images in ACR, and deploy the Helm chart. Do not commit
 `.env`. The first deployment can take tens of minutes while nodes start and model
@@ -116,10 +123,17 @@ az storage blob upload `
 kubectl logs -n colpali-stack -l app=colpali-stack-document-processor --tail=50 -f
 ```
 
-Look for `Successfully processed document: sample.pdf (100.0% success rate)`,
+Look for `Document complete: pages=... indexed=... skipped=... duration=...`,
 then press Ctrl+C to stop following logs. Open the printed Agent UI URL and ask
 a specific question answered by your PDF. Expect an answer with a source filename
 and page number; inspect the cited page to confirm it matches.
+
+`indexed` reports the pages present in the completed index, including reused
+pages; `skipped` identifies pages that did not need embedding. An unchanged
+document can therefore report equal nonzero `indexed` and `skipped` counts.
+Completion logs are not an atomic publication or a substitute for checking
+Service Bus settlement. Index optimization may lag ingestion before approximate
+search includes all segments.
 
 ## Troubleshooting
 
@@ -127,9 +141,10 @@ and page number; inspect the cited page to confirm it matches.
 |---------|-------|
 | Deployment fails on names, quota, or permissions | Read the Azure CLI error; choose a unique base name, request the named quota, or obtain resource/role-assignment permissions before retrying. |
 | Pods stay Pending or model startup is slow | Run `kubectl get events -n colpali-stack --sort-by=.metadata.creationTimestamp`; check GPU Spot capacity, node scaling, and volume mounts. |
-| Upload returns 403 | Confirm the active subscription/user and allow time for the deployed Storage Blob Data Contributor role to propagate. |
+| Upload returns 403 | Confirm the active subscription/user and allow time for Storage Blob Data Contributor to propagate. Also inspect the account's network rules and applicable policies; use an approved network path rather than weakening access controls. |
+| Secret mounts fail with `ForbiddenByConnection` | Check Key Vault network access, DNS/private connectivity, and applicable policies. Resolve the intended networking configuration; a pod restart or role assignment alone does not fix a network denial. |
 | Upload succeeds but no answer is found | Check processor logs above. Inspect inference logs with `kubectl logs -n colpali-stack statefulset/colpali-stack-colpali-inference -c vllm --tail=50`. Check the Service Bus queue's dead-letter messages in the portal; after fixing the cause, re-upload the PDF. |
-| Qdrant rejects vectors with a dimension mismatch | The current processor schema uses 128 dimensions, but the default model emits 320. This is a known first-run blocker; the schema/model alignment needs fixing separately before default-model indexing will work. |
+| Qdrant rejects dimensions, names, or legacy payloads | The current contract requires 320-dimensional `hierarchical_pooled`, `mean_row_pooled`, and `mean_column_pooled` vectors. Reindex old data into a new collection and switch writer/reader configuration together; do not delete an existing collection to make deployment succeed. |
 
 ## 4. Clean Up
 

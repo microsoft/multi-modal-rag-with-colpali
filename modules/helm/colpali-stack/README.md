@@ -77,6 +77,81 @@ The chart uses Helm dependencies defined in `Chart.yaml`:
 
 Values are passed from the deployment script via `--set` parameters.
 
+### Indexing and inference tuning
+
+The chart's [values.yaml](values.yaml) is the source of deployment defaults.
+Application environment variables are set on the relevant containers from these
+values; setting a variable in your local shell or adding it to the deployment
+script's `.env` does not automatically change a running pod.
+
+| Chart value | Application environment | Default |
+|---|---|---|
+| `qdrantCollectionName` | `QDRANT_COLLECTION_NAME` in processor and agent | `colpali-documents` |
+| `documentProcessor.replicaCount` | Kubernetes replica count | 2 |
+| `documentProcessor.processing.documentMaxConcurrent` | `DOCUMENT_MAX_CONCURRENT` | 3 per process |
+| `documentProcessor.processing.colpaliMaxConcurrent` | `COLPALI_MAX_CONCURRENT` | 5 per process |
+| `documentProcessor.processing.colpaliBatchSize` | `COLPALI_BATCH_SIZE` | 1 |
+| `documentProcessor.processing.renderBufferMaxPages` | `RENDER_BUFFER_MAX_PAGES` | 4 per document |
+| `documentProcessor.processing.storageDpi` | `COLPALI_STORAGE_DPI` | 500 |
+| `documentProcessor.processing.embeddingDpi` | `COLPALI_EMBEDDING_DPI` | 150 |
+| `documentProcessor.processing.cropWhitespace` | `COLPALI_CROP_WHITESPACE` | `true` |
+| `documentProcessor.processing.maxRenderPixels` | `PDF_MAX_RENDER_PIXELS` | 75,000,000 |
+| `documentProcessor.processing.indexingRevision` | `INDEXING_REVISION` | `"1"` |
+| `colpaliInference.modelId` | `MODEL_ID` in downloader, shim, vLLM, and processor | Quantized ColQwen3 |
+| `colpaliInference.maxImagePixels` | `COLPALI_MAX_IMAGE_PIXELS` in shim, vLLM, and processor | 4,194,304 |
+| `colpaliInference.vllm.maxModelLen` | `VLLM_MAX_MODEL_LEN` | `"3072"` |
+| `colpaliInference.vllm.gpuMemoryUtilization` | `VLLM_GPU_MEMORY_UTILIZATION` | `"0.75"` |
+| `colpaliInference.vllm.cpuOffloadGb` | `VLLM_CPU_OFFLOAD_GB` | `"0"` |
+
+The default two processor replicas allow up to ten one-page inference requests.
+These are per-process limits, not a cluster-wide semaphore. Multi-image shim
+requests fan out into separate vLLM pooling calls, so a larger batch can increase
+GPU work even when the request concurrency is unchanged. The render queue bounds
+queued page images, not total memory across documents/replicas. GPU utilization
+is a model-memory budget, not a throughput percentage: preserve headroom for
+the unquantized vision encoder and validate representative page sizes.
+
+For an **already migrated deployment**, save an override file outside version
+control, for example `tuning.yaml`:
+
+```yaml
+documentProcessor:
+  replicaCount: 2
+  processing:
+    documentMaxConcurrent: 3
+    colpaliMaxConcurrent: 5
+    colpaliBatchSize: 1
+    renderBufferMaxPages: 4
+colpaliInference:
+  maxImagePixels: 4194304
+  vllm:
+    maxModelLen: "3072"
+    gpuMemoryUtilization: "0.75"
+    cpuOffloadGb: "0"
+```
+
+Apply it to the intended release without replacing its saved connection settings
+or image tags:
+
+```powershell
+helm upgrade colpali-stack .\modules\helm\colpali-stack `
+    --namespace colpali-stack --kubeconfig "C:\path\test.kubeconfig" `
+    --reuse-values --values "C:\path\tuning.yaml" --wait --timeout 30m
+```
+
+This is a tuning command, **not an old-schema migration**. Follow the
+[index migration guide](../../document_processor/README.md#migrating-an-existing-index)
+before changing model/schema or switching collections. Reuse the override file
+on subsequent upgrades; `apply_helm.ps1` does not accept it automatically.
+Rendering/model changes can invalidate indexing fingerprints; changing settings
+does not enqueue existing documents. Reindex explicitly and compare retrieval
+quality as well as throughput, failures, GPU memory, and mixed-query latency.
+Keep the prior model/index and Helm configuration available for rollback.
+
+The Qdrant chart dependency is pinned to **1.17.1**. Retrieval defaults and their
+limits are documented in the [agent guide](../../agent/README.md#implemented-retrieval-defaults);
+not every search parameter is an environment-variable override.
+
 ## Architecture Overview
 
 ### Pod Architecture
@@ -105,7 +180,7 @@ graph TB
             end
 
             subgraph "AI Inference"
-                CI[tomoro-colqwen3-embed-4b Inference Pod<br/>vLLM Sidecar + CPU Shim]
+                CI[Quantized ColQwen3 Inference Pod<br/>vLLM Sidecar + CPU Shim]
                 HFPV[Model Storage<br/>Persistent Volume<br/>HuggingFace Cache]
             end
 
