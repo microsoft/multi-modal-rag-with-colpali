@@ -30,7 +30,9 @@ Keep the CUDA 12.9-compatible vLLM 0.32.0 image on driver-570 deployments.
 
 A functional comparison on a 12 GiB A10-12Q with vLLM 0.32.0/CUDA 12.9
 successfully served this checkpoint without CPU weight offloading. Startup
-reported 3.45 GiB model-loading memory and 5.91 GiB available KV-cache memory.
+reported 3.45 GiB model-loading memory and 5.91 GiB available KV-cache memory,
+compared with 8.53 GiB and 0.36 GiB respectively after restoring the original
+checkpoint on the same GPU (managed driver 570.237).
 The original and quantized runs used the same settings: eager execution,
 2,048-token context, 8,192 batched tokens, 16 sequences and 0.89 GPU utilization.
 Both returned finite 320-dimensional vectors for text and all image pooling
