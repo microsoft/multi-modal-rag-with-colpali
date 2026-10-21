@@ -231,3 +231,10 @@ python -m unittest discover -s tests -v
 These checks cover active-token selection, rectangular spatial pooling, invalid
 upstream vectors, tokenizer concurrency and cancellation, and HTTP request parity
 using a local fake vLLM server. They do not require model weights or a GPU.
+
+To also check concurrent query/image tokenization against a checkpoint's actual
+processor, set `COLPALI_TEST_PROCESSOR_PATH` to a trusted local processor snapshot
+before running the suite. This opt-in check loads the checkpoint's processor code
+offline and verifies reference token sequences, query augmentation and padding
+selection with the vLLM boundary mocked; it does not load model weights or prove
+GPU embedding parity.
