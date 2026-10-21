@@ -9,10 +9,6 @@ below in **PowerShell 7** from the repository root.
 > The default Agent UI is publicly accessible over HTTP without sign-in; use only
 > non-sensitive demo documents. Delete the demo resource group when finished.
 
-> [!IMPORTANT]
-> The default model and indexer use the same 320-dimensional pooled-vector
-> contract. A fresh deployment creates the collection with the matching schema.
-
 ## 1. Prerequisites
 
 - Install Git, PowerShell 7, Azure CLI (with Bicep), kubectl, Helm, and Docker.
@@ -138,10 +134,7 @@ search includes all segments.
 |---------|-------|
 | Deployment fails on names, quota, or permissions | Read the Azure CLI error; choose a unique base name, request the named quota, or obtain resource/role-assignment permissions before retrying. |
 | Pods stay Pending or model startup is slow | Run `kubectl get events -n colpali-stack --sort-by=.metadata.creationTimestamp`; check GPU Spot capacity, node scaling, and volume mounts. |
-| Upload returns 403 | Confirm the active subscription/user and allow time for Storage Blob Data Contributor to propagate. Also inspect the account's network rules and applicable policies; use an approved network path rather than weakening access controls. |
-| Secret mounts fail with `ForbiddenByConnection` | Check Key Vault network access, DNS/private connectivity, and applicable policies. Resolve the intended networking configuration; a pod restart or role assignment alone does not fix a network denial. |
 | Upload succeeds but no answer is found | Check processor logs above. Inspect inference logs with `kubectl logs -n colpali-stack statefulset/colpali-stack-colpali-inference -c vllm --tail=50`. Check the Service Bus queue's dead-letter messages in the portal; after fixing the cause, re-upload the PDF. |
-| Qdrant rejects dimensions, names, or legacy payloads | The current contract requires 320-dimensional `hierarchical_pooled`, `mean_row_pooled`, and `mean_column_pooled` vectors. Reindex old data into a new collection and switch writer/reader configuration together; do not delete an existing collection to make deployment succeed. |
 
 ## 4. Clean Up
 

@@ -108,7 +108,7 @@ the embedding image. The shim and vLLM also adopt the production image cap of
 than the much larger DPI-ablation limits. These settings preserve an A4 page at
 150 DPI subject to patch-grid rounding; larger pages may need token-limit
 recovery. They do not establish benchmark parity. See the
-[inference guide](../colpali_inference/README.md#resolution-and-pulsar-comparisons).
+[inference guide](../colpali_inference/README.md#configuration).
 
 Bounded rendering, hash-based skips, durable-page resume, and completion checks
 are implemented here. The paper's

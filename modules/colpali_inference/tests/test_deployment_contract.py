@@ -25,10 +25,11 @@ class DeploymentContractTests(unittest.TestCase):
         command = json.loads(dockerfile.split("ENTRYPOINT ", 1)[1].replace("\\\n", ""))[
             2
         ]
+        # Docker expands PATH during the build; this probe needs the host's PATH.
         defaults = dict(
             line[4:].split("=", 1)
             for line in dockerfile.splitlines()
-            if line.startswith("ENV ")
+            if line.startswith("ENV ") and not line.startswith("ENV PATH=")
         )
         capture = 'vllm() { printf "%s\\n" "$@"; }; ' + command.replace(
             "exec vllm serve", "vllm serve"

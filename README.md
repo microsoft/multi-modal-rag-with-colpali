@@ -35,7 +35,7 @@ ColPali is a multi-modal document understanding model that processes documents a
 
 This implementation ships with **[`TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`](https://huggingface.co/TomoroAI/tomoro-ai-colqwen3-embed-4b-awq)** — a quantized 4B-parameter ColQwen3 model producing 320-dimensional token embeddings. [vLLM](https://github.com/vllm-project/vllm) runs inference on the GPU; a CPU service handles image preparation and pooling.
 
-We chose quantization for performance and memory efficiency on our **12 GB A10 GPU nodes**. You can use the [non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible model with suitable hardware and settings. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for configuration and reindexing guidance.
+We chose quantization for performance and memory efficiency on our **12 GB A10 GPU nodes**. You can use the [non-quantized checkpoint](https://huggingface.co/TomoroAI/tomoro-colqwen3-embed-4b) or another compatible model with suitable hardware and settings. See the **[Inference Service Guide](modules/colpali_inference/README.md)** for configuration and tuning.
 
 ColPali was introduced in the paper ["ColPali: Efficient Document Retrieval with Vision Language Models"](https://arxiv.org/abs/2407.01449) by Manuel Faysse, Hugues Sibille, Tony Wu, et al. (2024).
 

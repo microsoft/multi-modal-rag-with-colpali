@@ -79,7 +79,7 @@ async def test_small_top_k_still_reranks_the_full_200_candidate_pool(stack, opti
                 if index == 200
                 else [rng.uniform(-1, 1) for _ in range(320)]
             ]
-            hierarchical = [            list(query) if index == 199 else [-v for v in query]]
+            hierarchical = [list(query) if index == 199 else [-v for v in query]]
             if index == 199:
                 hierarchical[0][0] += 0.1
         points.append(

@@ -256,9 +256,7 @@ async def stack(monkeypatch, request):
         )
         processor = DocumentProcessor(require_service_bus=False)
         processor.qdrant_index.qdrant_client = (
-            AsyncQdrantClient(
-                url=qdrant_url, api_key=os.getenv("TEST_QDRANT_API_KEY")
-            )
+            AsyncQdrantClient(url=qdrant_url, api_key=os.getenv("TEST_QDRANT_API_KEY"))
             if qdrant_url
             else AsyncQdrantClient(location=":memory:")
         )
