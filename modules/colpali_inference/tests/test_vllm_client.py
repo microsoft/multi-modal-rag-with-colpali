@@ -21,6 +21,77 @@ from colpali_inference.vllm_client import (
 
 
 class VLLMClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnected_callers_cannot_exceed_image_capacity(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        requests = []
+
+        async def handle(request):
+            body = await request.json()
+            path = Path(
+                body["messages"][0]["content"][0]["image_url"]["url"].removeprefix(
+                    "file://"
+                )
+            )
+            requests.append(path)
+            if len(requests) == 1:
+                started.set()
+                await release.wait()
+                with Image.open(path) as staged:
+                    self.assertEqual(staged.size, (16, 16))
+                return web.json_response({"error": "temporary failure"}, status=500)
+            return web.json_response({"data": [{"data": [[1.0, 2.0]]}]})
+
+        app = web.Application()
+        app.router.add_post("/pooling", handle)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.addAsyncCleanup(runner.cleanup)
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict("os.environ", {"LIMIT_CONCURRENCY": "1"}),
+            Image.new("RGB", (16, 16)) as image,
+        ):
+            client = VLLMEmbeddingClient(
+                base_url=f"http://127.0.0.1:{runner.addresses[0][1]}",
+                image_shm_dir=directory,
+            )
+            tasks = []
+            try:
+                first = asyncio.create_task(client.embed_images([image]))
+                tasks.append(first)
+                await asyncio.wait_for(started.wait(), timeout=5)
+                first.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await first
+                # Admission must precede even the bitmap copy, not just dispatch.
+                with patch.object(
+                    image, "copy", side_effect=AssertionError("capacity exhausted")
+                ):
+                    for _ in range(5):
+                        waiting = asyncio.create_task(client.embed_images([image]))
+                        tasks.append(waiting)
+                        await asyncio.sleep(0)
+                        waiting.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await waiting
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(len(list(Path(directory).glob("*.png"))), 1)
+                next_request = asyncio.create_task(client.embed_images([image]))
+                tasks.append(next_request)
+                release.set()
+                result = await asyncio.wait_for(next_request, timeout=5)
+                self.assertEqual(result[0].tolist(), [[1.0, 2.0]])
+                self.assertEqual(len(requests), 2)
+                self.assertEqual(list(Path(directory).iterdir()), [])
+            finally:
+                release.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await client.close()
+
     async def test_transport_failure_retains_files_even_when_sibling_is_rejected(self):
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -110,7 +181,8 @@ class VLLMClientTests(unittest.IsolatedAsyncioTestCase):
             tempfile.TemporaryDirectory() as directory,
             Image.new("RGB", (16, 16)) as image,
         ):
-            client = VLLMEmbeddingClient(image_shm_dir=directory)
+            with patch.dict("os.environ", {"LIMIT_CONCURRENCY": "1"}):
+                client = VLLMEmbeddingClient(image_shm_dir=directory)
             calls = 0
 
             def save(image, path):
@@ -125,6 +197,9 @@ class VLLMClientTests(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.assertRaises(OSError):
                     await client.embed_images([image, image])
+            client._post_pooling = AsyncMock(return_value=[{"data": [[1.0, 2.0]]}])
+            result = await asyncio.wait_for(client.embed_images([image]), timeout=5)
+            self.assertEqual(result[0].tolist(), [[1.0, 2.0]])
             await client.close()
             self.assertEqual(list(Path(directory).iterdir()), [])
 

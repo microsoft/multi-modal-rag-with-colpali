@@ -89,6 +89,7 @@ class ProcessedPage(BaseModel):
     file_hash: str | None = None
     indexed_with_file_hash: str | None = None
     page_hash: str | None = None
+    effective_dpi: int | None = None
     processing_fingerprint: str
     page_count: int
     indexed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

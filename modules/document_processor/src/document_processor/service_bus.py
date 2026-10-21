@@ -48,9 +48,14 @@ async def drain(tasks, timeout: float):
             _, pending = await asyncio.wait(pending, timeout=remaining)
         except asyncio.CancelledError:
             cancelled = True
+    cleanup_error = None
     for task in tasks:
         if not task.cancelled():
-            task.exception()
+            error = task.exception()
+            if isinstance(error, CleanupError):
+                cleanup_error = error
+    if cleanup_error is not None:
+        raise cleanup_error
     if cancelled:
         raise asyncio.CancelledError
 

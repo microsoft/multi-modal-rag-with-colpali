@@ -88,6 +88,8 @@ spec:
           value: {{ .Values.serviceBusQueueName | default "document-processing" }}
         - name: AZURE_CLIENT_ID
           value: {{ .Values.aksIdentityClientId }}
+        - name: AZURE_TOKEN_CREDENTIALS
+          value: "WorkloadIdentityCredential"
         - name: QDRANT_ENDPOINT
           value: "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"
         - name: QDRANT_COLLECTION_NAME

@@ -13,7 +13,7 @@ and writes pages to a single configurable Qdrant collection.
    Only pages proven to come from the same bytes and processing configuration
    can skip rendering.
 4. Render remaining pages incrementally. Versioned `jpeg1:` page hashes allow
-   unchanged pages to retain their existing vectors and images. Extracted text
+   unchanged pages with the same effective DPI to retain their vectors and images. Extracted text
    is still refreshed when it changes, so OCR-only corrections do not retain
    stale text or purchase unnecessary embeddings.
 5. Crop whitespace and upload changed pages at storage resolution while embedding
@@ -96,7 +96,7 @@ Qdrant payloads contain:
 ```
 
 Additional root fields are `page_id`, `text_content`, `indexed_at`, `file_hash`,
-`indexed_with_file_hash`, `page_hash`, and `processing_fingerprint`. The agent
+`indexed_with_file_hash`, `page_hash`, `effective_dpi`, and `processing_fingerprint`. The agent
 reads this nested contract and deduplicates by document identity plus page number.
 
 Initialization rejects incompatible vector names/dimensions. Compatible
@@ -134,6 +134,8 @@ BlobCreated messages to the configured queue.
 Connection settings are `SERVICE_BUS_NAMESPACE_NAME`, `SERVICE_BUS_QUEUE_NAME`,
 `DATA_STORAGE_ACCOUNT_NAME`, `COLPALI_INFERENCE_ENDPOINT`, `QDRANT_ENDPOINT`,
 `QDRANT_API_KEY`, and the managed-identity configuration.
+Azure credentials honor `AZURE_TOKEN_CREDENTIALS`; Helm selects
+`WorkloadIdentityCredential` for the projected AKS token.
 
 | Setting | Default | Purpose |
 |---|---|---|

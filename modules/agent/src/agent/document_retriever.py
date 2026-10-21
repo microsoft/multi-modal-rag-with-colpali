@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
 import aiohttp
-from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
+from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Prefetch, QuantizationSearchParams, SearchParams
@@ -83,11 +83,7 @@ class DocumentRetriever:
         self.endpoint_url = f"{self.endpoint_url}/embeddings"
 
         # Initialize Azure Blob client for fetching images
-        azure_client_id = os.getenv("AZURE_CLIENT_ID")
-        if azure_client_id:
-            self.credential = ManagedIdentityCredential(client_id=azure_client_id)
-        else:
-            self.credential = DefaultAzureCredential(require_envvar=True)
+        self.credential = DefaultAzureCredential(require_envvar=True)
 
         self.blob_service_client = None  # Initialized on first use
 

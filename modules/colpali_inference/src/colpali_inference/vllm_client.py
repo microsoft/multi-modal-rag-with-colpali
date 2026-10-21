@@ -148,6 +148,10 @@ class VLLMEmbeddingClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._session_lock = asyncio.Lock()
         self._detached_tasks: set[asyncio.Task] = set()
+        image_capacity = int(os.getenv("LIMIT_CONCURRENCY", "36"))
+        if image_capacity <= 0:
+            raise ValueError("LIMIT_CONCURRENCY must be positive")
+        self._image_slots = asyncio.Semaphore(image_capacity)
         self._closing = False
 
         logger.info(
@@ -356,23 +360,23 @@ class VLLMEmbeddingClient:
     ) -> T:
         if self._closing:
             raise RuntimeError("Inference client is closing")
+        await self._image_slots.acquire()
         # The detached operation owns its bitmaps even if the caller closes theirs.
         owned_images = []
         try:
+            if self._closing:
+                raise RuntimeError("Inference client is closing")
             for image in images:
                 owned_images.append(image.copy())
         except BaseException:
             for image in owned_images:
                 image.close()
+            self._image_slots.release()
             raise
 
         async def run():
-            try:
-                async with self._stage_images(owned_images) as urls:
-                    return await operation(urls)
-            finally:
-                for image in owned_images:
-                    image.close()
+            async with self._stage_images(owned_images) as urls:
+                return await operation(urls)
 
         task = asyncio.create_task(run())
         self._detached_tasks.add(task)
@@ -380,6 +384,9 @@ class VLLMEmbeddingClient:
 
         def finished(done):
             self._detached_tasks.discard(done)
+            for image in owned_images:
+                image.close()
+            self._image_slots.release()
             if not done.cancelled():
                 error = done.exception()
                 if error is not None and caller_cancelled:

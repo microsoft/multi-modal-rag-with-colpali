@@ -131,6 +131,8 @@ class InferenceEndpoint:
         if payload.get("texts"):
             return web.json_response({"embeddings": vectors})
         response = {}
+        if "none" in payload.get("pooling_type", []):
+            response["embeddings"] = vectors
         if "hierarchical_pooling" in payload.get("pooling_type", []):
             response["hierarchical_pooled_embeddings"] = vectors
         if "mean_pooling" in payload.get("pooling_type", []):

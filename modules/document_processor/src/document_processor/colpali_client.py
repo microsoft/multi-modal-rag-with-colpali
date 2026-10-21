@@ -42,10 +42,15 @@ class ColPaliClient:
         self.batch_size = int(os.getenv("COLPALI_BATCH_SIZE", "1"))
         self.max_concurrent = int(os.getenv("COLPALI_MAX_CONCURRENT", "5"))
         self.embedding_dpi = int(os.getenv("COLPALI_EMBEDDING_DPI", "150"))
+        self.max_image_pixels = int(os.getenv("COLPALI_MAX_IMAGE_PIXELS", "4194304"))
         self.dimension = int(os.getenv("COLPALI_EMBEDDING_DIMENSION", "320"))
         if (
             min(
-                self.batch_size, self.max_concurrent, self.embedding_dpi, self.dimension
+                self.batch_size,
+                self.max_concurrent,
+                self.embedding_dpi,
+                self.dimension,
+                self.max_image_pixels,
             )
             <= 0
         ):
@@ -108,7 +113,13 @@ class ColPaliClient:
     def _validate_response(self, result, count):
         if not isinstance(result, dict):
             raise ValueError("Embedding response must be an object")
-        required = set(VECTOR_FIELDS)
+        required = set()
+        if PoolingType.HIERARCHICAL_POOLING in self.pooling_types:
+            required.add("hierarchical_pooled_embeddings")
+        if PoolingType.MEAN_POOLING in self.pooling_types:
+            required.update(
+                ("mean_row_pooled_embeddings", "mean_column_pooled_embeddings")
+            )
         if PoolingType.NONE in self.pooling_types:
             required.add("embeddings")
         for key in required:
@@ -183,6 +194,11 @@ class ColPaliClient:
                 scale = min(
                     0.8, math.sqrt(error.max_tokens / error.input_tokens) * 0.95
                 )
+                embedding_scale = min(1.0, self.embedding_dpi / page.effective_dpi)
+                embedding_pixels = max(
+                    1, int(page.image_content.width * embedding_scale)
+                ) * max(1, int(page.image_content.height * embedding_scale))
+                scale *= min(1.0, math.sqrt(self.max_image_pixels / embedding_pixels))
                 size = tuple(max(1, int(d * scale)) for d in page.image_content.size)
                 if size == page.image_content.size:
                     raise

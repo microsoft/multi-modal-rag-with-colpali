@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from azure.servicebus.exceptions import ServiceBusError
 
 from document_processor.models import ProcessingResult
 from document_processor.service_bus import CleanupError, ServiceBusConsumer, bounded
@@ -169,3 +170,75 @@ async def test_receive_deadline_reconnects_with_old_resources_closed(monkeypatch
     consumer.operation_timeout = 0.01
     await asyncio.wait_for(consumer.listen(), timeout=5)
     second.close.assert_awaited_once()
+
+
+async def test_receive_failure_cannot_reconnect_after_handler_cleanup_failed(
+    monkeypatch,
+):
+    release, worker_finished = asyncio.Event(), asyncio.Event()
+    shutdown = asyncio.Event()
+    handlers = []
+
+    async def handler(_):
+        handlers.append(asyncio.current_task())
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        return ProcessingResult(success=True, document_id="test")
+
+    class ObservedConsumer(ServiceBusConsumer):
+        async def process_message(self, receiver, item):
+            try:
+                return await super().process_message(receiver, item)
+            finally:
+                worker_finished.set()
+
+    receives = 0
+
+    async def receive(**_):
+        nonlocal receives
+        receives += 1
+        if receives == 1:
+            return [message()]
+        await worker_finished.wait()
+        raise ServiceBusError("Receive failed after handler cleanup timed out")
+
+    receiver = SimpleNamespace(
+        __aenter__=AsyncMock(),
+        close=AsyncMock(),
+        receive_messages=AsyncMock(side_effect=receive),
+        complete_message=AsyncMock(),
+        abandon_message=AsyncMock(),
+    )
+    renewer = SimpleNamespace(register=Mock(), close=AsyncMock())
+    monkeypatch.setattr(
+        "document_processor.service_bus.AutoLockRenewer", lambda **_: renewer
+    )
+    connections = 0
+
+    def connect(**_):
+        nonlocal connections
+        connections += 1
+        if connections > 1:
+            shutdown.set()
+        return receiver
+
+    consumer = ObservedConsumer(
+        SimpleNamespace(get_queue_receiver=connect), "documents", handler, shutdown
+    )
+    consumer.concurrency = 2
+    consumer.handler_timeout = consumer.cancel_timeout = 0.01
+    try:
+        with pytest.raises(CleanupError, match="refusing to reuse"):
+            await asyncio.wait_for(consumer.listen(), timeout=5)
+        assert connections == 1
+        assert not handlers[0].done()
+        receiver.complete_message.assert_not_awaited()
+        receiver.abandon_message.assert_not_awaited()
+        receiver.close.assert_awaited_once()
+        renewer.close.assert_awaited_once()
+    finally:
+        release.set()
+        await asyncio.gather(*handlers)

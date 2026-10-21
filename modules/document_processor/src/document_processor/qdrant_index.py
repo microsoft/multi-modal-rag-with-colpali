@@ -144,6 +144,7 @@ class QdrantIndex:
             "file_hash": page.file_hash,
             "indexed_with_file_hash": page.indexed_with_file_hash,
             "page_hash": page.page_hash,
+            "effective_dpi": page.effective_dpi,
             "processing_fingerprint": page.processing_fingerprint,
             "source": {
                 **page.source.model_dump(),

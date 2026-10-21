@@ -16,7 +16,7 @@ from conftest import make_pdf, source_url
 from PIL import Image
 from qdrant_client import models
 
-from document_processor.models import DocumentPage
+from document_processor.models import DocumentPage, PoolingType
 
 
 @pytest.mark.parametrize(
@@ -259,6 +259,79 @@ async def test_force_reindex_replaces_existing_pages_without_duplicates(stack):
     assert len(await stack.retriever.search_documents("report")) == 2
 
 
+async def test_dpi_only_image_update_replaces_vectors_and_replay_reuses_them(stack):
+    async def resolution_embedding(payload):
+        if payload.get("images"):
+            width = stack.inference.image_batches[-1][0][0]
+            vector = [1.0, width / 1000] + [0.0] * 318
+            return web.json_response(
+                {
+                    key: [[vector]]
+                    for key in (
+                        "hierarchical_pooled_embeddings",
+                        "mean_row_pooled_embeddings",
+                        "mean_column_pooled_embeddings",
+                    )
+                }
+            )
+
+    stack.inference.reply = resolution_embedding
+    event = stack.event("scan.png")
+    points = []
+    with Image.new("RGB", (1000, 1000), "navy") as image:
+        for dpi in (300, 150):
+            with io.BytesIO() as buffer:
+                image.save(buffer, format="PNG", dpi=(dpi, dpi))
+                stack.blobs.put("scan.png", buffer.getvalue())
+            assert (await stack.deliver(event)).settlements == [("complete", {})]
+            points.append((await stack.points())[0])
+    before, after = points
+    assert stack.inference.image_batches == [[(500, 500)], [(1000, 1000)]]
+    assert before.id == after.id
+    assert before.payload["page_hash"] == after.payload["page_hash"]
+    assert before.vector != after.vector
+    assert before.payload["effective_dpi"] == 300
+    assert after.payload["effective_dpi"] == 150
+    assert (await stack.deliver(event)).settlements == [("complete", {})]
+    assert len(stack.inference.image_batches) == 2
+    chunks = await stack.retriever.search_documents("scan")
+    assert len(chunks) == 1
+    with Image.open(io.BytesIO(base64.b64decode(chunks[0].page_image_base64))) as image:
+        assert image.size == (1000, 1000)
+
+
+@pytest.mark.parametrize(
+    "pooling,fields",
+    [
+        ([PoolingType.NONE], {"embeddings"}),
+        (
+            [PoolingType.MEAN_POOLING],
+            {"mean_row_pooled_embeddings", "mean_column_pooled_embeddings"},
+        ),
+        ([PoolingType.HIERARCHICAL_POOLING], {"hierarchical_pooled_embeddings"}),
+        (
+            list(PoolingType),
+            {
+                "embeddings",
+                "mean_row_pooled_embeddings",
+                "mean_column_pooled_embeddings",
+                "hierarchical_pooled_embeddings",
+            },
+        ),
+    ],
+)
+async def test_requested_pooling_representations_succeed_without_retries(
+    stack, pooling, fields
+):
+    stack.processor.colpali_client.pooling_types = pooling
+    with Image.new("RGB", (16, 16), "red") as image:
+        page = DocumentPage(filename="page.png", image_content=image)
+        result = await stack.processor.colpali_client.generate_embeddings([page, page])
+    assert set(result) == fields
+    assert all(len(batch) == 2 and len(batch[0][0]) == 320 for batch in result.values())
+    assert len(stack.inference.image_batches) == 1
+
+
 async def test_temporary_inference_failure_redelivers_and_resumes_durable_pages(stack):
     event = stack.add_pdf("report.pdf", "First page", "Second page", "Third page")
 
@@ -363,6 +436,45 @@ async def test_token_limit_recovery_preserves_readable_storage_images(stack, exh
         assert sizes[-1][0] <= 200
         assert message.settlements == [("complete", {})]
         assert len(await stack.retriever.search_documents("original resolution")) == 1
+
+
+@pytest.mark.parametrize("stack", [{"COLPALI_STORAGE_DPI": "150"}], indirect=True)
+async def test_a1_token_recovery_reduces_below_inference_cap_without_shrinking_citation(
+    stack,
+):
+    with fitz.open() as document:
+        document.new_page(width=1684, height=2384).insert_text((40, 60), "A1 drawing")
+        stack.blobs.put("drawing.pdf", document.tobytes())
+
+    async def enforce_capped_token_grid(payload):
+        if not payload.get("images"):
+            return None
+        width, height = stack.inference.image_batches[-1][0]
+        tokens = min(width * height, 4194304) // 1024 + 11
+        if tokens > 3072:
+            return web.json_response(
+                {
+                    "detail": {
+                        "code": "embedding_token_limit_exceeded",
+                        "input_tokens": tokens,
+                        "max_tokens": 3072,
+                    }
+                },
+                status=422,
+            )
+
+    stack.inference.reply = enforce_capped_token_grid
+    assert (await stack.deliver(stack.event("drawing.pdf"))).settlements == [
+        ("complete", {})
+    ]
+    sizes = [batch[0] for batch in stack.inference.image_batches]
+    assert sizes[0][0] * sizes[0][1] > 17000000
+    assert len(sizes) == 2
+    assert sizes[-1][0] * sizes[-1][1] < 3072 * 1024
+    chunks = await stack.retriever.search_documents("A1 drawing")
+    assert len(chunks) == 1
+    with Image.open(io.BytesIO(base64.b64decode(chunks[0].page_image_base64))) as image:
+        assert image.size == sizes[0]
 
 
 async def test_source_replacement_mid_processing_cannot_be_marked_complete(stack):

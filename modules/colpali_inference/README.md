@@ -15,6 +15,9 @@ remain available until upstream reads finish; interrupted requests leave cleanup
 to the age-based janitor. Keep its age above the longest request timeout.
 Tokenizer access is serialized per shim worker, including through cancellation;
 GPU requests remain concurrent.
+Image operations acquire a per-worker slot before copying or staging images.
+The `LIMIT_CONCURRENCY` bound includes detached operations until they finish,
+so disconnecting an HTTP caller does not release image-operation capacity.
 
 ## Runtime and deployment
 

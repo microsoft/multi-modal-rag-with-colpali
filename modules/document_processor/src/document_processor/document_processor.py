@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import fitz
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
+from azure.identity.aio import DefaultAzureCredential
 from azure.servicebus.aio import ServiceBusClient
 from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import BlobServiceClient
@@ -62,12 +62,7 @@ class DocumentProcessor:
             raise ValueError(
                 "SERVICE_BUS_NAMESPACE_NAME and DATA_STORAGE_ACCOUNT_NAME are required"
             )
-        client_id = os.getenv("AZURE_CLIENT_ID")
-        self.credential = (
-            ManagedIdentityCredential(client_id=client_id)
-            if client_id
-            else DefaultAzureCredential()
-        )
+        self.credential = DefaultAzureCredential()
         self.shutdown_event = shutdown_event or asyncio.Event()
         self.delete_existing_pages = delete_existing_pages
         self.service_bus_client = None
@@ -97,6 +92,7 @@ class DocumentProcessor:
         self._blob_semaphore = asyncio.Semaphore(blob_concurrency)
         configuration = {
             "contract": 2,
+            "page_reuse": 2,
             "revision": os.getenv("INDEXING_REVISION", "1"),
             "model": os.getenv("MODEL_ID", "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"),
             "dimension": self.qdrant_index.dimension,
@@ -527,9 +523,11 @@ class DocumentProcessor:
                 page_hash = await run_cpu(compute_page_hash, page.image_content)
                 hashes[page.page_number] = page_hash
                 previous = matching.get(page.page_number, {})
-                if previous.get("page_hash") == page_hash and previous.get(
-                    "source", {}
-                ).get("page_image_url"):
+                if (
+                    previous.get("page_hash") == page_hash
+                    and previous.get("effective_dpi") == page.effective_dpi
+                    and previous.get("source", {}).get("page_image_url")
+                ):
                     if previous.get("text_content") != page.text_content:
                         await self.qdrant_index.update_page_text(
                             source.document_id, page.page_number, page.text_content
@@ -579,6 +577,7 @@ class DocumentProcessor:
                     },
                     indexed_with_file_hash=file_hash,
                     page_hash=hashes[page.page_number],
+                    effective_dpi=page.effective_dpi,
                     processing_fingerprint=self.fingerprint,
                     page_count=count,
                 )
