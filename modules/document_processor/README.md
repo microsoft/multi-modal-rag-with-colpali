@@ -2,6 +2,21 @@
 
 This service converts PDFs into page images and ColPali embeddings for visual document search. It stores images in Azure Blob Storage and indexes embeddings with metadata in Qdrant.
 
+## Dependency compatibility checks
+
+Use Python 3.14 and the committed lockfile:
+
+```shell
+uv sync --locked --no-editable
+uv run --locked python -m unittest discover -s tests -v
+```
+
+These offline-service tests cover PDF rendering, PNG/JPEG ingestion, transparent
+image conversion, DPI downsampling, embedding image payloads, invalid image
+rejection, and MSAL assertion signing. They do not call Azure or the inference
+service. Transitive security floors are recorded in
+`tool.uv.constraint-dependencies`.
+
 ## Architecture Overview
 
 Service Bus-driven pipeline for processing documents:

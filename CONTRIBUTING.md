@@ -48,7 +48,7 @@ All pull requests are automatically checked by GitHub Actions to ensure these st
 
 ### Tests
 
-Install Python 3.12 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Install Python 3.14 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 Run these commands from the repository root in PowerShell:
 
 ```powershell

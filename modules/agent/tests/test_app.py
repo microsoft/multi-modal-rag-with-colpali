@@ -4,13 +4,15 @@
 import json
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent import app as api
+with patch("agent.setup_logging.configure_telemetry"):
+    from agent import app as api
+
 from agent.agent import ColPaliAgent
 from agent.models import DocumentChunk
 
