@@ -82,7 +82,13 @@ collection, and query inference must use the model that produced those vectors.
 
 The search settings above are implementation defaults in
 `src/agent/document_retriever.py`; they are not all Helm/environment overrides.
-Callers can set `top_k`. The available deployment controls are listed in the
+Callers can set `top_k`, which controls the final result count, not the prefetch
+size. For `top_k=5`, each query retrieves up to 200 candidate pages from each
+mean-vector index, reranks their union (up to 400 distinct pages) using
+`hierarchical_pooled`, and returns the best five. A candidate is a page/Qdrant
+point, not an individual token vector or an entire document. Each prefetch uses
+`max(200, top_k)`, so it grows only when more than 200 final results are requested.
+The available deployment controls are listed in the
 [Helm tuning guide](../helm/colpali-stack/README.md#indexing-and-inference-tuning).
 
 ## API Error Responses
