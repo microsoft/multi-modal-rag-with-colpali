@@ -6,7 +6,7 @@ authors = [
     {name = "Ben Constable", email = "benconstable@microsoft.com"},
     {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "pydantic>=2.0.0",
     # Azure services
@@ -20,7 +20,7 @@ dependencies = [
     # HTTP and API requests
     "requests>=2.31.0",
     # Image processing
-    "Pillow>=12.3.0",
+    "Pillow>=13.0.0",
     "numpy>=1.24.0",
     # PDF processing
     "pymupdf>=1.23.0",
@@ -35,7 +35,7 @@ readme = "README.md"
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
@@ -49,6 +49,7 @@ dev = [
 [tool.uv]
 # MSAL 1.39 permits the cryptography release containing all current fixes.
 constraint-dependencies = [
+    "certifi>=2026.10.19",
     "cryptography>=50.0.0",
     "h2>=4.4.1",
     "hpack>=4.2.0",

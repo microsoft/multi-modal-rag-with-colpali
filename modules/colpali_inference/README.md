@@ -16,7 +16,7 @@ client ───▶│ colpali-inference  (CPU shim, FastAPI/uvicorn, port 8000)
           │  │  • calls vLLM /pooling  (augmented query IDs or image prompt)   │
           │  │  • hierarchical / mean-row / mean-col pooling on CPU            │
           │  │                                                                 │
-          │  └── localhost:8001 ──▶ vllm  (GPU, vllm/vllm-openai:v0.19.1)        │
+          │  └── localhost:8001 ──▶ vllm  (GPU, vLLM 0.32.0 / CUDA 12.9)       │
           │                            • loads model from /mnt/models/offline   │
           │                            • --served-model-name = MODEL_ID         │
           │                            • reads image bytes from file:///shm/... │
@@ -40,7 +40,50 @@ Running FastAPI and the model together can load a separate model copy per worker
 
 1. **`model-downloader` (initContainer)** — Runs `python -m colpali_inference.app download`. Pulls `MODEL_ID` from HuggingFace Hub into `${MODEL_DIRECTORY_PATH}/$(basename MODEL_ID)` on the shared PVC. Blocks pod startup if the download fails.
 2. **`colpali-inference` (CPU shim)** — FastAPI app on port `8000`. Reads `VLLM_BASE_URL=http://localhost:8001`, `MODEL_ID`, `IMAGE_SHM_DIR=/shm`. Sets `HF_HUB_OFFLINE=1` to use weights from the PVC without contacting HuggingFace Hub.
-3. **`vllm` (GPU sidecar)** — `vllm/vllm-openai:v0.19.1`. Launch flags (`--task embed`, `--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
+3. **`vllm` (GPU sidecar)** — vLLM `0.32.0+cu129` on Python 3.14, installed on `mcr.microsoft.com/azureml/openmpi5.0-cuda12.8-ubuntu24.04:20261018.v1`. Launch flags (`--served-model-name`, `--max-model-len`, `--gpu-memory-utilization`, `--allowed-local-media-path /shm`, etc.) are baked into `Dockerfile.vllm`'s ENTRYPOINT so the Helm chart only injects env overrides. `--served-model-name` is set to `MODEL_ID` so requests carrying `{"model": "TomoroAI/..."}` resolve correctly against weights stored under the on-disk basename.
+
+### Runtime upgrade requirements
+
+Both containers use Python 3.14, the newest minor version supported by vLLM
+0.32.0 (`>=3.11,<3.15`). The shim's PyTorch, Transformers, ColPali engine, and
+Hugging Face Hub dependencies have also been upgraded for Python 3.14.
+
+The GPU image no longer inherits the upstream vLLM container: it installs the
+pinned CUDA 12.9 vLLM wheel in `/opt/vllm` on an MCR CUDA 12.8 base, selecting
+PyTorch from its matching `cu129` index. The build checks the PyTorch CUDA
+version to reject accidental mixing with CUDA 13. The CPU image uses the
+MCR Ubuntu 24.04 mirror. Both install Python using pinned uv 0.13.1.
+
+The CUDA 12 variant preserves AKS-managed drivers on the A10 node pool instead
+of introducing self-managed GRID drivers. Verify the actual driver with
+`nvidia-smi` and run inference on the target GPU before rollout; CUDA minor
+compatibility alone is not sufficient assurance for JIT/PTX kernels. The
+application build does not install or upgrade host drivers.
+
+Validated on an AKS NVIDIA A10-12Q (12 GiB) with managed driver 570.237:
+Python 3.14.8, vLLM 0.32.0, PyTorch 2.13.0+cu129, and shim Transformers 5.19.0.
+The default unquantized ColQwen3-4B model passed live text and synthetic-image
+embedding checks, including all pooling modes, without CPU weight offload.
+This is a functional compatibility check, not a throughput or retrieval-quality
+benchmark, and does not replace validation on other GPUs or drivers.
+
+Before production rollout, run the existing regression tests, then validate
+model loading, `/health`, image and text `/pooling`, `/tokenize`, all pooling
+modes, and retrieval quality on the target GPU and checkpoint. The unit tests
+do not exercise CUDA or download model weights.
+
+For an opt-in live check against the default 320-dimensional ColQwen3 model,
+forward the shim's port and run from this module directory:
+
+```powershell
+$env:COLPALI_TEST_BASE_URL = "http://127.0.0.1:18080"
+uv run --locked python -m unittest discover -s tests -p test_runtime_integration.py -v
+Remove-Item Env:COLPALI_TEST_BASE_URL
+```
+
+These checks exercise real text and synthetic-image inference, all pooling
+modes, finite 320-dimensional vectors, and normalization of raw embeddings.
+They are skipped by the normal test suite unless the URL is set.
 
 ### Why a StatefulSet (not Deployment)?
 

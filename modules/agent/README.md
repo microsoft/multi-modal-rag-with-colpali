@@ -11,7 +11,7 @@ The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredenti
 
 ## Dependency compatibility checks
 
-Use Python 3.12 and the committed lockfile:
+Use Python 3.14 and the committed lockfile:
 
 ```shell
 uv sync --locked --no-editable --no-dev --group test
@@ -23,9 +23,8 @@ request validation, CORS, OpenTelemetry middleware, the Chainlit UI and Engine.I
 handshake, MSAL assertion signing, and the real agent's framework client.
 Telemetry setup is patched before importing the API, including when an
 Application Insights connection string is configured. They do not call Azure or
-the inference service. The project's
-prerelease policy matches both Dockerfiles, preventing `--locked` installs from
-re-resolving with a different policy. Transitive security floors are recorded in
+the inference service. Prerelease handling is configured in `pyproject.toml` for
+both local and container installs. Transitive security floors are recorded in
 `tool.uv.constraint-dependencies`.
 
 Only `agent-framework-core` is required for the chat types and

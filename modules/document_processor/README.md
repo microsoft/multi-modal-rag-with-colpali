@@ -4,7 +4,7 @@ This service converts PDFs into page images and ColPali embeddings for visual do
 
 ## Dependency compatibility checks
 
-Use Python 3.12 and the committed lockfile:
+Use Python 3.14 and the committed lockfile:
 
 ```shell
 uv sync --locked --no-editable

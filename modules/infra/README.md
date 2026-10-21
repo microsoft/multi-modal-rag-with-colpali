@@ -7,6 +7,7 @@ This creates **only** the Azure services. The ColPali applications (model infere
 > [!IMPORTANT]
 >
 > - The GPU node pool is configured to run on Azure Spot VMs for cost-effective testing. For production environments, provision a regular (non-spot) GPU node pool to avoid eviction-related downtime.
+> - The vLLM 0.32.0 image uses the CUDA 12.9 variant to retain AKS-managed A10 drivers. Verify driver compatibility and real GPU inference before application deployment. Container builds and Helm upgrades do not upgrade host drivers; see the [runtime upgrade requirements](../colpali_inference/README.md#runtime-upgrade-requirements).
 
 ```mermaid
 %%{init: {
