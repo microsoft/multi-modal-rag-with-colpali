@@ -4,7 +4,7 @@
 
 > [!TIP]
 >
-> For a write-up of a production deployment, with full ablation studies comparing design choices, see **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**.
+> This demo/accelerator shares foundations and some code with the production deployment described in **[PULSAR: Pooled Unified Late-Interaction Search and Retrieval for Enterprise Visual Document RAG](https://arxiv.org/abs/2608.28572)**. It is not an exact copy or the fully tuned production setup, which had substantially more advanced retrieval and security capabilities. Comparable retrieval quality, throughput, or latency is not guaranteed; you must evaluate and tune the system for your own workload and environment.
 
 > [!WARNING]
 >
