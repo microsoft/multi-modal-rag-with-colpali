@@ -200,12 +200,35 @@ Two techniques make these token-level embeddings practical at scale:
 
 ## Quick Start
 
-See **[scripts/README.md](scripts/README.md)** for deployment instructions.
+Follow the **[first-run guide](scripts/README.md)** to deploy, upload a PDF, ask a
+question, and clean up the resources. It includes prerequisites and common failures.
 
-### Prerequisites
-- Azure subscription
-- Azure CLI
-- Python 3.11+
+Deployment requires an Azure subscription, PowerShell 7, Azure CLI, kubectl, Helm,
+and Docker. Local Python development uses Python 3.14 and uv.
+
+### Container runtimes
+
+All application Dockerfiles use base images from Microsoft Container Registry
+(`mcr.microsoft.com`). The agent API/UI, document processor, and inference shim
+use the MCR Ubuntu 24.04 mirror; the GPU sidecar uses the Azure ML CUDA 12.8
+Ubuntu 24.04 image with matching CUDA 12.9 vLLM/PyTorch wheels. Each installs
+Python 3.14 with pinned uv 0.13.1, rather than
+depending on the older Python bundled with the base OS. uv is downloaded from
+Astral; Python packages come from PyPI, PyTorch's CUDA index, and the official
+vLLM GitHub release; no build stages pull images
+from Docker Hub or GHCR.
+
+The Python minor version is aligned across `.python-version`, `pyproject.toml`,
+the dependency locks, containers, and CI. Rebuild images with fresh base pulls
+to receive OS updates. Python patch updates require a uv release that includes
+the newer interpreter.
+
+> [!IMPORTANT]
+>
+> The vLLM 0.32.0 sidecar deliberately uses the CUDA 12.9 variant to retain
+> AKS-managed A10 drivers. Do not substitute the default CUDA 13 wheel without
+> validating the node driver, JIT kernels, and inference. Rebuilding containers
+> does not upgrade the host driver. See the [inference guide](modules/colpali_inference/README.md).
 
 ## Contributing
 

@@ -162,8 +162,7 @@ colpaliInference:
   imageTag: "latest"
 
   # GPU node pool for inference workloads
-  # Set to "gpuinference" to use the new dedicated inference pool
-  nodePool: "gpuinference"
+  nodePool: "gpupool"
 
   # Model configuration
   modelId: "TomoroAI/tomoro-colqwen3-embed-4b"

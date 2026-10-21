@@ -7,7 +7,7 @@ authors = [
     {name = "Nina Stijepovic", email = "nstijepovic@microsoft.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     # FastAPI web framework
     "fastapi>=0.121.0",
@@ -15,14 +15,14 @@ dependencies = [
     "pydantic>=2.0.0",
     # CPU-only ML deps (model serving lives in the vLLM sidecar — the shim
     # only tokenizes and runs pooling math on CPU).
-    "torch>=2.13.0,<2.14.0",
-    "transformers>=5.17.0,<5.18.0",
+    "torch==2.13.0",
+    "transformers>=5.17.0,<5.20.0",
     # colpali-engine is kept solely for HierarchicalTokenPooler. No model
     # loading from this package any more.
     "colpali-engine==0.3.18",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
     "numpy==2.3.4",
-    "huggingface-hub>=1.5.0,<2.0",
+    "huggingface-hub>=1.0.0,<2.0.0",
     # HTTP client and utilities
     "aiohttp>=3.14.4",
     "aiofiles>=23.2.1",
@@ -40,8 +40,11 @@ dependencies = [
 prerelease = "allow"
 # Security floors for transitive runtime and development dependencies.
 constraint-dependencies = [
+    "certifi>=2026.10.19",
     "cryptography>=50.0.0",
+    "fsspec>=2026.6.0",
     "msal>=1.39.0",
+    "multidict>=6.9.1",
     "oauthlib>=4.0.0",
     "pyjwt>=2.15.0",
     "setuptools>=83.0.0",
@@ -52,7 +55,7 @@ constraint-dependencies = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
@@ -61,5 +64,5 @@ ignore = ["E501"]
 [dependency-groups]
 dev = [
     "pre-commit==4.2.0",
-    "ruff==0.11.7",
+    "ruff==0.14.3",
 ]

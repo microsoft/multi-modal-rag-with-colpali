@@ -81,12 +81,6 @@ module aiFoundryModule 'modules/aiFoundry.bicep' = {
   }
 }
 
-// User-assigned identity for workload identity (pods accessing Azure resources)
-resource workloadIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: workloadIdentityName
-  location: location
-}
-
 module aksModule 'modules/aks.bicep' = {
   name: 'aksDeployment'
   params: {
@@ -101,7 +95,8 @@ module aksModule 'modules/aks.bicep' = {
 module aksFederatedIdentityModule 'modules/aksFederatedIdentity.bicep' = {
   name: 'aksFederatedIdentityDeployment'
   params: {
-    aksIdentityName: workloadIdentity.name
+    aksIdentityName: workloadIdentityName
+    location: location
     oidcIssuerUrl: aksModule.outputs.oidcIssuerUrl
     namespace: 'colpali-stack'
     serviceAccountName: 'colpali-stack-sa'
@@ -125,7 +120,7 @@ module roleAssignmentsModule 'modules/roleAssignments.bicep' = {
     containerRegistryId: acrModule.outputs.acrId
     userObjectId: userObjectId
     aksKubeletIdentityPrincipalId: aksModule.outputs.kubeletIdentityObjectId
-    aksWorkloadPrincipalId: workloadIdentity.properties.principalId
+    aksWorkloadPrincipalId: aksFederatedIdentityModule.outputs.principalId
     serviceBusNamespaceId: serviceBusModule.outputs.serviceBusNamespaceId
     keyVaultId: keyVaultModule.outputs.keyVaultId
     deployRoleAssignments: deployRoleAssignments
@@ -184,7 +179,7 @@ output aksClusterId string = aksModule.outputs.aksClusterId
 output aksClusterFqdn string = aksModule.outputs.aksClusterFqdn
 
 @description('The workload identity client ID for AKS pods')
-output workloadIdentityClientId string = workloadIdentity.properties.clientId
+output workloadIdentityClientId string = aksFederatedIdentityModule.outputs.clientId
 @description('The kubelet identity client ID for AKS node access')
 output aksKubeletIdentityClientId string = aksModule.outputs.kubeletIdentityClientId
 
