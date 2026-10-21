@@ -15,32 +15,34 @@ param logAnalyticsWorkspaceId string
 @description('The resource ID of the Azure Monitor workspace for Prometheus')
 param azureMonitorWorkspaceId string
 
-@description('The Kubernetes version for AKS')
-param kubernetesVersion string = '1.34.0'
+@description('Optional Kubernetes version for an explicit cluster and node-pool upgrade. Leave null to avoid reapplying a stale patch version after automatic upgrades.')
+param kubernetesVersion string?
 
-// Internal implementation details
-var aksNodePoolName = 'system'
-
-resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
-  name: aksClusterName
-  location: location
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
+module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.14.0' = {
+  name: 'aksCluster'
+  params: {
+    name: aksClusterName
+    location: location
+    enableTelemetry: false
+    managedIdentities: {
+      systemAssigned: true
+    }
+    skuTier: 'Free'
+    nodeResourceGroup: 'MC_${resourceGroup().name}_${aksClusterName}_${location}'
+    publicNetworkAccess: 'Enabled'
+    disableLocalAccounts: false
     kubernetesVersion: kubernetesVersion
     dnsPrefix: aksClusterName
-    oidcIssuerProfile: {
-      enabled: true
-    }
+    enableOidcIssuerProfile: true
     securityProfile: {
       workloadIdentity: {
         enabled: true
       }
     }
-    agentPoolProfiles: [
+    primaryAgentPoolProfiles: [
       {
-        name: aksNodePoolName
+        name: 'systempool'
+        availabilityZones: []
         count: 2
         vmSize: 'Standard_D4s_v3'
         osType: 'Linux'
@@ -52,22 +54,56 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
         maxCount: 5
       }
     ]
-    networkProfile: {
-      networkPlugin: 'azure'
-      networkPolicy: 'azure'
-    }
-    addonProfiles: {
-      omsAgent: {
-        enabled: false
-      }
-      azureKeyvaultSecretsProvider: {
-        enabled: true
-        config: {
-          enableSecretRotation: 'true'
-          rotationPollInterval: '2m'
+    agentPools: [
+      {
+        name: 'cpupool'
+        availabilityZones: []
+        count: 0
+        vmSize: 'Standard_D8s_v3'
+        osType: 'Linux'
+        mode: 'User'
+        osSKU: 'Ubuntu'
+        osDiskType: 'Managed'
+        enableAutoScaling: true
+        minCount: 0
+        maxCount: 5
+        nodeLabels: {
+          agentpool: 'cpupool'
+          workload: 'cpu'
         }
+        nodeTaints: []
       }
-    }
+      {
+        name: 'gpupool'
+        availabilityZones: []
+        count: 0
+        vmSize: 'standard_nv18ads_a10_v5'
+        osType: 'Linux'
+        mode: 'User'
+        osSKU: 'Ubuntu'
+        osDiskType: 'Managed'
+        enableAutoScaling: true
+        minCount: 0
+        maxCount: 3
+        scaleSetPriority: 'Spot'
+        scaleSetEvictionPolicy: 'Delete'
+        spotMaxPrice: -1
+        nodeLabels: {
+          agentpool: 'gpupool'
+          workload: 'gpu'
+          sku: 'gpu'
+        }
+        nodeTaints: [
+          'sku=gpu:NoSchedule'
+        ]
+      }
+    ]
+    networkPlugin: 'azure'
+    networkPolicy: 'azure'
+    omsAgentEnabled: false
+    azurePolicyEnabled: false
+    enableKeyvaultSecretsProvider: true
+    enableSecretRotation: true
     autoUpgradeProfile: {
       upgradeChannel: 'patch'
     }
@@ -88,202 +124,156 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-03-01' = {
         }
       }
     }
-    metricsProfile: {
-      costAnalysis: {
-        enabled: false
-      }
-    }
+    costAnalysisEnabled: false
     workloadAutoScalerProfile: {
       keda: {
         enabled: false
       }
     }
-    storageProfile: {
-      blobCSIDriver: {
-        enabled: true
+    enableStorageProfileBlobCSIDriver: true
+    enableStorageProfileDiskCSIDriver: true
+    enableStorageProfileFileCSIDriver: true
+    enableStorageProfileSnapshotController: true
+    diagnosticSettings: [
+      {
+        name: replace('diag-${aksClusterName}', 'aks-', '')
+        workspaceResourceId: logAnalyticsWorkspaceId
+        logAnalyticsDestinationType: 'AzureDiagnostics'
+        logCategoriesAndGroups: [
+          {
+            category: 'kube-apiserver'
+            enabled: true
+          }
+          {
+            category: 'kube-audit'
+            enabled: false
+          }
+          {
+            category: 'kube-audit-admin'
+            enabled: false
+          }
+          {
+            category: 'kube-controller-manager'
+            enabled: true
+          }
+          {
+            category: 'kube-scheduler'
+            enabled: true
+          }
+          {
+            category: 'cluster-autoscaler'
+            enabled: true
+          }
+          {
+            category: 'cloud-controller-manager'
+            enabled: true
+          }
+          {
+            category: 'guard'
+            enabled: true
+          }
+          {
+            category: 'csi-azuredisk-controller'
+            enabled: true
+          }
+          {
+            category: 'csi-azurefile-controller'
+            enabled: true
+          }
+          {
+            category: 'csi-snapshot-controller'
+            enabled: true
+          }
+        ]
+        metricCategories: [
+          {
+            category: 'AllMetrics'
+            enabled: true
+          }
+        ]
       }
-    }
-  }
-}
-
-// CPU node pool for general workloads (Qdrant, Document Processor, etc.)
-resource cpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
-  parent: aksCluster
-  name: 'cpupool'
-  properties: {
-    count: 0
-    vmSize: 'Standard_D8s_v3'
-    osType: 'Linux'
-    mode: 'User'
-    osSKU: 'Ubuntu'
-    osDiskType: 'Managed'
-    enableAutoScaling: true
-    minCount: 0
-    maxCount: 5
-    nodeLabels: {
-      agentpool: 'cpupool'
-      workload: 'cpu'
-    }
-    nodeTaints: []
-  }
-}
-
-// GPU node pool for inference workloads (spot instances)
-resource gpuInferenceNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-07-01' = {
-  parent: aksCluster
-  name: 'gpuinference'
-  properties: {
-    count: 0
-    vmSize: 'standard_nv18ads_a10_v5'
-    osType: 'Linux'
-    mode: 'User'
-    osSKU: 'Ubuntu'
-    osDiskType: 'Managed'
-    enableAutoScaling: true
-    minCount: 0
-    maxCount: 3
-    scaleSetPriority: 'Spot'
-    scaleSetEvictionPolicy: 'Delete'
-    spotMaxPrice: -1 // Pay up to on-demand price
-    nodeLabels: {
-      agentpool: 'gpuinference'
-      workload: 'gpu'
-      sku: 'gpu'
-    }
-    nodeTaints: [
-      'sku=gpu:NoSchedule' // Ensure only GPU workloads get scheduled here
     ]
   }
 }
 
 // Data Collection Rule for Prometheus metrics (Azure Monitor managed Prometheus)
-resource prometheusDataCollectionRule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
-  name: replace('dcr-${aksClusterName}', 'aks-', '')
-  location: location
-  kind: 'Linux'
-  properties: {
-    dataSources: {
-      prometheusForwarder: [
+module prometheusDataCollectionRule 'br/public:avm/res/insights/data-collection-rule:0.11.0' = {
+  name: 'prometheusDataCollectionRule'
+  params: {
+    name: replace('dcr-${aksClusterName}', 'aks-', '')
+    location: location
+    enableTelemetry: false
+    dataCollectionRuleProperties: {
+      kind: 'Linux'
+      dataSources: {
+        prometheusForwarder: [
+          {
+            name: 'PrometheusDataSource'
+            streams: [
+              'Microsoft-PrometheusMetrics'
+            ]
+            labelIncludeFilter: {}
+          }
+        ]
+      }
+      destinations: {
+        monitoringAccounts: [
+          {
+            accountResourceId: azureMonitorWorkspaceId
+            name: 'MonitoringAccount1'
+          }
+        ]
+      }
+      dataFlows: [
         {
-          name: 'PrometheusDataSource'
           streams: [
             'Microsoft-PrometheusMetrics'
           ]
-          labelIncludeFilter: {}
+          destinations: [
+            'MonitoringAccount1'
+          ]
         }
       ]
     }
-    destinations: {
-      monitoringAccounts: [
-        {
-          accountResourceId: azureMonitorWorkspaceId
-          name: 'MonitoringAccount1'
-        }
-      ]
-    }
-    dataFlows: [
-      {
-        streams: [
-          'Microsoft-PrometheusMetrics'
-        ]
-        destinations: [
-          'MonitoringAccount1'
-        ]
-      }
-    ]
   }
 }
 
-// Data Collection Rule Association for Prometheus
+resource aksClusterResource 'Microsoft.ContainerService/managedClusters@2025-03-01' existing = {
+  name: aksClusterName
+}
+
+// The DCR AVM does not expose associations to arbitrary resources.
 resource prometheusDataCollectionRuleAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2023-03-11' = {
   name: replace('dcra-${aksClusterName}', 'aks-', '')
-  scope: aksCluster
+  scope: aksClusterResource
   properties: {
-    dataCollectionRuleId: prometheusDataCollectionRule.id
+    dataCollectionRuleId: prometheusDataCollectionRule.outputs.resourceId
   }
-}
-
-// Diagnostic settings for AKS control plane logs
-resource aksControlPlaneDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  name: replace('diag-${aksClusterName}', 'aks-', '')
-  scope: aksCluster
-  properties: {
-    workspaceId: logAnalyticsWorkspaceId
-    logs: [
-      {
-        category: 'kube-apiserver'
-        enabled: true
-      }
-      {
-        category: 'kube-audit'
-        enabled: false
-      }
-      {
-        category: 'kube-audit-admin'
-        enabled: false
-      }
-      {
-        category: 'kube-controller-manager'
-        enabled: true
-      }
-      {
-        category: 'kube-scheduler'
-        enabled: true
-      }
-      {
-        category: 'cluster-autoscaler'
-        enabled: true
-      }
-      {
-        category: 'cloud-controller-manager'
-        enabled: true
-      }
-      {
-        category: 'guard'
-        enabled: true
-      }
-      {
-        category: 'csi-azuredisk-controller'
-        enabled: true
-      }
-      {
-        category: 'csi-azurefile-controller'
-        enabled: true
-      }
-      {
-        category: 'csi-snapshot-controller'
-        enabled: true
-      }
-    ]
-    metrics: [
-      {
-        category: 'AllMetrics'
-        enabled: true
-      }
-    ]
-  }
+  dependsOn: [
+    aksCluster
+  ]
 }
 
 @description('The name of the AKS cluster')
-output aksClusterName string = aksCluster.name
+output aksClusterName string = aksCluster.outputs.name
 
 @description('The resource ID of the AKS cluster')
-output aksClusterId string = aksCluster.id
+output aksClusterId string = aksCluster.outputs.resourceId
 
 @description('The FQDN of the AKS cluster')
-output aksClusterFqdn string = aksCluster.properties.fqdn
+output aksClusterFqdn string = aksCluster.outputs.controlPlaneFQDN
 
 @description('The container registry login server for Helm chart values')
 output containerRegistryLoginServer string = '${containerRegistryName}.azurecr.io'
 
 @description('The OIDC issuer URL for workload identity')
-output oidcIssuerUrl string = aksCluster.properties.oidcIssuerProfile.issuerURL
+output oidcIssuerUrl string = aksCluster.outputs.oidcIssuerUrl!
 
 @description('The principal ID of the kubelet identity for ACR pull access')
-output kubeletIdentityObjectId string = aksCluster.properties.identityProfile.kubeletidentity.objectId
+output kubeletIdentityObjectId string = aksCluster.outputs.kubeletIdentityObjectId!
 
 @description('The client ID of the kubelet identity for ACR pull access')
-output kubeletIdentityClientId string = aksCluster.properties.identityProfile.kubeletidentity.clientId
+output kubeletIdentityClientId string = aksCluster.outputs.kubeletIdentityClientId!
 
 @description('The principal ID of the AKS control plane system-assigned identity')
-output aksIdentityPrincipalId string = aksCluster.identity.principalId
+output aksIdentityPrincipalId string = aksCluster.outputs.systemAssignedMIPrincipalId!

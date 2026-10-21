@@ -4,12 +4,7 @@
 # ColPali Inference shim image (CPU-only FastAPI front-end).
 # The vLLM sidecar is built separately from Dockerfile.vllm.
 
-# UV (Python package manager) from the official ghcr image.
-FROM ghcr.io/astral-sh/uv:latest AS uvimage
-
-# Azure Linux Python base image.
-FROM mcr.microsoft.com/azurelinux/base/python:3.12
-COPY --from=uvimage /uv /uvx /bin/
+FROM mcr.microsoft.com/mirror/docker/library/ubuntu:24.04
 
 ARG BUILD_NUMBER
 
@@ -28,10 +23,18 @@ ENV UV_CACHE_DIR="/tmp/uv-cache"
 
 # Minimal runtime deps. curl is used by the HEALTHCHECK; ca-certificates for
 # outbound HTTPS (model download, telemetry).
-RUN tdnf install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
-    && tdnf clean all \
-    && useradd --system --no-create-home --shell /sbin/nologin appuser
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --user-group --no-create-home --shell /usr/sbin/nologin appuser
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN curl -LsSf https://astral.sh/uv/0.13.1/install.sh -o /tmp/uv-install.sh \
+    && UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh \
+    && rm /tmp/uv-install.sh \
+    && uv python install 3.14
+ENV UV_PYTHON=3.14
+ENV UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
@@ -63,9 +66,8 @@ ENV UVICORN_WORKERS=4
 # Embed BUILD_NUMBER for the /health build-id contract used by post-deploy checks.
 RUN echo "BUILD_NUMBER=${BUILD_NUMBER:-localbuild.$(date +%Y%m%d%H%M)}" > .env
 
-# Transfer ownership of /app to the unprivileged user; /tmp is world-writable
-# by default so no explicit chown is needed there.
-RUN chown -R appuser:appuser /app
+# Keep installed code and dependencies read-only; caches live in /tmp.
+RUN chown appuser:appuser /app
 USER appuser
 
 EXPOSE 8000

@@ -10,77 +10,79 @@ param aiProjectName string = '${aiFoundryName}-proj'
 param aiFoundryLocation string = 'uksouth'
 
 // Hard coded to UK South as AI Foundry Agent Service is not available in North Europe yet
-resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
-  name: aiFoundryName
-  location: aiFoundryLocation
-  identity: {
-    type: 'SystemAssigned'
-  }
-  sku: {
-    name: 'S0'
-  }
-  kind: 'AIServices'
-  properties: {
-    allowProjectManagement: true
-    customSubDomainName: aiFoundryName
-
-    disableLocalAuth: true
-    publicNetworkAccess: 'Enabled'
-  }
-}
-
-resource aiProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' = {
-  name: aiProjectName
-  parent: aiFoundry
-  location: aiFoundryLocation
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {}
-}
-
-resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
-  parent: aiFoundry
-  name: 'gpt-4.1'
-  sku: {
-    capacity: 100
-    name: 'GlobalStandard'
-  }
-  properties: {
-    model: {
-      name: 'gpt-4.1'
-      version: '2025-04-14'
-      format: 'OpenAI'
+module aiFoundry 'br/public:avm/ptn/ai-ml/ai-foundry:0.7.0' = {
+  name: 'aiFoundry'
+  params: {
+    // Only used for fallback naming; deployed names are supplied explicitly below.
+    baseName: 'colpali'
+    location: aiFoundryLocation
+    enableTelemetry: false
+    includeAssociatedResources: false
+    aiFoundryConfiguration: {
+      accountName: aiFoundryName
+      location: aiFoundryLocation
+      sku: 'S0'
+      allowProjectManagement: true
+      disableLocalAuth: true
+      createCapabilityHosts: false
+      project: {
+        name: aiProjectName
+        displayName: aiProjectName
+        desc: aiProjectName
+      }
     }
+    aiModelDeployments: [
+      {
+        name: 'gpt-4.1'
+        sku: {
+          capacity: 100
+          name: 'GlobalStandard'
+        }
+        model: {
+          name: 'gpt-4.1'
+          version: '2025-04-14'
+          format: 'OpenAI'
+        }
+      }
+    ]
+  }
+}
+
+// A separate read-only deployment delays resource lookups until the pattern completes.
+module deployedResources 'aiFoundryOutputs.bicep' = {
+  name: 'aiFoundryOutputs'
+  params: {
+    aiFoundryName: aiFoundry.outputs.aiServicesName
+    aiProjectName: aiFoundry.outputs.aiProjectName
   }
 }
 
 @description('The name of the AI Foundry service')
-output aiFoundryName string = aiFoundry.name
+output aiFoundryName string = aiFoundry.outputs.aiServicesName
 
 @description('The resource ID of the AI Foundry service')
-output aiFoundryId string = aiFoundry.id
+output aiFoundryId string = deployedResources.outputs.aiFoundryId
 
 @description('The endpoint URL of the AI Foundry service')
-output aiFoundryEndpoint string = aiFoundry.properties.endpoint
+output aiFoundryEndpoint string = deployedResources.outputs.aiFoundryEndpoint
 
 @description('The principal ID of the AI Foundry managed identity')
-output aiFoundryPrincipalId string = aiFoundry.identity.principalId
+output aiFoundryPrincipalId string = deployedResources.outputs.aiFoundryPrincipalId
 
 @description('The name of the AI Project')
-output aiProjectName string = aiProject.name
+output aiProjectName string = aiFoundry.outputs.aiProjectName
 
 @description('The resource ID of the AI Project')
-output aiProjectId string = aiProject.id
+output aiProjectId string = deployedResources.outputs.aiProjectId
 
 @description('The principal ID of the AI Project managed identity')
-output aiProjectPrincipalId string = aiProject.identity.principalId
+output aiProjectPrincipalId string = deployedResources.outputs.aiProjectPrincipalId
 
 @description('The endpoint URL of the AI Project for AI Agents')
-output aiFoundryProjectEndpoint string = 'https://${aiFoundry.properties.customSubDomainName}.services.ai.azure.com/api/projects/${aiProject.name}'
+output aiFoundryProjectEndpoint string = deployedResources.outputs.aiFoundryProjectEndpoint
 
 @description('The OpenAI endpoint URL for the AI Foundry service')
-output aiFoundryOpenAiEndpoint string = 'https://${aiFoundry.properties.customSubDomainName}.openai.azure.com/'
+output aiFoundryOpenAiEndpoint string = deployedResources.outputs.aiFoundryOpenAiEndpoint
 
 @description('The name of the deployed model')
-output modelDeploymentName string = modelDeployment.name
+output modelDeploymentName string = 'gpt-4.1'

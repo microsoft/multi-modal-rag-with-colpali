@@ -45,3 +45,28 @@ pre-commit run --all-files
 - **JSON/TOML validation**: Format and validate configuration files
 
 All pull requests are automatically checked by GitHub Actions to ensure these standards are met.
+
+### Tests
+
+Install Python 3.14 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Run these commands from the repository root in PowerShell:
+
+```powershell
+Push-Location modules\agent
+uv run --frozen python -m pytest tests -q
+Pop-Location
+
+Push-Location modules\document_processor
+uv run --frozen python -m unittest discover -s tests
+Pop-Location
+
+Push-Location modules\colpali_inference
+$env:PYTHONPATH = "src"
+uv run --frozen python -m unittest discover -s tests
+Remove-Item Env:PYTHONPATH
+Pop-Location
+```
+
+These tests need no Azure credentials, GPU, or model downloads. CI runs all three
+suites, validates Bicep and Helm, and builds the five container images without
+pushing them or deploying resources.

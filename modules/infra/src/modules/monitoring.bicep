@@ -15,27 +15,25 @@ param retentionInDays int = 30
 @description('Tags to apply to all resources')
 param tags object = {}
 
-resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: logAnalyticsWorkspaceName
-  location: location
-  tags: tags
-  properties: {
-    sku: {
-      name: 'PerGB2018'
-    }
-    retentionInDays: retentionInDays
+module logAnalyticsWorkspace 'br/public:avm/res/operational-insights/workspace:0.16.1' = {
+  name: 'logAnalyticsWorkspace'
+  params: {
+    name: logAnalyticsWorkspaceName
+    location: location
+    tags: tags
+    enableTelemetry: false
+    skuName: 'PerGB2018'
+    dataRetention: retentionInDays
+    dailyQuotaGb: '2'
+    forceCmkForQuery: false
     features: {
-      searchVersion: 1
-      legacy: 0
       enableLogAccessUsingOnlyResourcePermissions: true
-    }
-    workspaceCapping: {
-      dailyQuotaGb: 2
+      disableLocalAuth: false
     }
   }
 }
 
-// Azure Monitor Workspace for Prometheus metrics
+// No published AVM resource module currently covers Microsoft.Monitor/accounts.
 resource azureMonitorWorkspace 'Microsoft.Monitor/accounts@2023-04-03' = {
   name: replace('amw-${logAnalyticsWorkspaceName}', 'logs-', '')
   location: location
@@ -43,37 +41,41 @@ resource azureMonitorWorkspace 'Microsoft.Monitor/accounts@2023-04-03' = {
   properties: {}
 }
 
-resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
-  name: applicationInsightsName
-  location: location
-  tags: tags
-  kind: 'web'
-  properties: {
-    Application_Type: 'web'
-    WorkspaceResourceId: logAnalyticsWorkspace.id
-    IngestionMode: 'LogAnalytics'
+module applicationInsights 'br/public:avm/res/insights/component:0.8.0' = {
+  name: 'applicationInsights'
+  params: {
+    name: applicationInsightsName
+    location: location
+    tags: tags
+    enableTelemetry: false
+    kind: 'web'
+    applicationType: 'web'
+    workspaceResourceId: logAnalyticsWorkspace.outputs.resourceId
+    ingestionMode: 'LogAnalytics'
+    disableIpMasking: false
+    retentionInDays: 90
     publicNetworkAccessForIngestion: 'Enabled'
     publicNetworkAccessForQuery: 'Enabled'
   }
 }
 
 @description('The resource ID of the Log Analytics workspace')
-output logAnalyticsWorkspaceId string = logAnalyticsWorkspace.id
+output logAnalyticsWorkspaceId string = logAnalyticsWorkspace.outputs.resourceId
 
 @description('The name of the Log Analytics workspace')
-output logAnalyticsWorkspaceName string = logAnalyticsWorkspace.name
+output logAnalyticsWorkspaceName string = logAnalyticsWorkspace.outputs.name
 
 @description('The resource ID of Application Insights')
-output applicationInsightsId string = applicationInsights.id
+output applicationInsightsId string = applicationInsights.outputs.resourceId
 
 @description('The name of Application Insights')
-output applicationInsightsName string = applicationInsights.name
+output applicationInsightsName string = applicationInsights.outputs.name
 
 @description('The instrumentation key for Application Insights')
-output applicationInsightsInstrumentationKey string = applicationInsights.properties.InstrumentationKey
+output applicationInsightsInstrumentationKey string = applicationInsights.outputs.instrumentationKey
 
 @description('The connection string for Application Insights')
-output applicationInsightsConnectionString string = applicationInsights.properties.ConnectionString
+output applicationInsightsConnectionString string = applicationInsights.outputs.connectionString
 
 @description('The resource ID of the Azure Monitor workspace')
 output azureMonitorWorkspaceId string = azureMonitorWorkspace.id

@@ -162,11 +162,11 @@ colpaliInference:
   imageTag: "latest"
 
   # GPU node pool for inference workloads
-  # Set to "gpuinference" to use the new dedicated inference pool
-  nodePool: "gpuinference"
+  nodePool: "gpupool"
 
-  # Model configuration
-  modelId: "TomoroAI/tomoro-colqwen3-embed-4b"
+  # W4A16 text weights; vision encoder stays unquantized. vLLM auto-detects
+  # the checkpoint's AutoRound/GPTQ format despite its "-awq" repository name.
+  modelId: "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"
   modelDirectoryPath: "/mnt/models/offline"
   hfHome: "/mnt/models/hf"
   model:
@@ -202,7 +202,8 @@ colpaliInference:
   vllm:
     imageTag: "latest"
     maxModelLen: "2048"
-    gpuMemoryUtilization: "0.89"
+    # Quantized model: preserve vision-activation headroom under concurrent load.
+    gpuMemoryUtilization: "0.75"
     resources:
       requests:
         memory: "32Gi"

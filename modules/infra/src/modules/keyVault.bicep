@@ -19,73 +19,65 @@ param qdrantReadOnlyApiKey string = 'qdrant_ro_${replace(newGuid(), '-', '')}'
 
 var keyVaultName = 'kv-${baseName}'
 
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: keyVaultName
-  location: location
-  properties: {
-    tenantId: tenant().tenantId
-    sku: {
-      family: 'A'
-      name: 'standard'
-    }
+module keyVault 'br/public:avm/res/key-vault/vault:0.14.2' = {
+  name: 'keyVault'
+  params: {
+    name: keyVaultName
+    location: location
+    enableTelemetry: false
+    sku: 'standard'
     enableRbacAuthorization: true
+    enableVaultForDeployment: false
+    enableVaultForTemplateDeployment: false
+    enableVaultForDiskEncryption: false
+    enablePurgeProtection: false
     networkAcls: {
       defaultAction: 'Allow'
       bypass: 'AzureServices'
     }
-  }
-}
-
-resource qdrantApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'qdrant-api-key'
-  properties: {
-    value: qdrantApiKey
-    contentType: 'text/plain'
-    attributes: {
-      enabled: true
-    }
-  }
-}
-
-resource qdrantReadOnlyApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'qdrant-readonly-api-key'
-  properties: {
-    value: qdrantReadOnlyApiKey
-    contentType: 'text/plain'
-    attributes: {
-      enabled: true
-    }
-  }
-}
-
-resource applicationInsightsConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'appinsights-connection-string'
-  properties: {
-    value: applicationInsightsConnectionString
-    contentType: 'text/plain'
-    attributes: {
-      enabled: true
-    }
+    secrets: [
+      {
+        name: 'qdrant-api-key'
+        value: qdrantApiKey
+        contentType: 'text/plain'
+        attributes: {
+          enabled: true
+        }
+      }
+      {
+        name: 'qdrant-readonly-api-key'
+        value: qdrantReadOnlyApiKey
+        contentType: 'text/plain'
+        attributes: {
+          enabled: true
+        }
+      }
+      {
+        name: 'appinsights-connection-string'
+        value: applicationInsightsConnectionString
+        contentType: 'text/plain'
+        attributes: {
+          enabled: true
+        }
+      }
+    ]
   }
 }
 
 @description('The name of the Key Vault')
-output keyVaultName string = keyVault.name
+output keyVaultName string = keyVault.outputs.name
 
 @description('The resource ID of the Key Vault')
-output keyVaultId string = keyVault.id
+output keyVaultId string = keyVault.outputs.resourceId
 
 @description('The URI of the Key Vault')
-output keyVaultUri string = keyVault.properties.vaultUri
+output keyVaultUri string = keyVault.outputs.uri
 
 @description('The name of the Qdrant API key secret')
-output qdrantApiKeySecretName string = qdrantApiKeySecret.name
+output qdrantApiKeySecretName string = 'qdrant-api-key'
 
 @description('The name of the Qdrant read-only API key secret')
-output qdrantReadOnlyApiKeySecretName string = qdrantReadOnlyApiKeySecret.name
+output qdrantReadOnlyApiKeySecretName string = 'qdrant-readonly-api-key'
 
 @description('The name of the Application Insights connection string secret')
-output applicationInsightsConnectionStringSecretName string = applicationInsightsConnectionStringSecret.name
+output applicationInsightsConnectionStringSecretName string = 'appinsights-connection-string'
