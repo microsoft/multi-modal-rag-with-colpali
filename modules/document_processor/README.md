@@ -4,58 +4,6 @@ Consumes Azure Blob Created/Deleted events from Service Bus, renders PDF/JPEG/PN
 documents, generates ColQwen embeddings, stores JPEG page images in Blob Storage,
 and writes pages to a single configurable Qdrant collection.
 
-## Dependency compatibility checks
-
-Use Python 3.14 and the committed lockfile:
-
-```shell
-uv sync --locked --no-editable
-uv run --locked python -m unittest discover -s tests -p test_dependency_compatibility.py -v
-```
-
-These offline-service tests cover PDF rendering, PNG/JPEG ingestion, transparent
-image conversion, DPI downsampling, embedding image payloads, invalid image
-rejection, and MSAL assertion signing. They do not call Azure or the inference
-service. Transitive security floors are recorded in
-`tool.uv.constraint-dependencies`.
-
-The [workflow suite](#development) additionally exercises the incremental pipeline
-through retrieval and message settlement.
-
-## Selected ingestion improvements
-
-This is a selective port of the agreed reusable capabilities, not a wholesale
-copy of another deployment's APIs, operational policies, or business metadata.
-
-| Capability | Public implementation |
-|---|---|
-| Complete success/failure reporting | Validate every required vector and full page coverage before completion; failures remain retryable or go to the dead-letter queue |
-| Incremental indexing | File SHA-256, versioned JPEG page hashes, metadata/text refresh, and forced reindexing |
-| Interrupted-document resume | Reuse only durable pages tied to the same source bytes and processing fingerprint |
-| Bounded processing | Fixed page workers, bounded render queue, overlapping storage/inference I/O, and drained cancellation |
-| Service Bus resilience | Rolling slots, asynchronous lock renewal, operation/handler deadlines, reconnection, and explicit settlement |
-| Inference resilience | Pooled HTTP connections, strict response validation, HTTP 500/502 batch splitting, and bounded token-limit recovery |
-| Qdrant storage and writes | Full-precision pooled vectors on disk, binary mean vectors in RAM, storage reconciliation, and retried durable writes |
-| Text/image preparation | Markdown with raw-text fallback, independently configured storage/embedding DPI, cropping, and render-pixel bounds |
-| Shared core data contract | 320 dimensions, pooled vector names, nested source/metadata, UUID5 page IDs, and extension-preserving image paths |
-| Inference-port integration | Reference query/image token alignment, contextual-token pooling, request priorities, and cancellation-safe staged-image lifetime |
-
-Intentional adaptations strengthen safety: MuPDF calls are serialized rather
-than rendered concurrently across threads; Qdrant writes use `wait=True`;
-unrelated payload indexes are preserved; and ordinary permanent failures remain
-inspectable in the dead-letter queue rather than being silently completed.
-The shared image cap is configured without editing cached checkpoint files.
-Public AWQ/runtime defaults and the selected PULSAR settings replace the source
-deployment's model/render defaults; equivalent capabilities do not imply
-identical throughput, rendering bytes, or every optional payload field.
-
-Office conversion, business-specific collection routing/metadata, document
-priority lanes/preemption, operational process/backfill APIs, automatic backfill
-or DLQ replay/drop policies, downstream result queues, and completion-filtered
-retrieval are outside this port's selected scope. Generic file signatures,
-operational heartbeat APIs, and priority-specific diagnostics were not selected
-as separate features. Supported PDF/image decoders still validate their inputs.
-
 ## Incremental processing
 
 1. Download the document and compute its SHA-256 file hash.
@@ -95,36 +43,17 @@ completed index, including reused pages; `skipped_pages` reports reuse in this
 attempt. It is not a count of newly purchased embedding calls. Both counts can
 equal the page count after an unchanged-document replay.
 
-### Relationship to PULSAR
+### Rendering
 
-[PULSAR section 3.3.3](https://arxiv.org/html/2608.28572#S3.SS3.SSS3)
-describes separate 150-DPI embedding renders and 500-DPI stored/answer-time
-renders. This implementation adopts **150 DPI for embedding and 500 DPI for
-storage**, configured independently through `COLPALI_EMBEDDING_DPI` and
-`COLPALI_STORAGE_DPI`. It renders once at storage resolution, then crops and downsamples
-a copy for embedding; it does not perform two independent PDF renders or upscale
-the embedding image. The shim and vLLM also adopt the production image cap of
-4,194,304 pixels (4,096 merged visual tokens) and sequence limit of 3,072, rather
-than the much larger DPI-ablation limits. These settings preserve an A4 page at
-150 DPI subject to patch-grid rounding; larger pages may need token-limit
-recovery. They do not establish benchmark parity. See the
+Defaults follow [PULSAR's production settings](https://arxiv.org/html/2608.28572#A1):
+**150 DPI for embedding and 500 DPI for storage**, configured independently through
+`COLPALI_EMBEDDING_DPI` and `COLPALI_STORAGE_DPI`. Each page is rendered once at
+storage resolution, cropped, and downsampled as a copy for embedding.
+The shared inference cap is 4,194,304 pixels, with a 3,072-token sequence limit.
+A4 pages at 150 DPI fit; larger pages may need token-limit recovery. See the
 [inference guide](../colpali_inference/README.md#configuration).
 
-Bounded rendering, hash-based skips, durable-page resume, and completion checks
-are implemented here. The paper's
-[document-priority lanes](https://arxiv.org/html/2608.28572#S3.SS3.SSS1)
-are not: this processor consumes one queue. vLLM request priorities are a separate
-serving mechanism, not a document dispatcher with priority-lane preemption.
-
-The [paper's architecture](https://arxiv.org/html/2608.28572#S3.SS2) also describes
-filtering retrieval by document completion. Here, completion checks control
-success reporting, queue acknowledgement, and the completed file hash; the
-retriever does **not** filter on that hash. Already-written pages can be retrieved
-while other pages are still processing. Completion is not an atomic publication
-or snapshot guarantee. Retrieval's `indexed_only` prefetch option concerns
-Qdrant segment optimization, not document completeness.
-
-## Version-two storage contract
+## Storage contract
 
 Default collection: `colpali-documents`. The default model is
 `TomoroAI/tomoro-ai-colqwen3-embed-4b-awq`, with 320-dimensional vectors.
@@ -173,12 +102,14 @@ reads this nested contract and deduplicates by document identity plus page numbe
 Initialization rejects incompatible vector names/dimensions. Compatible
 collections have full-precision vector storage moved to disk without deleting
 data or unrelated payload indexes. Existing document IDs/payloads are also
-checked before reuse. Deployment alone does not enqueue historical documents.
+checked before reuse.
 
 Writes are page-level, not an atomic document snapshot. In-process duplicate
 events are serialized and source ETags are checked before completion, but
 cross-replica updates to the same document are not a distributed transaction.
 Route competing versions of a document to one owner if strict ordering is needed.
+Already-written pages can be retrieved while other pages are still processing;
+retrieval does not filter on the completed file hash.
 
 ## Queue reliability
 
@@ -190,21 +121,19 @@ retry, while invalid documents and exhausted token-limit recovery are preserved
 in the dead-letter queue. A delivery-count guard parks repeatedly unsettled
 messages before opening their document bytes.
 
-No output queues, collection routing, automatic backfill, or automatic DLQ
-deletion are configured. Cancellation-resistant cleanup stops the listener
-rather than reusing a slot whose old work may still be active.
+The processor consumes one queue. Cancellation-resistant cleanup stops the listener
+rather than reusing a slot whose interrupted work may still be active.
 
 The consumer accepts PDF/JPEG/PNG events, but the default infrastructure event
 subscription only forwards `.pdf` paths in the `documents` container. To ingest
 images, explicitly configure an appropriate event filter or send valid
-BlobCreated messages to the configured queue. Re-uploading historical documents
-or manually enqueueing their events is an operator action, not automatic backfill.
+BlobCreated messages to the configured queue.
 
 ## Configuration
 
-Existing `SERVICE_BUS_NAMESPACE_NAME`, `SERVICE_BUS_QUEUE_NAME`,
+Connection settings are `SERVICE_BUS_NAMESPACE_NAME`, `SERVICE_BUS_QUEUE_NAME`,
 `DATA_STORAGE_ACCOUNT_NAME`, `COLPALI_INFERENCE_ENDPOINT`, `QDRANT_ENDPOINT`,
-`QDRANT_API_KEY`, and managed-identity settings remain supported.
+`QDRANT_API_KEY`, and the managed-identity configuration.
 
 | Setting | Default | Purpose |
 |---|---|---|
@@ -212,7 +141,7 @@ Existing `SERVICE_BUS_NAMESPACE_NAME`, `SERVICE_BUS_QUEUE_NAME`,
 | `COLPALI_EMBEDDING_DIMENSION` | 320 | Must match the configured inference model |
 | `MODEL_ID` | `TomoroAI/tomoro-ai-colqwen3-embed-4b-awq` | Fingerprint model identity |
 | `INDEXING_REVISION` | `1` | Invalidate caches after inference/weight changes |
-| `COLPALI_STORAGE_DPI` | 500 | Stored PDF resolution; falls back to legacy `COLPALI_IMAGE_DPI` |
+| `COLPALI_STORAGE_DPI` | 500 | Stored PDF resolution |
 | `COLPALI_EMBEDDING_DPI` | 150 | Embedding image resolution; never upscales |
 | `COLPALI_MAX_IMAGE_PIXELS` | 4194304 | Inference cap recorded in the fingerprint; match both inference containers |
 | `COLPALI_CROP_WHITESPACE` | `true` | Crop changed page images before upload/embedding |
@@ -241,7 +170,7 @@ for the corresponding chart values and override workflow.
 
 ## Development
 
-From the repository root:
+Use Python 3.14 and the committed lockfile. From the repository root:
 
 ```powershell
 uv sync --project modules\document_processor --locked
@@ -282,14 +211,6 @@ with `TEST_QDRANT_API_KEY` supplied locally if required. Only the test's unique
 collection is created/deleted. Coordinate shared GPU traffic before running it.
 Optional pytest JUnit output records functional timings, not a throughput or
 latency benchmark.
-
-The quantized model with the documented larger image/sequence limits has also
-passed a deployed Azure check using real workload identity, Blob Storage,
-Service Bus, and Qdrant 1.17.1. That check covered full A4 indexing and image
-retrieval, metadata-only redelivery, a single-page update, transient failure
-and redelivery, malformed-message dead-lettering, and document deletion with
-an empty queue afterward. Test data used a dedicated queue, collection, and
-containers; no existing collections were modified.
 
 Scenarios protect searchable page text/images and distinct citations, incremental
 updates without unnecessary embedding calls, forced reindexing, partial-failure

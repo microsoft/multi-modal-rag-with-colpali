@@ -9,9 +9,9 @@ A containerized chat interface for document Q&A using Azure OpenAI and ColPali-b
 For local development, set `AZURE_TOKEN_CREDENTIALS=dev` before starting the agent.
 The Helm deployment configures `AZURE_TOKEN_CREDENTIALS=WorkloadIdentityCredential`.
 
-## Dependency compatibility checks
+## Development
 
-Use Python 3.14 and the committed lockfile:
+From `modules/agent`, use Python 3.14 and the committed lockfile:
 
 ```shell
 uv sync --locked --no-editable --no-dev --group test
@@ -21,15 +21,7 @@ uv run --locked --no-dev --group test python -m pytest tests -q
 These offline-service tests cover API startup/shutdown, chat and SSE responses,
 request validation, CORS, OpenTelemetry middleware, the Chainlit UI and Engine.IO
 handshake, MSAL assertion signing, and the real agent's framework client.
-Telemetry setup is patched before importing the API, including when an
-Application Insights connection string is configured. They do not call Azure or
-the inference service. Prerelease handling is configured in `pyproject.toml` for
-both local and container installs. Transitive security floors are recorded in
-`tool.uv.constraint-dependencies`.
-
-Only `agent-framework-core` is required for the chat types and
-`AzureOpenAIChatClient`. It is pinned to the previously resolved core version;
-the umbrella package and its unused integrations (including Mem0) are not installed.
+They do not call Azure or the inference service.
 
 ## Architecture Overview
 
@@ -82,10 +74,8 @@ collection, and query inference must use the model that produced those vectors.
 
 The search settings above are implementation defaults in
 `src/agent/document_retriever.py`; they are not all Helm/environment overrides.
-Callers can set `top_k`, which controls the final result count, not the prefetch
-size. For `top_k=5`, each query retrieves up to 200 candidate pages from each
-mean-vector index, reranks their union (up to 400 distinct pages) using
-`hierarchical_pooled`, and returns the best five. A candidate is a page/Qdrant
+For `top_k=5`, the candidate union contains up to 400 distinct pages before
+reranking returns the best five. A candidate is a page/Qdrant
 point, not an individual token vector or an entire document. Each prefetch uses
 `max(200, top_k)`, so it grows only when more than 200 final results are requested.
 The available deployment controls are listed in the
@@ -101,8 +91,3 @@ passed to API consumers.
 - `/chat` and unhandled API failures return HTTP 500 with `error` and `detail` fields.
 - `/chat/stream` keeps the SSE response and emits a terminal `error` event with
   generic `content` and a `timestamp`, including when the agent yields an error event.
-
-## API Tests
-
-Run `uv run --frozen pytest tests` from `modules/agent`. The API tests replace the
-agent and do not require Azure credentials or running backend services.

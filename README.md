@@ -52,8 +52,8 @@ This repository includes model serving, document indexing, and deployment script
 - Agent API and UI for querying
 
 Indexing and retrieval share a **320-dimensional pooled-vector contract**.
-The [processor guide](modules/document_processor/README.md) describes the selected
-ingestion improvements, and the
+The [processor guide](modules/document_processor/README.md) describes incremental
+ingestion, and the
 [Helm tuning guide](modules/helm/colpali-stack/README.md#indexing-and-inference-tuning)
 maps concurrency, batching, rendering, and serving controls.
 
@@ -101,7 +101,7 @@ flowchart TB
         INFRA --> ACR[Container Registry]
     end
 
-    subgraph K8S_LAYER ["AKS Cluster - colpali Namespace"]
+    subgraph K8S_LAYER ["AKS Cluster - colpali-stack Namespace"]
         direction TB
 
         subgraph MODEL_SETUP ["Model Setup"]
@@ -136,8 +136,9 @@ flowchart TB
         QUERY[User Query] --> INGRESS
         INGRESS --> AGENT_UI
         AGENT_UI --> AGENT_API
+        AGENT_API -->|Query embeddings| COLQWEN
         AGENT_API --> QDRANT
-        QDRANT -->|Vector Search| RESULTS[Relevant Documents]
+        QDRANT -->|Vector Search| RESULTS[Relevant Pages]
         RESULTS --> AGENT_API
     end
 
@@ -175,10 +176,10 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 >
 > AI Search also supports [multi-modal RAG](https://learn.microsoft.com/en-us/azure/search/multimodal-search-overview). In our benchmarks, ColPali-based approaches gave better retrieval quality and higher indexing throughput at scale. Results vary, so benchmark your own use case.
 
-### Why AKS over Container Apps?
-- **Managed Disk Support**: Qdrant requires persistent managed disk storage (not NFS volumes) for optimal performance per Qdrant's recommendations. This is not possible with other container based setups on Azure at the time of experimentation.
+### Why AKS?
+- **Managed Disk Support**: Qdrant uses persistent managed disks rather than NFS volumes.
 - **Simpler Setup**: No need to setup multiple Azure Services to host the different services, everything can run inside the same AKS cluster.
-- **Shared Compute Costs**: Multiple services (document processor + ColQwen3 inference) share the same node pool.
+- **Shared Compute Costs**: CPU services share `cpupool`; GPU inference runs on `gpupool` in the same cluster.
 
 ## Project Structure
 
@@ -196,7 +197,7 @@ For Azure resources and deployment details, see the **[Infrastructure Guide](mod
 
 Two techniques make these token-level embeddings practical at scale:
 
-**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces embedding dimensions by ~3x while maintaining retrieval quality.
+**[Hierarchical token pooling](https://github.com/illuin-tech/colpali?tab=readme-ov-file#token-pooling)** (from the ColPali team) reduces the number of token vectors by approximately 3x; each vector remains 320-dimensional.
 
 **Mean row and column pooling** (from [Qdrant's PDF retrieval tutorial](https://qdrant.tech/documentation/advanced-tutorials/pdf-retrieval-at-scale/)) compresses embeddings further for fast initial retrieval.
 
@@ -204,7 +205,7 @@ Two techniques make these token-level embeddings practical at scale:
 1. L1 uses row/column pooled embeddings for fast candidate selection
 2. L2 reranks with hierarchical pooled embeddings for accuracy
 
-**Chosen approach:** We use row/column mean pooling for L1 and hierarchical pooling for L2 with quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`). This gave the best balance of latency and retrieval quality in our benchmarks.
+**Chosen approach:** Row/column mean pooling for L1 and hierarchical pooling for L2, with binary-quantized prefetch (`mean_pooling_with_hierarchical_quantized_prefetch_only`).
 
 ## Quick Start
 
@@ -220,8 +221,7 @@ All application Dockerfiles use base images from Microsoft Container Registry
 (`mcr.microsoft.com`). The agent API/UI, document processor, and inference shim
 use the MCR Ubuntu 24.04 mirror; the GPU sidecar uses the Azure ML CUDA 12.8
 Ubuntu 24.04 image with matching CUDA 12.9 vLLM/PyTorch wheels. Each installs
-Python 3.14 with pinned uv 0.13.1, rather than
-depending on the older Python bundled with the base OS. uv is downloaded from
+Python 3.14 with pinned uv 0.13.1. uv is downloaded from
 Astral; Python packages come from PyPI, PyTorch's CUDA index, and the official
 vLLM GitHub release; no build stages pull images
 from Docker Hub or GHCR.

@@ -14,14 +14,15 @@ This chart deploys the following components:
 
 ### Infrastructure
 - **Qdrant** - Vector database for embeddings storage (via Helm dependency)
-- **NGINX Ingress Controllers** - Separate ingress controllers for Agent UI, ColPali API, and Qdrant dashboard
-- **NVIDIA Device Plugin** - DaemonSet for GPU discovery and DCGM metrics exporter
+- **NGINX Ingress Controllers** - Agent UI ingress; optional controllers for inference and Qdrant
 - **Stakater Reloader** - Automatically restarts pods when secrets change (via Helm dependency)
 
 ### Configuration & Security
 - **App Secrets** - CSI SecretProviderClass for syncing Azure Key Vault secrets to Kubernetes
 - **Service Account** - Workload Identity-enabled service account for Azure authentication
-- **Namespace Spot Tolerations** - Automatic spot instance toleration injection via namespace annotations
+
+The [infrastructure bootstrap](../../infra/README.md#kubernetes-bootstrap-resources)
+creates the namespace and installs the NVIDIA device plugin and DCGM exporter.
 
 ## Spot Instance Support
 
@@ -53,16 +54,16 @@ This automatically:
 1. Restores locked Helm dependencies (`helm dependency build`)
 2. Deploys the application components
 3. Sets up Qdrant with Premium SSD storage
-4. Configures ingress for Qdrant dashboard access
+4. Exposes Agent UI through ingress; inference and Qdrant remain internal by default
 
 ## Access Qdrant Dashboard
 
-After deployment, get the ingress IP:
-```bash
-kubectl get ingress
+Forward the internal Qdrant service locally:
+```powershell
+kubectl port-forward -n colpali-stack service/colpali-stack-qdrant 6333:6333
 ```
 
-Access Qdrant dashboard at: `http://<INGRESS-IP>/qdrant`
+Open `http://localhost:6333/dashboard` and use the configured Qdrant API key.
 
 ## Configuration
 
@@ -134,12 +135,10 @@ helm upgrade colpali-stack .\modules\helm\colpali-stack `
     --reuse-values --values "C:\path\tuning.yaml" --wait --timeout 30m
 ```
 
-Reuse the override file
-on subsequent upgrades; `apply_helm.ps1` does not accept it automatically.
+Reuse the override file on subsequent upgrades; `apply_helm.ps1` does not accept it automatically.
 Rendering/model changes can invalidate indexing fingerprints; changing settings
 does not enqueue existing documents. Reindex explicitly and compare retrieval
 quality as well as throughput, failures, GPU memory, and mixed-query latency.
-Keep the prior model/index and Helm configuration available for rollback.
 
 The Qdrant chart dependency is pinned to **1.19.1**. Retrieval defaults and their
 limits are documented in the [agent guide](../../agent/README.md#implemented-retrieval-defaults);
@@ -166,7 +165,7 @@ not every search parameter is an environment-variable override.
 }}%%
 graph TB
     subgraph "AKS Cluster"
-        subgraph "colpali Namespace"
+        subgraph "colpali-stack Namespace"
             subgraph "Document Processing"
                 DP[Document Processor Pod]
                 DPSA[Document Processor SA<br/>Workload Identity]
@@ -184,6 +183,8 @@ graph TB
 
             subgraph "Network Access"
                 IG[NGINX Ingress Controller]
+                UI[Agent UI]
+                API[Agent API]
             end
 
             subgraph "Configuration"
@@ -215,8 +216,12 @@ graph TB
     CI -->|Embeddings| DP
     DP -->|Store Page Images| ST
     DP -->|Store Vectors + URLs| QD
-    USER -->|Query/Dashboard| IG
-    IG -->|Route Traffic| QD
+    USER -->|Chat| IG
+    IG --> UI
+    UI --> API
+    API -->|Query embeddings| CI
+    API -->|Retrieve pages| QD
+    API -->|Fetch page images| ST
 
     DPSA -.->|Authenticate| KV
     KV -.->|Provide Secrets| AS
@@ -239,7 +244,7 @@ graph TB
     classDef external fill:#f0fff0,stroke:#28a745,stroke-width:2px
     classDef network fill:#f8f0ff,stroke:#6f42c1,stroke-width:2px
 
-    class DP,CI,QD pod
+    class DP,CI,QD,UI,API pod
     class HFPV,QDPV,AS storage
     class KV,EG,SB,ST,AI,ACR azure
     class USER,DOCS external
@@ -248,5 +253,4 @@ graph TB
 
 **Legend:**
 - **Solid arrows**: Data/request flow
-- **Dashed arrows**: Authentication/configuration
-- **Dotted arrows**: Storage/monitoring relationships
+- **Dashed arrows**: Configuration, authentication, storage, and monitoring relationships
