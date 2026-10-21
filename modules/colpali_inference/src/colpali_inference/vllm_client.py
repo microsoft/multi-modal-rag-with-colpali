@@ -83,7 +83,7 @@ class VLLMEmbeddingClient:
             base_url or os.getenv("VLLM_BASE_URL", "http://localhost:8001")
         ).rstrip("/")
         self.model_id = model_id or os.getenv(
-            "MODEL_ID", "TomoroAI/tomoro-colqwen3-embed-4b"
+            "MODEL_ID", "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"
         )
         self.image_shm_dir = Path(image_shm_dir or os.getenv("IMAGE_SHM_DIR", "/shm"))
         self.request_timeout_seconds = request_timeout_seconds

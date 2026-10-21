@@ -4,7 +4,7 @@
 """
 ColVision Model Inference Module (vLLM-backed).
 
-Targets ColQwen3 (TomoroAI/tomoro-colqwen3-embed-4b) via vLLM as a GPU
+Targets ColQwen3 (TomoroAI/tomoro-ai-colqwen3-embed-4b-awq) via vLLM as a GPU
 sidecar.
 
 The shim is CPU-only — it owns the HF processor for tokenization +
@@ -52,7 +52,7 @@ class ColPaliInference:
         self.is_initialized = False
 
         self.model_id = model_id or os.getenv(
-            "MODEL_ID", "TomoroAI/tomoro-colqwen3-embed-4b"
+            "MODEL_ID", "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"
         )
         self.vllm_client = vllm_client or get_client()
 
