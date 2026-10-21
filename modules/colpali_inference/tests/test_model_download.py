@@ -69,7 +69,9 @@ class ModelDownloadTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     json.loads(
-                        (target / "quantization_config.json").read_text(encoding="utf-8")
+                        (target / "quantization_config.json").read_text(
+                            encoding="utf-8"
+                        )
                     ),
                     quantization,
                 )
@@ -84,7 +86,8 @@ class ModelDownloadTests(unittest.TestCase):
                     b"original snapshot fixture",
                 )
                 self.assertEqual(
-                    (original / MARKER_FILENAME).read_text(encoding="utf-8"), original_id
+                    (original / MARKER_FILENAME).read_text(encoding="utf-8"),
+                    original_id,
                 )
 
 
