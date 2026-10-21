@@ -215,23 +215,9 @@ The paper reports the following results under different measurement conditions:
 
 PULSAR separates **150-DPI embedding images from 500-DPI answer images**. Its embedding-DPI study raised the visual-token cap to avoid resolution clipping. At 500 DPI, it observed zero page-legibility errors on 516 questions across two decks, with the source page supplied directly to the answering model ([Sections 5.1](https://arxiv.org/html/2608.28572#S5.SS1) and [5.6](https://arxiv.org/html/2608.28572#S5.SS6)).
 
-#### Implementation and indexer updates
+Model-weight quantization and retrieval-vector quantization serve different purposes: the quantized checkpoint reduces GPU memory use, while Qdrant's binary vector quantization accelerates candidate retrieval.
 
-The accelerator now uses the quantized `TomoroAI/tomoro-ai-colqwen3-embed-4b-awq` checkpoint on Python 3.14 and vLLM 0.32.0 / CUDA 12.9. GPU memory utilization is 0.75 with no CPU weight offload. Model-weight quantization reduces GPU memory use; Qdrant's binary vector quantization separately accelerates candidate retrieval.
-
-The open [indexer PR #72](https://github.com/microsoft/multi-modal-rag-with-colpali/pull/72) combines this runtime with the following PULSAR-aligned changes:
-
-| Area | Pending implementation and differences from PULSAR |
-|------|----------------------------------------------------|
-| Image preparation | 150-DPI embedding and 500-DPI storage defaults. Render once at storage resolution, crop, and downsample a separate embedding copy rather than render the PDF twice. Token-limit recovery reduces only the embedding image, not the stored answer image. |
-| Resolution limits | A 4,194,304-pixel preprocessing cap (4,096 merged visual tokens for this model) and a 3,072-token sequence budget, including prompt tokens. The visual ceiling does not mean every image fits that sequence budget. The paper's 65,536 visual-token DPI-ablation cap is not the production default. |
-| Incremental ingestion | Bounded page rendering, file/page hashes, a processing fingerprint, durable-page resume, and refreshed extracted text for OCR-only changes. Completion requires full page coverage, successful image uploads and Qdrant writes, a source ETag check, and orphan cleanup. |
-| Retrieval and storage | Top 5 pages, at least 200 candidates per mean-pooled vector, HNSW ef 64, binary prefetch rescoring with 2x oversampling, and hierarchical pooling factor 3. Full-precision pooled vectors are stored on disk alongside binary mean-vector copies in RAM, not replaced by a quantized-only representation. |
-| Scheduling and visibility | One document queue, rather than PULSAR's preemptive document-priority lanes. Completion checks govern success and resume state; individual pages become searchable during processing. Qdrant's `indexed_only` option selects optimized segments, not completed documents. |
-
-The indexer uses a shared 320-dimensional vector contract with nested source metadata and stable page IDs. Its Azure integration checks covered A4 indexing through retrieval and stored-image fetch, unchanged replay, one-page updates, message redelivery, dead-letter handling, deletion, concurrent image/query requests, and token-limit recovery.
-
-See the [Document Processor Guide](modules/document_processor/README.md), [Inference Service Guide](modules/colpali_inference/README.md), and [Agent Guide](modules/agent/README.md) for component configuration. The indexer PR updates these guides alongside the implementation.
+See the [Document Processor Guide](modules/document_processor/README.md), [Inference Service Guide](modules/colpali_inference/README.md), and [Agent Guide](modules/agent/README.md) for component configuration.
 
 ## Quick Start
 

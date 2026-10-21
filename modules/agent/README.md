@@ -62,21 +62,6 @@ ViDoRe V3; its pooling comparison used ef **128** and production returns the top
 fetches, and answer generation also contribute to this agent's end-to-end
 latency; the paper's vector-search timings do not include all of those steps.
 
-### Pending indexer-port integration
-
-The open [indexer PR #72](https://github.com/microsoft/multi-modal-rag-with-colpali/pull/72)
-adopts those production operating points. Both single-query and expanded
-query paths default to 5 unique pages, with `max(200, top_k)` candidates per
-mean-vector prefetch, `hnsw_ef=64`, `exact=False`, `indexed_only=True`, and binary
-rescoring enabled with 2x oversampling.
-
-That port changes the mean-vector names to `mean_row_pooled` and
-`mean_column_pooled` and reads nested source metadata, including the stored
-page-image URL. Citations are deduplicated by document identity and page number.
-
-`indexed_only` selects optimized Qdrant segments rather than filtering on a
-completed document hash. Individual pages become searchable during processing.
-
 ## Agent Flow
 
 1. User submits query via Agent UI
