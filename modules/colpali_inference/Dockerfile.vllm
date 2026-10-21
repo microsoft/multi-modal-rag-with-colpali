@@ -41,9 +41,10 @@ ENV VLLM_USAGE_SOURCE=production-docker-image
 # All `vllm serve` flags below are resolved from these vars, so this image is
 # the single source of truth for the launch command.
 ENV MODEL_DIRECTORY_PATH=/mnt/models/offline
-ENV MODEL_ID=TomoroAI/tomoro-colqwen3-embed-4b
+ENV MODEL_ID=TomoroAI/tomoro-ai-colqwen3-embed-4b-awq
 ENV VLLM_MAX_MODEL_LEN=2048
-ENV VLLM_GPU_MEMORY_UTILIZATION=0.89
+# Leave activation headroom for concurrent pages in the unquantized vision tower.
+ENV VLLM_GPU_MEMORY_UTILIZATION=0.75
 # Path whitelisted for file:// image URLs sent by the shim (tmpfs shared
 # volume mounted at /shm in both shim and vllm containers).
 ENV VLLM_ALLOWED_LOCAL_MEDIA_PATH=/shm
@@ -61,6 +62,9 @@ EXPOSE 8001
 #   --scheduling-policy priority : honour `priority` field on /pooling calls
 #                               so text searches preempt indexing traffic
 #   --trust-remote-code       : ColQwen3 ships custom modeling code
+# Quantization is auto-detected from the checkpoint, not its "-awq" name:
+# this export uses AutoRound with GPTQ packing and an unquantized vision tower.
+# Do not force --quantization awq or enable CPU weight offloading.
 ENTRYPOINT ["/bin/sh", "-c", "\
   MODEL_NAME=$(basename \"${MODEL_ID}\") && \
   exec vllm serve \"${MODEL_DIRECTORY_PATH}/${MODEL_NAME}\" \
