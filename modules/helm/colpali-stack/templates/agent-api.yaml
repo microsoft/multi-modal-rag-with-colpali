@@ -72,7 +72,7 @@ spec:
         - name: QDRANT_ENDPOINT
           value: "http://{{ include "colpali-stack.fullname" . }}-qdrant:6333"
         - name: QDRANT_COLLECTION_NAME
-          value: "colpali-documents"
+          value: {{ .Values.qdrantCollectionName | default "colpali-documents" | quote }}
 
         # Qdrant API Key from Key Vault
         - name: QDRANT_API_KEY

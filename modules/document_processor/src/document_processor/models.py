@@ -1,232 +1,161 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""
-Pydantic data models for document processing pipeline.
-Replaces dictionary-based data passing with strongly-typed models.
-"""
+"""Public indexing contract shared by processing, storage, and result reporting."""
 
 import hashlib
-import logging
-import uuid
-from datetime import datetime
+import io
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
+from urllib.parse import unquote, urlsplit
+from uuid import NAMESPACE_URL, uuid5
 
 from PIL import Image
-from PIL.ImageFile import ImageFile
-from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class DocumentPage(BaseModel):
-    """Represents a single page from a processed document."""
-
-    filename: str = Field(..., description="Original filename of the document")
-    page_number: Optional[int] = Field(default=1, description="Page number")
-    text_content: Optional[str] = Field(
-        default=None, description="Extracted text from the page"
-    )
-    image_content: Union[Image.Image, ImageFile, bytes] = Field(
-        ..., description="Single page image"
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Document metadata (PDF metadata, custom fields, etc.)",
-    )
-
-    class Config:
-        arbitrary_types_allowed = True
+def generate_page_id(document_id: str, page_number: int) -> str:
+    return str(uuid5(NAMESPACE_URL, f"{document_id}:page:{page_number}"))
 
 
-class ProcessedPage(BaseModel):
-    """Processed page that matches exactly what we need for Qdrant points."""
+def compute_file_hash(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
-    document_id: str = Field(..., description="Document identifier")
-    page_number: int = Field(..., description="Page number within document")
-    text_content: Optional[str] = Field(
-        default=None, description="Extracted text from the page"
-    )
-    page_image_url: Optional[str] = Field(
-        None, description="Blob storage URL for the page image"
-    )
-    filename: str = Field(..., description="Original filename of the document")
-    file_extension: str = Field(..., description="File extension (e.g., '.pdf')")
-    blob_url: Optional[str] = Field(
-        None, description="Full blob URL including storage account"
-    )
-    embeddings: Dict[str, List[List[float]]] = Field(
-        default_factory=dict, description="Dictionary of embedding vectors by type"
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Document and blob metadata (PDF metadata, blob properties, custom fields, etc.)",
-    )
-    indexed_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Indexing timestamp"
-    )
 
-    @property
-    def page_id(self) -> str:
-        """Generate consistent UUID for QDRANT indexing."""
-        page_string = f"{self.document_id}_page_{self.page_number}"
-        hash_bytes = hashlib.sha256(page_string.encode("utf-8")).digest()[:16]
-        return str(uuid.UUID(bytes=hash_bytes))
+def compute_page_hash(image: Image.Image) -> str:
+    with io.BytesIO() as buffer:
+        image.save(
+            buffer,
+            format="JPEG",
+            quality=90,
+            subsampling=0,
+            optimize=False,
+            progressive=False,
+        )
+        return f"jpeg1:{hashlib.sha256(buffer.getvalue()).hexdigest()}"
+
+
+class DocumentSource(BaseModel):
+    blob_url: str
+    container: str
+    path: str
+    file_name: str
+    file_extension: str
 
     @classmethod
-    def from_document_page(
-        cls,
-        document_page: "DocumentPage",
-        document_id: str,
-        file_extension: str,
-        blob_url: Optional[str] = None,
-        page_image_url: Optional[str] = None,
-        additional_metadata: Optional[Dict[str, Any]] = None,
-    ) -> "ProcessedPage":
-        """Create ProcessedPage from DocumentPage."""
-        # Merge document page metadata with additional metadata
-        merged_metadata = document_page.metadata.copy()
-        if additional_metadata:
-            merged_metadata.update(additional_metadata)
-
+    def from_url(cls, url: str) -> "DocumentSource":
+        parsed = urlsplit(url)
+        parts = unquote(parsed.path).lstrip("/").split("/", 1)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Expected an absolute blob URL")
+        if len(parts) != 2 or not all(parts) or not parts[1].split("/")[-1]:
+            raise ValueError("Blob URL must contain a container and a filename")
+        name = parts[1].split("/")[-1]
         return cls(
-            document_id=document_id,
-            page_number=document_page.page_number,
-            filename=document_page.filename,
-            text_content=document_page.text_content,
-            page_image_url=page_image_url,
-            file_extension=file_extension,
-            blob_url=blob_url,
-            embeddings={},  # Will be filled after embedding generation
-            metadata=merged_metadata,
+            blob_url=parsed._replace(query="", fragment="").geturl(),
+            container=parts[0],
+            path=parts[1],
+            file_name=name,
+            file_extension=f".{name.rsplit('.', 1)[1].lower()}" if "." in name else "",
         )
-
-
-class BlobEvent(BaseModel):
-    """Azure Blob Storage event data."""
-
-    blob_url: str = Field(..., alias="url", description="Full URL of the blob")
-    blob_type: str = Field(
-        ..., alias="blobType", description="Type of blob (e.g., BlockBlob)"
-    )
-    content_type: str = Field(
-        ..., alias="contentType", description="MIME type of the blob"
-    )
-    content_length: Optional[int] = Field(
-        None, alias="contentLength", description="Size of the blob in bytes"
-    )
-
-    @property
-    def blob_name(self) -> str:
-        """Extract blob name from URL."""
-        return self.blob_url.split("/")[-1]
 
     @property
     def document_id(self) -> str:
-        """Generate document ID from blob URL."""
         return self.blob_url
 
-    @property
-    def is_pdf(self) -> bool:
-        """Check if blob is a PDF file."""
-        return (
-            self.content_type == "application/pdf"
-            or self.blob_name.lower().endswith(".pdf")
-        )
+
+class DocumentMetadata(BaseModel):
+    document: dict[str, Any] = Field(default_factory=dict)
+    blob: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentPage(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    filename: str
+    page_number: int = 1
+    text_content: str | None = None
+    image_content: Image.Image
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    effective_dpi: int = 72
+
+
+class ProcessedPage(BaseModel):
+    source: DocumentSource
+    metadata: DocumentMetadata = Field(default_factory=DocumentMetadata)
+    page_number: int
+    text_content: str | None = None
+    page_image_url: str | None = None
+    embeddings: dict[str, list[list[float]]] = Field(default_factory=dict)
+    file_hash: str | None = None
+    indexed_with_file_hash: str | None = None
+    page_hash: str | None = None
+    processing_fingerprint: str
+    page_count: int
+    indexed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
-    def file_extension(self) -> str:
-        """Extract file extension from blob name."""
-        import os
+    def document_id(self) -> str:
+        return self.source.document_id
 
-        _, ext = os.path.splitext(self.blob_name)
-        return ext.lower()
+    @property
+    def page_id(self) -> str:
+        return generate_page_id(self.document_id, self.page_number)
+
+
+class BlobEvent(BaseModel):
+    blob_url: str = Field(alias="url")
+    blob_type: str | None = Field(default=None, alias="blobType")
+    content_type: str | None = Field(default=None, alias="contentType")
+    content_length: int | None = Field(default=None, alias="contentLength")
 
 
 class ServiceBusEvent(BaseModel):
-    """Service Bus message event wrapper."""
-
-    event_type: str = Field(..., description="Type of event")
-    subject: str = Field(..., description="Event subject")
-    data: BlobEvent = Field(..., description="Event data payload")
-    event_time: datetime = Field(..., description="Event timestamp")
+    event_type: str
+    data: BlobEvent
+    force_reindex: bool = False
 
     @classmethod
-    def from_message_body(cls, body: Dict[str, Any]) -> "ServiceBusEvent":
-        """Parse Service Bus message body into structured event."""
-
-        # Handle Event Grid format (expected format)
-        if "eventType" in body and "data" in body:
-            return cls(
-                event_type=body.get("eventType", ""),
-                subject=body.get("subject", ""),
-                data=BlobEvent(**body.get("data", {})),
-                event_time=datetime.fromisoformat(
-                    body.get("eventTime", "").replace("Z", "+00:00")
-                ),
-            )
-        else:
-            raise ValueError(f"Unknown message format: {body}")
+    def from_message_body(cls, body: dict[str, Any]) -> "ServiceBusEvent":
+        return cls(
+            event_type=body["eventType"],
+            data=BlobEvent(**body["data"]),
+            force_reindex=body.get("force_reindex", False),
+        )
 
 
 class ProcessingResult(BaseModel):
-    """Result of document processing operation."""
-
-    success: bool = Field(..., description="Whether processing succeeded")
-    document_id: str = Field(..., description="Document identifier")
-    pages_processed: int = Field(
-        default=0, description="Number of pages successfully processed"
-    )
-    total_pages: int = Field(default=0, description="Total number of pages in document")
-    error_message: Optional[str] = Field(
-        None, description="Error message if processing failed"
-    )
-    processing_time_seconds: Optional[float] = Field(
-        None, description="Time taken to process"
-    )
+    success: bool
+    document_id: str
+    indexed_count: int = 0
+    page_count: int = 0
+    skipped_pages: int = 0
+    skip_reason: str | None = None
+    error_message: str | None = None
+    processing_time_seconds: float = 0
+    permanent_failure: bool = False
+    dead_letter_reason: str | None = None
 
     @property
     def success_rate(self) -> float:
-        """Calculate success rate as percentage."""
-        if self.total_pages == 0:
-            return 0.0
-        return (self.pages_processed / self.total_pages) * 100.0
+        return 100 * self.indexed_count / self.page_count if self.page_count else 0
 
 
 class EmbedHealthResponse(BaseModel):
-    """Health check response."""
-
     status: str
-    model_loaded: bool
-    model_info: Optional[Dict[str, Any]] = None
-    message: Optional[str] = None
-    error: Optional[str] = None
+    model_loaded: bool = False
+    model_info: dict[str, Any] | None = None
+    message: str | None = None
+    error: str | None = None
 
 
 class PoolingType(str, Enum):
-    """Enumeration for different pooling types."""
-
     NONE = "none"
     HIERARCHICAL_POOLING = "hierarchical_pooling"
     MEAN_POOLING = "mean_pooling"
 
 
 class EmbedRequest(BaseModel):
-    """Request model for embedding API."""
-
-    texts: Optional[List[str]] = Field(
-        default=None, description="List of texts to embed"
-    )
-    images: Optional[List[str]] = Field(
-        default=None,
-        description="List of base64-encoded images or data URIs (e.g., 'data:image/png;base64,iVBORw...')",
-    )
-
-    pooling_type: List[PoolingType] = Field(
-        default=[PoolingType.NONE],
-        description="List of pooling types. Note: Only 'none' is supported for text queries.",
-        validate_default=True,
-    )
-    pooling_config: Optional[Dict[str, Any]] = Field(
-        default=None, description="Optional pooling configuration"
-    )
+    images: list[str]
+    pooling_type: list[PoolingType]
+    pooling_config: dict[str, Any] = Field(default_factory=lambda: {"pool_factor": 3})
+    priority: int | None = None

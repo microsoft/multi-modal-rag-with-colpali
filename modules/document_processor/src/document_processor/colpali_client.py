@@ -1,313 +1,225 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""
-ColPali client for interfacing with Kubernetes ColPali service.
-"""
+"""Pooled inference transport with bounded, lossless batch recovery."""
 
 import asyncio
 import base64
+import io
 import logging
+import math
 import os
-from io import BytesIO
-from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
 from PIL import Image
-from PIL.ImageFile import ImageFile
-from tenacity import (
-    RetryCallState,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_fixed,
-)
 
 from .models import DocumentPage, EmbedHealthResponse, EmbedRequest, PoolingType
+from .page_processing import run_cpu
+
+logger = logging.getLogger(__name__)
+VECTOR_FIELDS = {
+    "hierarchical_pooled_embeddings": "hierarchical_pooled",
+    "mean_row_pooled_embeddings": "mean_row_pooled",
+    "mean_column_pooled_embeddings": "mean_column_pooled",
+}
+
+
+class EmbeddingTokenLimitError(RuntimeError):
+    def __init__(self, input_tokens: int, max_tokens: int):
+        self.input_tokens = input_tokens
+        self.max_tokens = max_tokens
+        super().__init__(
+            f"Embedding requires {input_tokens} tokens; limit is {max_tokens}"
+        )
 
 
 class ColPaliClient:
-    """Client for communicating with ColPali service in Kubernetes."""
-
-    def __init__(
-        self,
-        require_endpoint: bool = True,
-        pooling_types: Optional[List] = None,
-    ):
-        # Configure for Kubernetes ColPali service
-        self.endpoint_url = os.getenv("COLPALI_INFERENCE_ENDPOINT")
-        self.request_timeout = 120
-        self.pooling_types = (
-            pooling_types
-            if pooling_types is not None
-            else [PoolingType.MEAN_POOLING, PoolingType.HIERARCHICAL_POOLING]
-        )
-
-        # Configure concurrency limit for embedding requests
-        max_concurrent_requests = int(os.getenv("COLPALI_MAX_CONCURRENT", "5"))
-        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
-
-        # Configure batch size for embedding requests (pages per request)
+    def __init__(self, require_endpoint: bool = True, pooling_types=None):
+        endpoint = os.getenv("COLPALI_INFERENCE_ENDPOINT")
+        if require_endpoint and not endpoint:
+            raise ValueError("COLPALI_INFERENCE_ENDPOINT is required")
+        self.endpoint_url = endpoint.rstrip("/") if endpoint else None
+        self.request_timeout = float(os.getenv("COLPALI_REQUEST_TIMEOUT", "120"))
         self.batch_size = int(os.getenv("COLPALI_BATCH_SIZE", "1"))
-
-        if require_endpoint and not self.endpoint_url:
-            raise ValueError(
-                "COLPALI_INFERENCE_ENDPOINT environment variable is required but not set"
+        self.max_concurrent = int(os.getenv("COLPALI_MAX_CONCURRENT", "5"))
+        self.embedding_dpi = int(os.getenv("COLPALI_EMBEDDING_DPI", "150"))
+        self.dimension = int(os.getenv("COLPALI_EMBEDDING_DIMENSION", "320"))
+        if (
+            min(
+                self.batch_size, self.max_concurrent, self.embedding_dpi, self.dimension
             )
+            <= 0
+        ):
+            raise ValueError(
+                "Embedding dimensions, DPI, batch size and concurrency must be positive"
+            )
+        if not math.isfinite(self.request_timeout) or self.request_timeout <= 0:
+            raise ValueError("COLPALI_REQUEST_TIMEOUT must be finite and positive")
+        self.pooling_types = pooling_types or [
+            PoolingType.MEAN_POOLING,
+            PoolingType.HIERARCHICAL_POOLING,
+        ]
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._session = None
 
-        self.endpoint_url = f"{self.endpoint_url}/embeddings"
+    async def _get_session(self):
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.request_timeout),
+                connector=aiohttp.TCPConnector(limit=max(32, self.max_concurrent * 4)),
+            )
+        return self._session
 
-        logging.debug(
-            "ColPali client initialized for Kubernetes endpoint: %s", self.endpoint_url
+    async def close(self):
+        if self._session is not None:
+            await self._session.close()
+
+    async def health_check(self) -> EmbedHealthResponse:
+        session = await self._get_session()
+        async with session.get(f"{self.endpoint_url}/health") as response:
+            response.raise_for_status()
+            return EmbedHealthResponse(**await response.json())
+
+    def _prepare_payload(self, pages: list[DocumentPage]) -> dict:
+        images = []
+        for page in pages:
+            image = page.image_content
+            scale = min(1.0, self.embedding_dpi / page.effective_dpi)
+            converted = image.convert("RGB")
+            try:
+                if scale < 1:
+                    resized = converted.resize(
+                        (
+                            max(1, int(image.width * scale)),
+                            max(1, int(image.height * scale)),
+                        ),
+                        Image.Resampling.LANCZOS,
+                    )
+                    converted.close()
+                    converted = resized
+                with io.BytesIO() as buffer:
+                    converted.save(buffer, format="JPEG", quality=85)
+                    images.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+            finally:
+                converted.close()
+        return EmbedRequest(images=images, pooling_type=self.pooling_types).model_dump(
+            mode="json"
         )
-        logging.debug(
-            "Concurrency limit: %d concurrent requests", max_concurrent_requests
-        )
 
-    async def health_check(self) -> Optional[EmbedHealthResponse]:
-        """
-        Check the health status of the ColPali service.
-
-        Returns:
-            EmbedHealthResponse object or None if check failed
-        """
-        if not self.endpoint_url:
-            return None
-
-        try:
-            health_url = self.endpoint_url.replace("/embeddings", "/health")
-            headers = await self._get_auth_header()
-
-            timeout = aiohttp.ClientTimeout(
-                total=30
-            )  # Shorter timeout for health check
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(health_url, headers=headers) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        return EmbedHealthResponse(**result)
-                    else:
-                        logging.error(
-                            "Health check failed with status %s", response.status
+    def _validate_response(self, result, count):
+        if not isinstance(result, dict):
+            raise ValueError("Embedding response must be an object")
+        required = set(VECTOR_FIELDS)
+        if PoolingType.NONE in self.pooling_types:
+            required.add("embeddings")
+        for key in required:
+            values = result.get(key)
+            if not isinstance(values, list) or len(values) != count:
+                raise ValueError(f"Incomplete embedding response: {key}")
+            for rows in values:
+                if not isinstance(rows, list) or not rows:
+                    raise ValueError(f"Empty embedding response: {key}")
+                for row in rows:
+                    if (
+                        not isinstance(row, list)
+                        or len(row) != self.dimension
+                        or any(
+                            isinstance(v, bool)
+                            or not isinstance(v, (int, float))
+                            or not math.isfinite(v)
+                            for v in row
                         )
-                        return None
-        except Exception as e:
-            logging.error("Health check error: %s", str(e))
-            return None
+                    ):
+                        raise ValueError(f"Invalid embedding dimensions/values: {key}")
+        return {key: result[key] for key in required}
 
-    async def _get_auth_header(self) -> Dict[str, str]:
-        """Get headers for Kubernetes service."""
-        return {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+    async def _request(self, pages):
+        if not self.endpoint_url:
+            raise RuntimeError("Inference endpoint is not configured")
+        async with self.semaphore:
+            payload = await run_cpu(self._prepare_payload, pages)
+            session = await self._get_session()
+            async with session.post(
+                f"{self.endpoint_url}/embeddings", json=payload
+            ) as response:
+                if response.status == 422:
+                    body = await response.json(content_type=None)
+                    detail = body.get("detail") if isinstance(body, dict) else None
+                    if (
+                        isinstance(detail, dict)
+                        and detail.get("code") == "embedding_token_limit_exceeded"
+                    ):
+                        actual, maximum = (
+                            detail.get("input_tokens"),
+                            detail.get("max_tokens"),
+                        )
+                        if (
+                            type(actual) is int
+                            and type(maximum) is int
+                            and actual > maximum > 0
+                        ):
+                            raise EmbeddingTokenLimitError(actual, maximum)
+                response.raise_for_status()
+                return self._validate_response(await response.json(), len(pages))
 
     @staticmethod
-    def _return_none_on_embedding_error(retry_state: RetryCallState) -> None:
-        """Return None when retries are exhausted for embeddings."""
-        return None
+    def _merge(first, second):
+        if first.keys() != second.keys():
+            raise ValueError("Split embedding responses have different vector fields")
+        return {key: first[key] + second[key] for key in first}
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_fixed(0.5),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
-        retry_error_callback=_return_none_on_embedding_error,
-    )
-    async def generate_embeddings(
-        self, document_pages: Union[DocumentPage, List[DocumentPage]]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Generate embeddings for document page(s) using ColPali endpoint.
-
-        Args:
-            document_pages: Single DocumentPage or list of DocumentPages containing images and text
-
-        Returns:
-            Dictionary with embeddings as returned by the API, or None if generation failed.
-
-            The response contains the following keys:
-            - embeddings: Raw embeddings from the model
-            - hierarchical_pooled_embeddings: Hierarchically pooled embeddings
-            - mean_row_pooled_embeddings: Row-wise mean pooled embeddings
-            - mean_column_pooled_embeddings: Column-wise mean pooled embeddings
-
-            For single page input: Each key contains the embeddings for that single page
-            For multiple pages input: Each key contains a list of embeddings, one per page
-        """
-        # Skip processing if endpoint not configured
-        if not self.endpoint_url:
-            logging.info(
-                "ColPali endpoint not configured - skipping embedding generation"
-            )
-            return None
-
-        # Track if input was a single page
-        is_single_page = not isinstance(document_pages, list)
-
-        # Normalize input to list
-        pages_list = (
-            document_pages if isinstance(document_pages, list) else [document_pages]
-        )
-
-        try:
-            # Use semaphore to limit concurrent requests to the endpoint
-            page_numbers = [page.page_number for page in pages_list]
-            logging.debug(
-                "Acquiring semaphore for embedding request (pages %s)", page_numbers
-            )
-            async with self.semaphore:
-                logging.debug("Semaphore acquired, processing pages %s", page_numbers)
-
-                # Prepare the request payload for multiple pages
-                request_payload = self._prepare_payload(pages_list)
-
-                logging.debug(
-                    "Sending request to ColPali endpoint for pages %s", page_numbers
+    async def _generate(self, pages, reductions=0):
+        for attempt in range(3):
+            try:
+                return await self._request(pages)
+            except EmbeddingTokenLimitError as error:
+                if len(pages) > 1:
+                    result = await self._generate(pages[:1])
+                    for page in pages[1:]:
+                        result = self._merge(result, await self._generate([page]))
+                    return result
+                if reductions >= 3:
+                    raise
+                page = pages[0]
+                scale = min(
+                    0.8, math.sqrt(error.max_tokens / error.input_tokens) * 0.95
                 )
-                logging.debug(
-                    "Payload includes: %s images, pooling_type: %s, pool_factor: %s",
-                    len(request_payload.images or []),
-                    request_payload.pooling_type,
-                    request_payload.pooling_config.get("pool_factor")
-                    if request_payload.pooling_config
-                    else None,
+                size = tuple(max(1, int(d * scale)) for d in page.image_content.size)
+                if size == page.image_content.size:
+                    raise
+                logger.warning(
+                    "Reducing embedding image for page %s after token limit",
+                    page.page_number,
                 )
-
-                # Get auth header
-                headers = await self._get_auth_header()
-
-                # Make async request to ColPali endpoint
-                if not self.endpoint_url:
-                    logging.error("Endpoint URL is not configured")
-                    return None
-
-                timeout = aiohttp.ClientTimeout(total=self.request_timeout)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(
-                        self.endpoint_url,
-                        json=request_payload.model_dump(),
-                        headers=headers,
-                    ) as response:
-                        if response.status == 200:
-                            # Parse the JSON response
-                            result = await response.json()
-
-                            if result:
-                                # Return format based on input type
-                                if is_single_page:
-                                    # Single page input - extract first document from each embedding type
-                                    single_page_result = {}
-                                    for key in [
-                                        "embeddings",
-                                        "hierarchical_pooled_embeddings",
-                                        "mean_row_pooled_embeddings",
-                                        "mean_column_pooled_embeddings",
-                                    ]:
-                                        if key in result:
-                                            # Get first document from the batch
-                                            single_page_result[key] = (
-                                                result[key][0]
-                                                if isinstance(result[key], list)
-                                                and len(result[key]) > 0
-                                                else result[key]
-                                            )
-
-                                    return single_page_result
-                                else:
-                                    # Multiple pages - return as-is
-                                    return result
-                            else:
-                                logging.error("Empty response from endpoint")
-                                return None
-                        else:
-                            text = await response.text()
-                            logging.error(
-                                "ColPali endpoint returned status %s: %s",
-                                response.status,
-                                text,
-                            )
-                            raise aiohttp.ClientError(
-                                f"Bad response: {response.status}"
-                            )
-
-        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-            logging.error("Request failed: %s", str(e))
-            raise  # Re-raise for tenacity to retry
-        except Exception as e:
-            logging.error("Unexpected error generating embeddings: %s", str(e))
-            raise  # Re-raise for tenacity to retry
-
-    def _prepare_payload(self, document_pages: List[DocumentPage]) -> EmbedRequest:
-        """
-        Prepare the request payload for ColPali endpoint with multiple pages.
-
-        Args:
-            document_pages: List of DocumentPage models with images and text
-
-        Returns:
-            EmbedRequest object for the API request
-        """
-        images = []
-
-        # Extract image data from all pages - ColPali processes visual document content
-        for document_page in document_pages:
-            # Use the single page image
-            page_image = document_page.image_content
-
-            # Add image if available
-            if page_image:
-                # Handle PIL Image, ImageFile, and bytes
-                if isinstance(page_image, (Image.Image, ImageFile)):
-                    image_base64 = self._image_to_base64(page_image)
-                    images.append(image_base64)
-                else:
-                    # If it's bytes, convert to base64 directly
-                    image_base64 = base64.b64encode(page_image).decode("utf-8")
-                    images.append(image_base64)
-            else:
-                # If no image, we can't generate embeddings with ColPali
-                logging.warning(
-                    "No image_content found for page %s", document_page.page_number
+                image = await run_cpu(
+                    page.image_content.resize, size, Image.Resampling.LANCZOS
                 )
+                reduced = page.model_copy(update={"image_content": image})
+                try:
+                    return await self._generate([reduced], reductions + 1)
+                finally:
+                    image.close()
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+                if (
+                    isinstance(error, aiohttp.ClientResponseError)
+                    and error.status in (500, 502)
+                    and len(pages) > 1
+                ):
+                    middle = len(pages) // 2
+                    await asyncio.sleep(0.5)
+                    return self._merge(
+                        await self._generate(pages[:middle]),
+                        await self._generate(pages[middle:]),
+                    )
+                if attempt == 2:
+                    raise
+                logger.warning("Embedding request failed; retrying: %s", error)
+                await asyncio.sleep(0.5 * (attempt + 1))
+        raise RuntimeError("Embedding retry loop exhausted")
 
-        # Pool factor 3 provides optimal balance between compression and quality
-        request = EmbedRequest(
-            images=images,
-            pooling_type=self.pooling_types,
-            pooling_config={"pool_factor": 3},
-        )
-
-        # Validate payload structure
-        if request.images:
-            pool_factor = (
-                request.pooling_config.get("pool_factor")
-                if request.pooling_config
-                else None
-            )
-            logging.debug(
-                "Prepared payload with %s images, hierarchical pooling enabled (factor: %s)",
-                len(images),
-                pool_factor,
-            )
-
-        return request
-
-    def _image_to_base64(self, image: Union[Image.Image, ImageFile]) -> str:
-        """
-        Convert PIL Image to base64 string.
-
-        Args:
-            image: PIL Image or ImageFile object
-
-        Returns:
-            Base64 encoded image string
-        """
-        # Ensure image is in RGB format
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-
-        # Convert to base64
-        buffer = BytesIO()
-        image.save(buffer, format="JPEG", quality=85)
-        image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-        return image_base64
+    async def generate_embeddings(self, document_pages):
+        single = isinstance(document_pages, DocumentPage)
+        pages = [document_pages] if single else document_pages
+        if not pages:
+            raise ValueError("At least one page is required")
+        result = await self._generate(pages)
+        return {key: value[0] for key, value in result.items()} if single else result

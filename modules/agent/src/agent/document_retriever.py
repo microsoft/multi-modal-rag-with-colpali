@@ -17,7 +17,7 @@ import base64
 import logging
 import os
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import aiohttp
 from azure.identity.aio import DefaultAzureCredential, ManagedIdentityCredential
@@ -139,7 +139,7 @@ class DocumentRetriever:
                 logging.error("Invalid blob URL format: %s", image_url)
                 return None
 
-            container_name, blob_name = path_parts
+            container_name, blob_name = (unquote(part) for part in path_parts)
             account_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
             # Initialize blob service client on first use
@@ -259,7 +259,7 @@ class DocumentRetriever:
     async def search_documents_batch(
         self,
         queries: List[str],
-        top_k: int = 10,
+        top_k: Optional[int] = 5,
         collection_name: Optional[str] = None,
         query_filter: Optional[Dict] = None,
     ) -> List[DocumentChunk]:
@@ -283,7 +283,7 @@ class DocumentRetriever:
         try:
             # Ensure we always have a concrete integer for calculations/slicing
             if top_k is None:
-                top_k = 10
+                top_k = 5
 
             # Use provided collection_name or fall back to instance default
             target_collection = collection_name or self.collection_name
@@ -313,14 +313,16 @@ class DocumentRetriever:
                     )
 
                     # Two-stage retrieval: mean_pooling_with_hierarchical_quantized strategy
-                    prefetch_limit = top_k * 10
+                    prefetch_limit = max(200, top_k)
 
                     # Prefetch with binary-quantized mean pooled vectors, rerank with hierarchical for accuracy
                     quantized_prefetch_params = SearchParams(
-                        hnsw_ef=200,
+                        hnsw_ef=64,
+                        exact=False,
+                        indexed_only=True,
                         quantization=QuantizationSearchParams(
                             ignore=False,
-                            rescore=False,  # Skip rescoring in prefetch - final rerank uses hierarchical
+                            rescore=True,
                             oversampling=2.0,
                         ),
                     )
@@ -331,13 +333,13 @@ class DocumentRetriever:
                             Prefetch(
                                 query=query_embeddings,
                                 limit=prefetch_limit,
-                                using="mean_pooled_columns",
+                                using="mean_column_pooled",
                                 params=quantized_prefetch_params,
                             ),
                             Prefetch(
                                 query=query_embeddings,
                                 limit=prefetch_limit,
-                                using="mean_pooled_rows",
+                                using="mean_row_pooled",
                                 params=quantized_prefetch_params,
                             ),
                         ],
@@ -355,20 +357,26 @@ class DocumentRetriever:
                     image_fetch_tasks = []
 
                     for result in search_results.points:
-                        page_image_url = result.payload.get("page_image_url")
-                        text_content = result.payload.get("text_content")
+                        payload = result.payload or {}
+                        source = payload.get("source", {})
+                        metadata = payload.get("metadata", {})
+                        document = metadata.get("document", {})
+                        blob = metadata.get("blob", {})
+                        page_image_url = source.get("page_image_url")
+                        text_content = payload.get("text_content")
 
                         chunk = DocumentChunk(
-                            source_file=result.payload.get("filename", "unknown"),
-                            page_number=result.payload.get("page_number", 0),
+                            document_id=payload.get("document_id"),
+                            source_file=document.get("filename", "unknown"),
+                            page_number=payload.get("page_number", 0),
                             page_image_url=page_image_url,
                             page_image_base64=None,  # Will be filled later
                             text_content=text_content,
                             score=result.score,
-                            corpus_id=result.payload.get("corpus_id"),
-                            doc_id=result.payload.get("doc_id"),
-                            source=result.payload.get("source"),
-                            metadata=result.payload,
+                            corpus_id=blob.get("corpus_id"),
+                            doc_id=blob.get("doc_id"),
+                            source=blob.get("source"),
+                            metadata=payload,
                         )
                         chunks.append(chunk)
 
@@ -450,7 +458,7 @@ class DocumentRetriever:
 
             # Step 3: Merge and deduplicate results
             all_chunks = []
-            seen_docs = set()  # Track (filename, page_number) to avoid duplicates
+            seen_docs = set()
 
             for i, search_result in enumerate(all_search_results):
                 if isinstance(search_result, Exception):
@@ -461,7 +469,7 @@ class DocumentRetriever:
 
                 # Process chunks from this query
                 for chunk in search_result:
-                    doc_key = (chunk.source_file, chunk.page_number)
+                    doc_key = chunk.page_key
 
                     if doc_key not in seen_docs:
                         all_chunks.append(chunk)

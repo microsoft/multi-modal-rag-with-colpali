@@ -24,7 +24,7 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
-| Prefetch | `mean_pooled_columns`, `mean_pooled_rows` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
+| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
 | Rerank | `hierarchical_pooled` | Exact search | Accurate final scoring |
 
 ## Agent Flow
@@ -34,6 +34,24 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 3. Retrieve relevant pages using ColPali + Qdrant
 4. Generate answer with Azure OpenAI using retrieved context
 5. Return response with source citations
+
+## Implemented Retrieval Defaults
+
+Single-query and query-expanded retrieval return at most **5 unique pages** by
+default. Each query prefetches **200 candidates per mean-pooled vector**, using
+HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch rescoring is
+enabled with **2x oversampling** against the full-precision mean vectors on disk.
+The candidate union is then scored using `hierarchical_pooled` (pooling factor
+3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
+pool; requests above 200 expand each prefetch to at least `top_k`.
+
+The chart pins Qdrant **1.17.1**; newly created mean-vector indexes explicitly use
+HNSW `m=16` and `ef_construct=100`. Full-precision vectors remain on disk, with
+binary mean-vector copies in RAM. `indexed_only` can exclude unoptimized
+segments: allow indexing/optimization to catch up when validating newly
+ingested data, and check server behavior for small collections. This is not
+document-completion filtering or atomic publication; individual pages can
+become searchable before a whole document is complete.
 
 ## API Error Responses
 

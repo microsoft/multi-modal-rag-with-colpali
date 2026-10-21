@@ -8,6 +8,7 @@ tenantId: ""
 storageAccountName: ""
 serviceBusNamespace: ""
 serviceBusQueueName: "document-processing"
+qdrantCollectionName: "colpali-documents"
 aiFoundryOpenAiEndpoint: ""
 modelName: ""
 keyVault:
@@ -76,6 +77,17 @@ documentProcessor:
     # Qdrant indexing concurrency and batching
     qdrantMaxConcurrent: 5
     qdrantBatchSize: 20
+    embeddingDimension: 320
+    storageDpi: 500
+    embeddingDpi: 150
+    renderBufferMaxPages: 4
+    maxRenderPixels: 75000000
+    cropWhitespace: true
+    indexingRevision: "1"
+    documentTimeoutSeconds: 1200
+    serviceBusOperationTimeoutSeconds: 30
+    serviceBusCancellationTimeoutSeconds: 5
+    poisonDeliveryThreshold: 10
 
   resources:
     requests:
@@ -167,6 +179,8 @@ colpaliInference:
   # W4A16 text weights; vision encoder stays unquantized. vLLM auto-detects
   # the checkpoint's AutoRound/GPTQ format despite its "-awq" repository name.
   modelId: "TomoroAI/tomoro-ai-colqwen3-embed-4b-awq"
+  # Shared by shim, vLLM, and the indexer's processing fingerprint.
+  maxImagePixels: 4194304
   modelDirectoryPath: "/mnt/models/offline"
   hfHome: "/mnt/models/hf"
   model:
@@ -178,13 +192,14 @@ colpaliInference:
 
   # Periodic /shm cleanup sidecar — busybox `find -mmin +N -delete` loop.
   # Belt-and-braces cleanup against rare kill -9 / OOM leaks; the shim
-  # itself unlinks on every request and at startup.
+  # unlinks after upstream completion; workers must not sweep other workers' files.
   shmJanitor:
     intervalSeconds: 900
     ageMinutes: 10
 
   # CPU shim uvicorn tuning.
   uvicornWorkers: 4
+  uvicornWorkerHealthcheckTimeout: 60
   limitConcurrency: 36
 
   # CPU shim resources (no GPU — runs tokenize / image decode / pooling math).
@@ -201,9 +216,10 @@ colpaliInference:
   # GPU vLLM sidecar.
   vllm:
     imageTag: "latest"
-    maxModelLen: "2048"
+    maxModelLen: "3072"
     # Quantized model: preserve vision-activation headroom under concurrent load.
     gpuMemoryUtilization: "0.75"
+    cpuOffloadGb: "0"
     resources:
       requests:
         memory: "32Gi"

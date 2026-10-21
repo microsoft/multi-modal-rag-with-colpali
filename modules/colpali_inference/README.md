@@ -214,9 +214,88 @@ See the main README for full architecture details.
   consumers cache embeddings, rotate their cache namespace/version and restart
   them before switching query traffic; do not reuse old query-cache entries or
   clear unrelated cache data.
-- The image-resolution cap and vLLM backend are unchanged. Matching reference
+- The shim overrides the checkpoint's smaller image cap using
+  `COLPALI_MAX_IMAGE_PIXELS`, shared with vLLM's `--mm-processor-kwargs`
+  through both `max_pixels` and `size.longest_edge`.
+  Both sides must agree so patch-grid calculation matches the image tokens.
+  Matching reference
   prompt IDs is not full Hugging Face/vLLM numerical parity or a demonstrated
   relevance gain; validate those separately before production rollout.
+
+### Resolution and PULSAR comparisons
+
+The defaults adopt [PULSAR's production configuration](https://arxiv.org/html/2608.28572#A1),
+including **150-DPI embedding and 500-DPI stored images**:
+
+| Setting | Default |
+|---------|---------|
+| Image preprocessing cap | 4,194,304 pixels / 4,096 merged visual tokens (patch 16, merge 2) |
+| vLLM version / maximum sequence length | 0.32.0+cu129 / 3,072 tokens |
+| Model / KV cache dtype | bfloat16 / `auto` (inherits bfloat16) |
+| CPU weight offload / GPU memory utilization | Disabled (0 GB) / 0.75 |
+| Maximum batched tokens / sequences | 8,192 / 16 |
+| Execution | Eager |
+
+`colpaliInference.maxImagePixels` sets `COLPALI_MAX_IMAGE_PIXELS` in both inference
+containers and the indexer's fingerprint. Outside Helm, set it identically in
+all three processes. vLLM uses the standard Qwen3-VL processor; the shim uses
+the checkpoint's retrieval processor with the same pixel override, without
+editing cached model files. Both `max_pixels` and `size` are supplied because
+the checkpoint's explicit `size` can otherwise override the larger pixel cap;
+`size.shortest_edge` retains this checkpoint's 65,536-pixel minimum.
+The launch-contract test executes the actual Docker shell arguments and checks
+their preprocessing output against the shim using the real image processor.
+The sequence budget includes prompt tokens, so
+the 4,096-token visual ceiling does not mean every image fits a 3,072-token
+request. Full A4 pages at 150 DPI fit; larger inputs may trigger bounded
+indexer downscaling without reducing the stored image resolution.
+
+`colpaliInference.vllm.maxModelLen`, `cpuOffloadGb`, and `gpuMemoryUtilization`
+override the corresponding `VLLM_*` environment variables. Actual KV capacity
+depends on GPU hardware and available memory; the paper's reported 4,560-token
+cache capacity is not hard-coded here.
+The rendering, image cap, sequence budget, and search configuration follow the
+paper. The maintained runtime uses vLLM 0.32.0 with CUDA 12.9 and the quantized
+checkpoint, retaining its 0.75 GPU memory budget and disabled CPU offload.
+The paper's original-model profile used vLLM 0.19.1, 0.89 GPU utilization and
+0.3 GB CPU offload; this is not an identical reproduction of its environment.
+
+The combined quantized defaults above were functionally validated on an A10-12Q
+(12 GiB): full A4 images at 150 DPI, batches of 5 and 10 concurrent one-image
+requests, and 10 images overlapping a query completed without container restarts.
+A 4,107-token oversized input returned the structured 3,072-token limit error;
+the indexer's bounded downscaling recovered without modifying the original image.
+These are bounded compatibility checks, not sustained-throughput, latency-SLA,
+or retrieval-quality guarantees. Retune for your page distribution and GPU.
+
+For its [embedding-DPI ablation, section 5.1 footnote 5](https://arxiv.org/html/2608.28572#S5.SS1),
+the paper raised `max_num_visual_tokens` from the model default of 1,280 to
+65,536 so each render could be processed at full resolution. That is an ablation
+setting, not the production default above. Increasing DPI alone does not raise
+the preprocessing cap or sequence budget. Evaluate image
+preprocessing, sequence limits, memory, and latency together before changing
+resolution; matching DPI values does not establish equivalent retrieval or
+answer quality. See the [processor guide](../document_processor/README.md#relationship-to-pulsar)
+for this implementation's rendering and document-visibility differences.
+
+### Request recovery and staged-image lifetime
+
+Requests accept an optional integer `priority`, forwarded to vLLM. Without it,
+the existing query/image priority defaults apply. Recognized upstream prompt
+length errors return HTTP 422 with `detail.code=embedding_token_limit_exceeded`,
+`input_tokens`, and `max_tokens`. Other upstream errors retain their existing
+429/503/502 mappings. The indexer uses this structured error for bounded image
+downscaling; stored page images retain their resolution.
+
+Caller disconnection does not unlink files still needed by vLLM. Staged image
+operations own their image copies and finish independently of the disconnected
+caller, with outstanding operations drained during shutdown. A failed batch waits
+for sibling calls before removing files. Interrupted upstream transports retain
+files for the age-based Helm janitor; workers never sweep shared tmpfs at startup.
+Keep the janitor age above the longest upstream request lifetime.
+
+`UVICORN_TIMEOUT_WORKER_HEALTHCHECK` defaults to 60 seconds to tolerate CPU
+contention without prematurely killing active workers.
 
 ### Regression checks
 
@@ -229,4 +308,15 @@ python -m unittest discover -s tests -v
 
 These checks cover active-token selection, rectangular spatial pooling, invalid
 upstream vectors, and HTTP request parity using a local fake vLLM server. They
-do not require model weights or a GPU.
+also exercise the real shim over HTTP to verify token-limit recovery responses,
+retryable errors and backoff headers, plus staged-file ownership during failures
+and cancellation. Both this suite and the document-processing workflow suite run
+in CI. They do not require model weights or a GPU and do not establish model
+quality or production throughput.
+
+To also exercise the checkpoint's real query augmentation and batch-padding
+behavior, set `TEST_PROCESSOR_PATH` to a trusted local processor/tokenizer
+snapshot before running the suite. This opt-in check loads its custom processor
+code locally without downloading model weights or making inference requests.
+It catches checkpoint/runtime API incompatibilities that a fake processor cannot.
+Use the runtime versions selected by the inference dependency lock.

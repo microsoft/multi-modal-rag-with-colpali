@@ -42,9 +42,11 @@ ENV VLLM_USAGE_SOURCE=production-docker-image
 # the single source of truth for the launch command.
 ENV MODEL_DIRECTORY_PATH=/mnt/models/offline
 ENV MODEL_ID=TomoroAI/tomoro-ai-colqwen3-embed-4b-awq
-ENV VLLM_MAX_MODEL_LEN=2048
+ENV VLLM_MAX_MODEL_LEN=3072
 # Leave activation headroom for concurrent pages in the unquantized vision tower.
 ENV VLLM_GPU_MEMORY_UTILIZATION=0.75
+ENV VLLM_CPU_OFFLOAD_GB=0
+ENV COLPALI_MAX_IMAGE_PIXELS=4194304
 # Path whitelisted for file:// image URLs sent by the shim (tmpfs shared
 # volume mounted at /shm in both shim and vllm containers).
 ENV VLLM_ALLOWED_LOCAL_MEDIA_PATH=/shm
@@ -73,6 +75,10 @@ ENTRYPOINT ["/bin/sh", "-c", "\
     --port 8001 \
     --max-model-len \"${VLLM_MAX_MODEL_LEN}\" \
     --gpu-memory-utilization \"${VLLM_GPU_MEMORY_UTILIZATION}\" \
+    --cpu-offload-gb \"${VLLM_CPU_OFFLOAD_GB}\" \
+    --dtype bfloat16 \
+    --kv-cache-dtype auto \
+    --mm-processor-kwargs \"{\\\"max_pixels\\\":${COLPALI_MAX_IMAGE_PIXELS},\\\"size\\\":{\\\"longest_edge\\\":${COLPALI_MAX_IMAGE_PIXELS},\\\"shortest_edge\\\":65536}}\" \
     --allowed-local-media-path \"${VLLM_ALLOWED_LOCAL_MEDIA_PATH}\" \
     --enforce-eager \
     --max-num-batched-tokens 8192 \

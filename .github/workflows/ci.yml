@@ -16,17 +16,39 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
-
       - name: Ensure Bicep is installed
         run: az bicep version || az bicep install
-
       - name: Check infrastructure contract
         run: python -m unittest discover -s modules/infra/tests -v
+
+  indexer-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.17.1
+        env:
+          QDRANT__TELEMETRY_DISABLED: "true"
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install uv
+        run: pip install uv
+      - name: Restore indexer dependencies
+        run: uv sync --project modules/document_processor --locked
+      - name: Check document processing and retrieval workflows
+        env:
+          TEST_QDRANT_URL: http://127.0.0.1:6333
+        run: uv run --project modules/document_processor --frozen pytest modules/document_processor/tests
 
   pre-commit:
     runs-on: ubuntu-latest
@@ -71,8 +93,6 @@ jobs:
         include:
           - module: agent
             command: python -m pytest tests -q
-          - module: document_processor
-            command: python -m unittest discover -s tests
           - module: colpali_inference
             command: python -m unittest discover -s tests
     defaults:

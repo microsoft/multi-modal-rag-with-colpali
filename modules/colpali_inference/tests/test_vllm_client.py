@@ -1,22 +1,133 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from aiohttp import web
+from aiohttp import ClientConnectionError, web
 from PIL import Image
 
 from colpali_inference.vllm_client import (
     VLLMClientError,
     VLLMEmbeddingClient,
+    VLLMUpstreamError,
     _decode_pooling_response,
+    token_limit_detail,
 )
 
 
 class VLLMClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transport_failure_retains_files_even_when_sibling_is_rejected(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            Image.new("RGB", (16, 16)) as image,
+        ):
+            client = VLLMEmbeddingClient(image_shm_dir=directory)
+            client._post_pooling = AsyncMock(
+                side_effect=[
+                    VLLMUpstreamError(500),
+                    ClientConnectionError("disconnected"),
+                ],
+            )
+            with self.assertRaises(ClientConnectionError):
+                await client.embed_images([image, image])
+            await client.close()
+            self.assertEqual(len(list(Path(directory).glob("*.png"))), 2)
+
+    async def test_cancelled_caller_does_not_unlink_inflight_images(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            Image.new("RGB", (16, 16)) as image,
+        ):
+            client = VLLMEmbeddingClient(image_shm_dir=directory)
+            started, release = asyncio.Event(), asyncio.Event()
+            paths = []
+
+            async def upstream(body):
+                path = Path(
+                    body["messages"][0]["content"][0]["image_url"]["url"].removeprefix(
+                        "file://"
+                    )
+                )
+                paths.append(path)
+                started.set()
+                await release.wait()
+                self.assertTrue(path.exists())
+                return [{"data": [[1.0, 2.0]]}]
+
+            client._post_pooling = upstream
+            task = asyncio.create_task(client.embed_images([image]))
+            await asyncio.wait_for(started.wait(), timeout=5)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(paths[0].exists())
+            self.assertEqual(len(client._detached_tasks), 1)
+            release.set()
+            await client.close()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    async def test_failed_batch_waits_for_sibling_upstream_reads(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            Image.new("RGB", (16, 16)) as image,
+        ):
+            client = VLLMEmbeddingClient(image_shm_dir=directory)
+            started, release = asyncio.Event(), asyncio.Event()
+            calls = 0
+
+            async def upstream(body):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise VLLMUpstreamError(500)
+                path = Path(
+                    body["messages"][0]["content"][0]["image_url"]["url"].removeprefix(
+                        "file://"
+                    )
+                )
+                started.set()
+                await release.wait()
+                self.assertTrue(path.exists())
+                return [{"data": [[1.0, 2.0]]}]
+
+            client._post_pooling = upstream
+            task = asyncio.create_task(client.embed_images([image, image]))
+            await asyncio.wait_for(started.wait(), timeout=5)
+            self.assertFalse(task.done())
+            release.set()
+            with self.assertRaises(VLLMUpstreamError):
+                await task
+            await client.close()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    async def test_partial_stage_failure_cleans_every_file(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            Image.new("RGB", (16, 16)) as image,
+        ):
+            client = VLLMEmbeddingClient(image_shm_dir=directory)
+            calls = 0
+
+            def save(image, path):
+                nonlocal calls
+                path.write_bytes(b"partial")
+                calls += 1
+                if calls == 2:
+                    raise OSError("disk full")
+
+            with patch(
+                "colpali_inference.vllm_client._save_image_png", side_effect=save
+            ):
+                with self.assertRaises(OSError):
+                    await client.embed_images([image, image])
+            await client.close()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     async def test_image_tokenization_and_pooling_use_identical_reference_prompt(self):
         requests = []
 
@@ -104,6 +215,23 @@ class VLLMClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PoolingResponseTests(unittest.TestCase):
+    def test_token_limit_errors_are_structured_but_other_400s_are_not(self):
+        messages = [
+            "The decoder prompt (length 3000) is longer than the maximum model length of 2048.",
+            "This model's maximum context length is 2048 tokens. However, you requested 0 output tokens and your prompt contains at least 3000 input tokens, for a total of at least 3000 tokens.",
+        ]
+        for message in messages:
+            self.assertEqual(
+                token_limit_detail(json.dumps({"error": {"message": message}})),
+                {
+                    "code": "embedding_token_limit_exceeded",
+                    "input_tokens": 3000,
+                    "max_tokens": 2048,
+                },
+            )
+        for body in ("not json", "[]", "{}", '{"error":{"message":"bad image"}}'):
+            self.assertIsNone(token_limit_detail(body))
+
     def test_invalid_or_zero_padding_vectors_are_rejected(self):
         for rows in (
             [],

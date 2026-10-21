@@ -51,6 +51,10 @@ class EmbedRequest(BaseModel):
     pooling_config: Optional[Dict[str, Any]] = Field(
         default=None, description="Optional pooling configuration"
     )
+    priority: Optional[int] = Field(
+        default=None,
+        description="Optional vLLM scheduling priority; lower values run first.",
+    )
 
     @field_validator("pooling_type")
     @classmethod
