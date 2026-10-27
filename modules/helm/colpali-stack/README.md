@@ -140,7 +140,7 @@ Rendering/model changes can invalidate indexing fingerprints; changing settings
 does not enqueue existing documents. Reindex explicitly and compare retrieval
 quality as well as throughput, failures, GPU memory, and mixed-query latency.
 
-The Qdrant chart dependency is pinned to **1.19.1**. Retrieval defaults and their
+The Qdrant chart dependency is pinned to **1.20.0**. Retrieval defaults and their
 limits are documented in the [agent guide](../../agent/README.md#implemented-retrieval-defaults);
 not every search parameter is an environment-variable override.
 

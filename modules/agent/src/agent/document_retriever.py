@@ -15,6 +15,7 @@ Connects to in-cluster Kubernetes services:
 import asyncio
 import base64
 import logging
+import math
 import os
 from typing import Dict, List, Optional
 from urllib.parse import unquote, urlparse
@@ -33,6 +34,9 @@ from tenacity import (
 )
 
 from .models import DocumentChunk
+
+RRF_RANK_CONSTANT = 60
+EXPANDED_QUERY_RESULT_LIMIT = 25
 
 
 class DocumentRetriever:
@@ -200,6 +204,20 @@ class DocumentRetriever:
                         # For batch text queries, embeddings is [batch x patches x dim]
                         if "embeddings" in result and result["embeddings"]:
                             embeddings = result["embeddings"]
+                            if not isinstance(embeddings, list) or len(
+                                embeddings
+                            ) != len(queries):
+                                raise ValueError(
+                                    "Embedding batch count mismatch: expected "
+                                    f"{len(queries)} query embeddings"
+                                )
+                            if any(
+                                not isinstance(embedding, list) or not embedding
+                                for embedding in embeddings
+                            ):
+                                raise ValueError(
+                                    "Embedding batch contains an empty query"
+                                )
                             logging.info(
                                 "Received embeddings for %d queries", len(embeddings)
                             )
@@ -261,10 +279,10 @@ class DocumentRetriever:
     ) -> List[DocumentChunk]:
         """
         Search for relevant documents using multiple queries processed in parallel through GPU.
-        Handles deduplication and final limiting internally.
+        Fuses expanded-query rankings with RRF before final limiting.
 
-        Uses the mean_pooling_with_hierarchical_quantized strategy (optimal based on benchmarking):
-        - Prefetch: Binary-quantized mean pooled vectors with 2x oversampling
+        Uses the mean_pooling_with_hierarchical_quantized strategy:
+        - Prefetch: Binary-quantized mean pooled vectors with 2x oversampling and float rescoring
         - Rerank: Exact search on hierarchical pooled vectors
 
         Args:
@@ -280,6 +298,10 @@ class DocumentRetriever:
             # Ensure we always have a concrete integer for calculations/slicing
             if top_k is None:
                 top_k = 5
+            queries = list(dict.fromkeys(queries))
+            result_limit = (
+                max(EXPANDED_QUERY_RESULT_LIMIT, top_k) if len(queries) > 1 else top_k
+            )
 
             # Use provided collection_name or fall back to instance default
             target_collection = collection_name or self.collection_name
@@ -340,17 +362,14 @@ class DocumentRetriever:
                             ),
                         ],
                         "using": "hierarchical_pooled",
-                        "limit": top_k,
+                        "limit": result_limit,
                         "with_payload": True,
                     }
                     if query_filter is not None:
                         query_kwargs["query_filter"] = query_filter
 
                     search_results = await self._query_qdrant_with_retry(**query_kwargs)
-                    # Transform results into DocumentChunk objects
-                    # First, create chunks without images
                     chunks = []
-                    image_fetch_tasks = []
 
                     for result in search_results.points:
                         payload = result.payload or {}
@@ -366,7 +385,7 @@ class DocumentRetriever:
                             source_file=document.get("filename", "unknown"),
                             page_number=payload.get("page_number", 0),
                             page_image_url=page_image_url,
-                            page_image_base64=None,  # Will be filled later
+                            page_image_base64=None,
                             text_content=text_content,
                             score=result.score,
                             corpus_id=blob.get("corpus_id"),
@@ -375,55 +394,6 @@ class DocumentRetriever:
                             metadata=payload,
                         )
                         chunks.append(chunk)
-
-                        # Collect image fetch tasks if needed
-                        if self.fetch_images and page_image_url:
-                            image_fetch_tasks.append(
-                                self._fetch_image_from_url(page_image_url)
-                            )
-                        else:
-                            image_fetch_tasks.append(None)
-
-                    # Fetch all images in parallel
-                    if self.fetch_images and any(
-                        task is not None for task in image_fetch_tasks
-                    ):
-                        # Replace None tasks with coroutines that return None
-                        async def return_none():
-                            return None
-
-                        image_fetch_tasks = [
-                            task if task is not None else return_none()
-                            for task in image_fetch_tasks
-                        ]
-
-                        image_results = await asyncio.gather(
-                            *image_fetch_tasks, return_exceptions=True
-                        )
-
-                        # Assign fetched images to chunks
-                        for chunk, image_result in zip(chunks, image_results):
-                            if isinstance(image_result, Exception):
-                                logging.warning(
-                                    "Failed to fetch image for %s page %d: %s",
-                                    chunk.source_file,
-                                    chunk.page_number,
-                                    str(image_result),
-                                )
-                            elif image_result is not None:
-                                chunk.page_image_base64 = image_result
-
-                            # Log warning if image fetch failed but text content is available
-                            if (
-                                not chunk.page_image_base64
-                                and chunk.text_content
-                                and chunk.page_image_url
-                            ):
-                                logging.warning(
-                                    "Failed to fetch image for %s page %d, will use text content as fallback",
-                                    chunk.source_file,
-                                    chunk.page_number,
-                                )
 
                     logging.debug(
                         "Query %d returned %d chunks", query_index, len(chunks)
@@ -452,9 +422,8 @@ class DocumentRetriever:
                 *search_tasks, return_exceptions=True
             )
 
-            # Step 3: Merge and deduplicate results
-            all_chunks = []
-            seen_docs = set()
+            unique_chunks: Dict[tuple[str, int], DocumentChunk] = {}
+            rank_contributions: Dict[tuple[str, int], List[float]] = {}
 
             for i, search_result in enumerate(all_search_results):
                 if isinstance(search_result, Exception):
@@ -463,29 +432,51 @@ class DocumentRetriever:
                     )
                     continue
 
-                # Process chunks from this query
-                for chunk in search_result:
+                seen_pages = set()
+                for rank, chunk in enumerate(search_result, start=1):
                     doc_key = chunk.page_key
+                    if doc_key in seen_pages:
+                        continue
+                    seen_pages.add(doc_key)
+                    unique_chunks.setdefault(doc_key, chunk)
+                    rank_contributions.setdefault(doc_key, []).append(
+                        1.0 / (RRF_RANK_CONSTANT + rank)
+                    )
 
-                    if doc_key not in seen_docs:
-                        all_chunks.append(chunk)
-                        seen_docs.add(doc_key)
-                        logging.debug(
-                            "Added unique chunk: %s (page %d, score=%.3f)",
+            all_chunks = list(unique_chunks.values())
+            if len(queries) > 1:
+                for chunk in all_chunks:
+                    chunk.score = math.fsum(rank_contributions[chunk.page_key])
+                all_chunks.sort(key=lambda chunk: (-chunk.score, chunk.page_key))
+            final_chunks = all_chunks[:top_k]
+
+            # Fetch only final pages, not every candidate from every rewrite.
+            if self.fetch_images:
+                image_chunks = [chunk for chunk in final_chunks if chunk.page_image_url]
+                image_results = await asyncio.gather(
+                    *(
+                        self._fetch_image_from_url(chunk.page_image_url)
+                        for chunk in image_chunks
+                        if chunk.page_image_url is not None
+                    ),
+                    return_exceptions=True,
+                )
+                for chunk, image_result in zip(image_chunks, image_results):
+                    if isinstance(image_result, Exception):
+                        logging.warning(
+                            "Failed to fetch image for %s page %d: %s",
                             chunk.source_file,
                             chunk.page_number,
-                            chunk.score,
+                            image_result,
                         )
-                    else:
-                        logging.debug(
-                            "Skipped duplicate chunk: %s (page %d)",
-                            doc_key[0],
-                            doc_key[1],
+                    elif image_result is not None:
+                        chunk.page_image_base64 = image_result
+                    if not chunk.page_image_base64 and chunk.text_content:
+                        logging.warning(
+                            "Failed to fetch image for %s page %d, will use text content as fallback",
+                            chunk.source_file,
+                            chunk.page_number,
                         )
-
-            # Sort by score (highest first) and limit to final top_k
-            all_chunks.sort(key=lambda x: x.score, reverse=True)
-            final_chunks = all_chunks[:top_k]
 
             logging.info(
                 "Batch search completed: %d unique chunks from %d queries, returning top %d",

@@ -60,13 +60,16 @@ Default collection: `colpali-documents`. The default model is
 
 | Named vector | Storage | Index |
 |---|---|---|
-| `hierarchical_pooled` | Full-precision vectors on disk | HNSW disabled; exact reranking |
-| `mean_row_pooled` | Full-precision vectors on disk, binary quantization in RAM | Candidate retrieval |
-| `mean_column_pooled` | Full-precision vectors on disk, binary quantization in RAM | Candidate retrieval |
+| `hierarchical_pooled` | Full-precision vectors `cold` | HNSW disabled; exact reranking |
+| `mean_row_pooled` | Full-precision vectors `cold`, binary copies `pinned` | HNSW `pinned`; candidate retrieval |
+| `mean_column_pooled` | Full-precision vectors `cold`, binary copies `pinned` | HNSW `pinned`; candidate retrieval |
 
 These are full-precision **pooled** representations, not an additional unpooled
 patch-vector field. Binary quantization does not replace the stored full-precision
 vectors; this is not a quantized-only index.
+Payloads are `cold`; the ID tracker and managed keyword indexes are `pinned`.
+`cold` data is cached on demand without startup prewarming; `pinned` data cannot
+be evicted. Cold float mean copies are read on demand for prefetch rescoring.
 
 Page identity is UUID5 using `NAMESPACE_URL` and
 `"{document_id}:page:{page_number}"`. Document identity is the source blob URL
@@ -100,9 +103,9 @@ Additional root fields are `page_id`, `text_content`, `indexed_at`, `file_hash`,
 reads this nested contract and deduplicates by document identity plus page number.
 
 Initialization rejects incompatible vector names/dimensions. Compatible
-collections have full-precision vector storage moved to disk without deleting
-data or unrelated payload indexes. Existing document IDs/payloads are also
-checked before reuse.
+collections have memory placement reconciled without deleting data or unrelated
+payload indexes, preserving vector datatypes, HNSW tuning, and binary encodings.
+Existing document IDs/payloads are also checked before reuse.
 
 Writes are page-level, not an atomic document snapshot. In-process duplicate
 events are serialized and source ETags are checked before completion, but
@@ -188,7 +191,7 @@ By default Qdrant runs in memory. To exercise the actual server, including
 optimized binary-vector retrieval, start a disposable local instance:
 
 ```powershell
-docker run --rm -d --name colpali-test-qdrant -p 127.0.0.1:46333:6333 -e QDRANT__TELEMETRY_DISABLED=true qdrant/qdrant:v1.19.1
+docker run --rm -d --name colpali-test-qdrant -p 127.0.0.1:46333:6333 -e QDRANT__TELEMETRY_DISABLED=true qdrant/qdrant:v1.20.0
 $env:TEST_QDRANT_URL = "http://127.0.0.1:46333"
 try {
     uv run --project modules\document_processor --frozen pytest modules\document_processor\tests
@@ -200,7 +203,7 @@ try {
 
 The server URL must be loopback-only. Each workflow owns a uniquely named
 collection and removes only that collection afterward. CI runs these workflows
-against Qdrant 1.19.1, matching the processor client and Helm server versions.
+against Qdrant 1.20.0, matching the processor client and Helm server versions.
 
 For a bounded check against deployed inference, establish an authorized
 loopback port-forward, set `TEST_INFERENCE_URL` to its base URL, and run only

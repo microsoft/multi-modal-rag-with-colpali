@@ -43,7 +43,7 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
-| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
+| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, `rescore=true`, `oversampling=2.0` | Approximate retrieval with float mean rescoring |
 | Rerank | `hierarchical_pooled` | MaxSim over the candidate union, HNSW disabled | Final scoring with pooled token vectors |
 
 ## Agent Flow
@@ -62,15 +62,24 @@ events before its terminal `done` event.
 
 Single-query and query-expanded retrieval return at most **5 unique pages** by
 default. Each query prefetches **200 candidates per mean-pooled vector**, using
-HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch rescoring is
-enabled with **2x oversampling** against the full-precision mean vectors on disk.
+HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch uses
+`rescore=true` with `oversampling=2.0`: extra binary candidates are rescored
+against float mean vectors before selecting each prefetch shortlist.
 The candidate union is then scored using `hierarchical_pooled` (pooling factor
 3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
 pool; requests above 200 expand each prefetch to at least `top_k`.
+For expanded queries, each distinct query requests 25 reranked candidates
+(or `top_k` if larger). Page rankings are merged with reciprocal rank fusion
+(`k=60`, equal query weights), with page identity breaking ties. Returned scores
+are RRF scores for multiple queries and MaxSim scores for a single query.
+Images are fetched only for the final selected pages. Query embedding batches
+must match the distinct query count; mismatches are logged and rejected before
+any Qdrant search.
 
-The chart pins Qdrant **1.19.1**; newly created mean-vector indexes explicitly use
+The chart pins Qdrant **1.20.0**; newly created mean-vector indexes explicitly use
 HNSW `m=16` and `ef_construct=100`. Full-precision vectors remain on disk, with
-binary mean-vector copies in RAM. `indexed_only` can exclude unoptimized
+binary mean-vector copies and their HNSW graphs pinned in RAM.
+`indexed_only` can exclude unoptimized
 segments: allow indexing/optimization to catch up when validating newly
 ingested data, and check server behavior for small collections. This is not
 document-completion filtering or atomic publication; individual pages can
