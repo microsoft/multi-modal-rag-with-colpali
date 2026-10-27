@@ -8,13 +8,25 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
 from aiohttp import web
 from aiohttp.test_utils import TestServer
+from azure.monitor.opentelemetry.exporter import AzureMonitorLogExporter
 from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.trace import SpanKind
 from PIL import Image
 from transformers.generation.utils import GenerationMixin
 
@@ -336,6 +348,97 @@ class HTTPCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class APICompatibilityTests(unittest.TestCase):
+    def test_azure_monitor_exports_sdk_log_records(self):
+        with patch.dict(
+            os.environ,
+            {
+                "APPLICATIONINSIGHTS_CONTROLPLANE_DISABLED": "true",
+                "APPLICATIONINSIGHTS_STATSBEAT_DISABLED_ALL": "true",
+                "APPLICATIONINSIGHTS_SDKSTATS_DISABLED": "true",
+            },
+        ):
+            exporter = AzureMonitorLogExporter(
+                connection_string=(
+                    "InstrumentationKey=00000000-0000-0000-0000-000000000000"
+                ),
+                disable_offline_storage=True,
+            )
+            provider = LoggerProvider()
+            provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+            try:
+                with patch.object(
+                    exporter.client,
+                    "track",
+                    return_value=SimpleNamespace(
+                        errors=[], items_received=1, items_accepted=1
+                    ),
+                ) as send:
+                    provider.get_logger(__name__).emit(
+                        body="Embedding completed",
+                        attributes={"document.id": "sample.pdf"},
+                    )
+                    send.assert_called_once()
+                    envelopes = send.call_args.args[0]
+                    self.assertEqual(len(envelopes), 1)
+                    record = envelopes[0].data.base_data
+                    self.assertEqual(record.message, "Embedding completed")
+                    self.assertEqual(record.properties["document.id"], "sample.pdf")
+            finally:
+                provider.shutdown()
+                exporter.client.close()
+
+    def test_request_tracing_preserves_context_and_discards_oversized_tracestate(self):
+        traced_app = FastAPI()
+
+        @traced_app.get("/health")
+        async def health():
+            return {"status": "healthy"}
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        FastAPIInstrumentor.instrument_app(traced_app, tracer_provider=provider)
+        try:
+            with TestClient(traced_app) as client:
+                for tracestate, expected in (
+                    ("vendor=value", [("vendor", "value")]),
+                    ("vendor=value" + " " * 10000 + ",other=value", []),
+                ):
+                    with self.subTest(oversized=len(tracestate) > 8192):
+                        exporter.clear()
+                        response = client.get(
+                            "/health",
+                            headers={
+                                "traceparent": (
+                                    "00-0af7651916cd43dd8448eb211c80319c"
+                                    "-b7ad6b7169203331-01"
+                                ),
+                                "tracestate": tracestate,
+                            },
+                        )
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.json(), {"status": "healthy"})
+                        spans = [
+                            span
+                            for span in exporter.get_finished_spans()
+                            if span.kind == SpanKind.SERVER
+                        ]
+                        self.assertEqual(len(spans), 1)
+                        span = spans[0]
+                        self.assertEqual(
+                            span.context.trace_id,
+                            int("0af7651916cd43dd8448eb211c80319c", 16),
+                        )
+                        self.assertEqual(
+                            span.parent.span_id, int("b7ad6b7169203331", 16)
+                        )
+                        self.assertEqual(
+                            list(span.context.trace_state.items()), expected
+                        )
+        finally:
+            FastAPIInstrumentor.uninstrument_app(traced_app)
+            provider.shutdown()
+
     def test_liveness_and_request_validation_without_gpu_startup(self):
         client = TestClient(app)
         self.assertEqual(client.get("/livez").json(), {"status": "alive"})
