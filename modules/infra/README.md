@@ -163,8 +163,9 @@ AVM telemetry is disabled. Workload identity federation is configured after AKS 
 | Storage and Service Bus | Cross-tenant replication, storage local users, and blob versioning are disabled. Service Bus uses TLS 1.2 with local/SAS authentication disabled. |
 | Deployment permissions | Storage, Log Analytics, and Service Bus AVMs require `listKeys` permissions for their internal secure outputs. Service Bus expects its service-created `RootManageSharedAccessKey` rule. |
 
-Choose a region that supports Premium SSD v2 and the CPU VM size in availability
-zone 1. The application chart provisions Qdrant's data disk in the consuming
+Use AKS 1.35 or later and choose a region that supports Premium SSD v2 and the
+CPU VM size in availability zone 1. The application chart uses AKS's built-in
+`managed-csi-premium-v2` class to provision Qdrant's data disk in the consuming
 node's zone. See [Premium SSD v2 regional availability](https://learn.microsoft.com/azure/virtual-machines/disks-types#premium-ssd-v2-regional-availability)
 and the [Qdrant storage settings](../helm/colpali-stack/README.md#qdrant-storage).
 

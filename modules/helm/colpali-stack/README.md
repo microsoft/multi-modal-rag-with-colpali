@@ -36,7 +36,8 @@ annotations:
 ## Prerequisites
 
 1. Run infrastructure deployment: `.\scripts\deploy_infra.ps1`
-2. Have kubectl and helm installed
+2. Use AKS 1.35 or later with the built-in `managed-csi-premium-v2` storage class
+3. Have kubectl and helm installed
 
 ### Node pools
 
@@ -53,7 +54,7 @@ workloads, and `gpupool` for GPU workloads. The chart's CPU selectors target
 This automatically:
 1. Restores locked Helm dependencies (`helm dependency build`)
 2. Deploys the application components
-3. Creates a Premium SSD v2 storage class and a 128 GiB Qdrant data volume
+3. Provisions a 128 GiB Qdrant data volume using AKS's Premium SSD v2 storage class
 4. Exposes Agent UI through ingress; inference and Qdrant remain internal by default
 
 ## Access Qdrant Dashboard
@@ -81,25 +82,24 @@ node's temporary disk. The default performance is **3,000 IOPS and 125 MB/s**,
 independent of capacity. This is network-attached block storage that survives
 node replacement; it is not local NVMe.
 
-The chart creates `colpali-qdrant-premium-v2` using the Azure Disk CSI driver,
-`PremiumV2_LRS`, no host caching, and an ext4 filesystem. `WaitForFirstConsumer`
-places the disk in the scheduled node's availability zone. The infrastructure's
-CPU pool uses zone 1; select a region and VM size that support Premium SSD v2 in
-that zone. See [Azure's AKS Premium SSD v2 guidance](https://learn.microsoft.com/azure/aks/use-premium-v2-disks)
+The chart reuses AKS's built-in `managed-csi-premium-v2` storage class, available
+from AKS 1.35. It uses the Azure Disk CSI driver, `PremiumV2_LRS`, and no host
+caching. `WaitForFirstConsumer` places the disk in the scheduled node's
+availability zone. The infrastructure's CPU pool uses zone 1; select a region
+and VM size that support Premium SSD v2 in that zone. See
+[AKS built-in storage classes](https://learn.microsoft.com/azure/aks/concepts-storage#storage-classes)
 and [regional availability](https://learn.microsoft.com/azure/virtual-machines/disks-types#premium-ssd-v2-regional-availability).
 
 | Chart value | Default | Purpose |
 |---|---|---|
 | `qdrant.persistence.size` | `128Gi` | Data disk capacity |
-| `qdrant.persistence.storageClassName` | `colpali-qdrant-premium-v2` | Class used by Qdrant and, when enabled, created by this chart |
-| `qdrantStorageClass.create` | `true` | Set to `false` to use an existing storage class |
-| `qdrantStorageClass.diskIOPSReadWrite` | `3000` | Provisioned IOPS for newly created disks |
-| `qdrantStorageClass.diskMBpsReadWrite` | `125` | Provisioned throughput in MB/s for newly created disks |
+| `qdrant.persistence.storageClassName` | `managed-csi-premium-v2` | Existing AKS storage class used by Qdrant |
 
-Storage classes are cluster-scoped. Give each release its own
-`qdrant.persistence.storageClassName`, or use an existing class with
-`qdrantStorageClass.create=false`. Provisioned performance is also bounded by
-the node's disk limits. Performance above the baseline incurs additional cost.
+The chart does not create or modify a storage class. To use different disk
+performance settings, provision a separate storage class and select it through
+`qdrant.persistence.storageClassName`; AKS reconciles its built-in classes.
+Provisioned performance is also bounded by the node's disk limits. Performance
+above the baseline incurs additional cost.
 
 The default deployment has one Qdrant replica: persistent storage does not
 provide database high availability, and disk reattachment can cause downtime.
