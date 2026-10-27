@@ -300,6 +300,8 @@ import runpy
 import sys
 from unittest.mock import patch
 
+import azure.monitor.opentelemetry
+
 with patch.dict(os.environ, {
     "APPLICATIONINSIGHTS_CONNECTION_STRING":
         "InstrumentationKey=00000000-0000-0000-0000-000000000000"
