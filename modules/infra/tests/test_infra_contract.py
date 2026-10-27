@@ -409,7 +409,7 @@ class InfrastructureContractTests(unittest.TestCase):
                     "count": count,
                     "minCount": minimum,
                     "maxCount": maximum,
-                    "availabilityZones": [],
+                    "availabilityZones": [1] if pool["name"] == "cpupool" else [],
                     "osSKU": "Ubuntu",
                     "osDiskType": "Managed",
                     "enableAutoScaling": True,

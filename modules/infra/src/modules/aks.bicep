@@ -57,7 +57,9 @@ module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.14.0' =
     agentPools: [
       {
         name: 'cpupool'
-        availabilityZones: []
+        availabilityZones: [
+          1
+        ]
         count: 0
         vmSize: 'Standard_D8s_v3'
         osType: 'Linux'

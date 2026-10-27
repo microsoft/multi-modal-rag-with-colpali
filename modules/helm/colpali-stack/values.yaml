@@ -26,12 +26,17 @@ reloader:
   reloader:
     watchGlobally: false # Only watch resources in the same namespace
 
+qdrantStorageClass:
+  create: true
+  diskIOPSReadWrite: 3000
+  diskMBpsReadWrite: 125
+
 qdrant:
   enabled: true
   persistence:
     enabled: true
     size: 128Gi
-    storageClassName: "managed-premium"
+    storageClassName: "colpali-qdrant-premium-v2"
   resources:
     requests:
       memory: "24Gi"

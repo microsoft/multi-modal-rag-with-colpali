@@ -53,7 +53,7 @@ workloads, and `gpupool` for GPU workloads. The chart's CPU selectors target
 This automatically:
 1. Restores locked Helm dependencies (`helm dependency build`)
 2. Deploys the application components
-3. Sets up Qdrant with Premium SSD storage
+3. Creates a Premium SSD v2 storage class and a 128 GiB Qdrant data volume
 4. Exposes Agent UI through ingress; inference and Qdrant remain internal by default
 
 ## Access Qdrant Dashboard
@@ -72,6 +72,40 @@ The chart uses Helm dependencies defined in `Chart.yaml`:
 - `ingress-nginx` from https://kubernetes.github.io/ingress-nginx
 
 Values are passed from the deployment script via `--set` parameters.
+
+### Qdrant storage
+
+Qdrant stores its live database at `/qdrant/storage` on a dedicated **128 GiB
+Azure Premium SSD v2 managed disk**, not the container root filesystem or the
+node's temporary disk. The default performance is **3,000 IOPS and 125 MB/s**,
+independent of capacity. This is network-attached block storage that survives
+node replacement; it is not local NVMe.
+
+The chart creates `colpali-qdrant-premium-v2` using the Azure Disk CSI driver,
+`PremiumV2_LRS`, no host caching, and an ext4 filesystem. `WaitForFirstConsumer`
+places the disk in the scheduled node's availability zone. The infrastructure's
+CPU pool uses zone 1; select a region and VM size that support Premium SSD v2 in
+that zone. See [Azure's AKS Premium SSD v2 guidance](https://learn.microsoft.com/azure/aks/use-premium-v2-disks)
+and [regional availability](https://learn.microsoft.com/azure/virtual-machines/disks-types#premium-ssd-v2-regional-availability).
+
+| Chart value | Default | Purpose |
+|---|---|---|
+| `qdrant.persistence.size` | `128Gi` | Data disk capacity |
+| `qdrant.persistence.storageClassName` | `colpali-qdrant-premium-v2` | Class used by Qdrant and, when enabled, created by this chart |
+| `qdrantStorageClass.create` | `true` | Set to `false` to use an existing storage class |
+| `qdrantStorageClass.diskIOPSReadWrite` | `3000` | Provisioned IOPS for newly created disks |
+| `qdrantStorageClass.diskMBpsReadWrite` | `125` | Provisioned throughput in MB/s for newly created disks |
+
+Storage classes are cluster-scoped. Give each release its own
+`qdrant.persistence.storageClassName`, or use an existing class with
+`qdrantStorageClass.create=false`. Provisioned performance is also bounded by
+the node's disk limits. Performance above the baseline incurs additional cost.
+
+The default deployment has one Qdrant replica: persistent storage does not
+provide database high availability, and disk reattachment can cause downtime.
+The disk uses local redundancy, not zone redundancy. Deleting its PVC deletes
+the managed disk. Backups and off-cluster snapshot retention must be configured
+separately; the chart does not schedule backups.
 
 ### Indexing and inference tuning
 
@@ -178,7 +212,7 @@ graph TB
 
             subgraph "Vector Database"
                 QD[Qdrant Pod]
-                QDPV[Vector Storage<br/>Premium SSD PVC]
+                QDPV[Vector Storage<br/>Premium SSD v2 PVC]
             end
 
             subgraph "Network Access"

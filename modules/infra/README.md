@@ -154,7 +154,7 @@ AVM telemetry is disabled. Workload identity federation is configured after AKS 
 
 | Area | Configuration |
 |------|------------|
-| AKS pools | `systempool`, `cpupool`, and `gpupool`; Free tier, non-zonal pools, disk/file CSI drivers, and snapshot controller. |
+| AKS pools | `systempool`, `cpupool`, and `gpupool`; Free tier, disk/file CSI drivers, and snapshot controller. `cpupool` uses availability zone 1 for Qdrant's Premium SSD v2 data disk; system and GPU pools are nonzonal. |
 | Kubernetes version | `kubernetesVersion` defaults to `null`, using Azure's default for new clusters. The `patch` auto-upgrade channel is enabled. |
 | Secret rotation | Enabled with Azure's [two-minute default](https://learn.microsoft.com/azure/aks/csi-secrets-store-configuration-options). |
 | Foundry | GPT-4.1 GlobalStandard, capacity 100, in UK South. Public inbound access is enabled, local authentication is disabled, and outbound network access is restricted. |
@@ -162,6 +162,11 @@ AVM telemetry is disabled. Workload identity federation is configured after AKS 
 | Monitoring | Application Insights: 90-day retention and IP masking. Log Analytics: 30-day retention and a 2-GB daily cap. |
 | Storage and Service Bus | Cross-tenant replication, storage local users, and blob versioning are disabled. Service Bus uses TLS 1.2 with local/SAS authentication disabled. |
 | Deployment permissions | Storage, Log Analytics, and Service Bus AVMs require `listKeys` permissions for their internal secure outputs. Service Bus expects its service-created `RootManageSharedAccessKey` rule. |
+
+Choose a region that supports Premium SSD v2 and the CPU VM size in availability
+zone 1. The application chart provisions Qdrant's data disk in the consuming
+node's zone. See [Premium SSD v2 regional availability](https://learn.microsoft.com/azure/virtual-machines/disks-types#premium-ssd-v2-regional-availability)
+and the [Qdrant storage settings](../helm/colpali-stack/README.md#qdrant-storage).
 
 Qdrant secret parameters default to `newGuid()`: redeploying without explicit values generates new secrets. Runtime endpoints and identity IDs are read after their resources are created.
 
