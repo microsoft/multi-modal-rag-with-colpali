@@ -47,6 +47,7 @@ class MemoryBlobService:
         self.blobs = {}
         self.containers = {"documents"}
         self.uploads = []
+        self.downloads = []
         self.failed_uploads = set()
 
     def put(self, path, content, metadata=None, container="documents"):
@@ -65,6 +66,7 @@ class MemoryBlobService:
 
         async def download():
             async def readall():
+                self.downloads.append(key)
                 if key not in self.blobs:
                     raise ResourceNotFoundError("Blob not found")
                 return self.blobs[key].content

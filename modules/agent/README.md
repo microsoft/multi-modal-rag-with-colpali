@@ -68,9 +68,13 @@ against float mean vectors before selecting each prefetch shortlist.
 The candidate union is then scored using `hierarchical_pooled` (pooling factor
 3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
 pool; requests above 200 expand each prefetch to at least `top_k`.
-Across expanded queries, each page retains its highest returned score before
-the final top-k selection. Query embedding batches must match the requested
-query count; mismatches are logged and rejected before any Qdrant search.
+For expanded queries, each distinct query requests 50 reranked candidates
+(or `top_k` if larger). Page rankings are merged with reciprocal rank fusion
+(`k=60`, equal query weights), with page identity breaking ties. Returned scores
+are RRF scores for multiple queries and MaxSim scores for a single query.
+Images are fetched only for the final selected pages. Query embedding batches
+must match the distinct query count; mismatches are logged and rejected before
+any Qdrant search.
 
 The chart pins Qdrant **1.20.0**; newly created mean-vector indexes explicitly use
 HNSW `m=16` and `ef_construct=100`. Full-precision vectors remain on disk, with

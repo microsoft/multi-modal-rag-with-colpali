@@ -323,17 +323,20 @@ async def test_prefetch_rescoring_recovers_page_outside_binary_shortlist(stack):
     assert chunks[0].source_file == "rescore-300.pdf"
 
 
-@pytest.mark.parametrize("queries", [["first", "second"], ["second", "first"]])
-async def test_expanded_queries_keep_each_pages_highest_score(stack, queries):
+@pytest.mark.parametrize(
+    "queries",
+    [["first", "second"], ["second", "first"], ["first", "first", "second"]],
+)
+async def test_expanded_queries_fuse_ranks_and_fetch_only_final_images(stack, queries):
     await stack.processor.qdrant_index.initialize()
     embeddings = {
-        "first": [0.6, 0.8] + [0.0] * 318,
-        "second": [1.0, 0.0] + [0.0] * 318,
+        "first": [[1.0, 0.0] + [0.0] * 318],
+        "second": [[0.0, 1.0] + [0.0] * 318] * 4,
     }
 
     async def query_embeddings(payload):
         return web.json_response(
-            {"embeddings": [[embeddings[query]] for query in payload["texts"]]}
+            {"embeddings": [embeddings[query] for query in payload["texts"]]}
         )
 
     stack.inference.reply = query_embeddings
@@ -341,9 +344,14 @@ async def test_expanded_queries_keep_each_pages_highest_score(stack, queries):
     for label, coordinates in (
         ("A", [1.0, 0.0]),
         ("B", [0.0, 1.0]),
-        ("C", [0.95, -math.sqrt(1 - 0.95**2)]),
+        ("C", [math.sqrt(0.5), math.sqrt(0.5)]),
+        ("D", [0.5, -math.sqrt(0.75)]),
+        ("E", [-math.sqrt(0.75), 0.5]),
     ):
         vector = [coordinates + [0.0] * 318]
+        stack.blobs.put(
+            f"{label}.jpg", f"image-{label}".encode(), container="documents-page-images"
+        )
         points.append(
             models.PointStruct(
                 id=str(uuid4()),
@@ -359,14 +367,59 @@ async def test_expanded_queries_keep_each_pages_highest_score(stack, queries):
                     "document_id": source_url(f"{label}.pdf"),
                     "page_number": 1,
                     "metadata": {"document": {"filename": f"{label}.pdf"}},
+                    "source": {
+                        "page_image_url": source_url(f"{label}.jpg").replace(
+                            "/documents/", "/documents-page-images/"
+                        )
+                    },
+                    "text_content": f"Page {label}",
                 },
             )
         )
     index = stack.processor.qdrant_index
     await index.qdrant_client.upsert(index.collection_name, points, wait=True)
-    chunks = await stack.retriever.search_documents_batch(queries, top_k=2)
-    assert [chunk.source_file for chunk in chunks] == ["A.pdf", "C.pdf"]
-    assert [chunk.score for chunk in chunks] == pytest.approx([1.0, 0.95])
+    for query, label, score in (("first", "A", 1.0), ("second", "B", 4.0)):
+        chunks = await stack.retriever.search_documents_batch([query], top_k=1)
+        assert [chunk.source_file for chunk in chunks] == [f"{label}.pdf"]
+        assert chunks[0].score == pytest.approx(score)
+
+    stack.blobs.downloads.clear()
+    chunks = await stack.retriever.search_documents_batch(queries, top_k=1)
+    assert [chunk.source_file for chunk in chunks] == ["C.pdf"]
+    assert chunks[0].score == pytest.approx(2 / 62)
+    assert base64.b64decode(chunks[0].page_image_base64) == b"image-C"
+    assert stack.blobs.downloads == [("documents-page-images", "C.jpg")]
+
+    # Equal fused scores are ordered by page identity, not query order or raw score.
+    chunks = await stack.retriever.search_documents_batch(queries, top_k=3)
+    assert [chunk.source_file for chunk in chunks] == ["C.pdf", "A.pdf", "B.pdf"]
+    assert [chunk.score for chunk in chunks] == pytest.approx(
+        [2 / 62, 1 / 61 + 1 / 64, 1 / 61 + 1 / 64]
+    )
+
+    del stack.blobs.blobs[("documents-page-images", "C.jpg")]
+    chunks = await stack.retriever.search_documents_batch(queries, top_k=1)
+    assert [chunk.source_file for chunk in chunks] == ["C.pdf"]
+    assert chunks[0].page_image_base64 is None
+    assert chunks[0].text_content == "Page C"
+
+
+async def test_rrf_keeps_results_when_one_expanded_query_fails(stack, caplog):
+    await stack.deliver(stack.add_pdf("report.pdf", "Report"))
+
+    async def query_embeddings(_):
+        return web.json_response(
+            {"embeddings": [[[1.0] + [0.0] * 319], [[1.0] + [0.0] * 318]]}
+        )
+
+    stack.inference.reply = query_embeddings
+    chunks = await stack.retriever.search_documents_batch(
+        ["valid", "wrong embedding dimension"], top_k=1
+    )
+    assert [chunk.source_file for chunk in chunks] == ["report.pdf"]
+    assert chunks[0].score == pytest.approx(1 / 61)
+    assert chunks[0].page_image_base64 is not None
+    assert "Failed to search for query 1" in caplog.text
 
 
 @pytest.mark.parametrize("response_count", [1, 3])

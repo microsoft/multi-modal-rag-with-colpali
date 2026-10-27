@@ -74,7 +74,10 @@ class DocumentChunk(BaseModel):
     text_content: Optional[str] = Field(
         None, description="Extracted text content from the page"
     )
-    score: float = Field(0.0, description="Relevance score from vector search")
+    score: float = Field(
+        0.0,
+        description="MaxSim score for a single query; RRF score for expanded queries",
+    )
     corpus_id: Optional[int] = Field(
         None, description="Corpus ID from benchmark dataset"
     )
