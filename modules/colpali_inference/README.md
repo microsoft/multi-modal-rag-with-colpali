@@ -26,6 +26,8 @@ The GPU image uses CUDA 12.9; the shim runs CPU operations. Dockerfiles and
 `uv.lock` pin the runtime. Verify the target GPU driver; image builds do not
 upgrade host drivers. Load only trusted checkpoint code and files: Accelerate's
 checkpoint-path advisory GHSA-4j2p-28q2-5m79 remains unresolved.
+OpenTelemetry API is constrained to 1.45.1 or later to fix excessive CPU use
+when parsing untrusted `tracestate` headers (GHSA-xcq7-p3pf-p88h).
 
 From the repository root:
 
