@@ -68,7 +68,7 @@ against float mean vectors before selecting each prefetch shortlist.
 The candidate union is then scored using `hierarchical_pooled` (pooling factor
 3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
 pool; requests above 200 expand each prefetch to at least `top_k`.
-For expanded queries, each distinct query requests 50 reranked candidates
+For expanded queries, each distinct query requests 25 reranked candidates
 (or `top_k` if larger). Page rankings are merged with reciprocal rank fusion
 (`k=60`, equal query weights), with page identity breaking ties. Returned scores
 are RRF scores for multiple queries and MaxSim scores for a single query.

@@ -327,7 +327,9 @@ async def test_prefetch_rescoring_recovers_page_outside_binary_shortlist(stack):
     "queries",
     [["first", "second"], ["second", "first"], ["first", "first", "second"]],
 )
-async def test_expanded_queries_fuse_ranks_and_fetch_only_final_images(stack, queries):
+async def test_expanded_queries_fuse_ranks_and_fetch_only_final_images(
+    stack, queries, monkeypatch
+):
     await stack.processor.qdrant_index.initialize()
     embeddings = {
         "first": [[1.0, 0.0] + [0.0] * 318],
@@ -378,13 +380,18 @@ async def test_expanded_queries_fuse_ranks_and_fetch_only_final_images(stack, qu
         )
     index = stack.processor.qdrant_index
     await index.qdrant_client.upsert(index.collection_name, points, wait=True)
+    query_points = AsyncMock(wraps=index.qdrant_client.query_points)
+    monkeypatch.setattr(index.qdrant_client, "query_points", query_points)
     for query, label, score in (("first", "A", 1.0), ("second", "B", 4.0)):
         chunks = await stack.retriever.search_documents_batch([query], top_k=1)
         assert [chunk.source_file for chunk in chunks] == [f"{label}.pdf"]
         assert chunks[0].score == pytest.approx(score)
 
     stack.blobs.downloads.clear()
+    query_points.reset_mock()
     chunks = await stack.retriever.search_documents_batch(queries, top_k=1)
+    assert len(query_points.await_args_list) == 2
+    assert all(call.kwargs["limit"] == 25 for call in query_points.await_args_list)
     assert [chunk.source_file for chunk in chunks] == ["C.pdf"]
     assert chunks[0].score == pytest.approx(2 / 62)
     assert base64.b64decode(chunks[0].page_image_base64) == b"image-C"
@@ -396,6 +403,11 @@ async def test_expanded_queries_fuse_ranks_and_fetch_only_final_images(stack, qu
     assert [chunk.score for chunk in chunks] == pytest.approx(
         [2 / 62, 1 / 61 + 1 / 64, 1 / 61 + 1 / 64]
     )
+
+    query_points.reset_mock()
+    chunks = await stack.retriever.search_documents_batch(queries, top_k=30)
+    assert len(chunks) == 5
+    assert all(call.kwargs["limit"] == 30 for call in query_points.await_args_list)
 
     del stack.blobs.blobs[("documents-page-images", "C.jpg")]
     chunks = await stack.retriever.search_documents_batch(queries, top_k=1)

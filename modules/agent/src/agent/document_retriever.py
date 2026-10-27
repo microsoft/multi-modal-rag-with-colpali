@@ -36,7 +36,7 @@ from tenacity import (
 from .models import DocumentChunk
 
 RRF_RANK_CONSTANT = 60
-EXPANDED_QUERY_RESULT_LIMIT = 50
+EXPANDED_QUERY_RESULT_LIMIT = 25
 
 
 class DocumentRetriever:
