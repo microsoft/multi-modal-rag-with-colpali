@@ -144,53 +144,6 @@ The Qdrant chart dependency is pinned to **1.20.0**. Retrieval defaults and thei
 limits are documented in the [agent guide](../../agent/README.md#implemented-retrieval-defaults);
 not every search parameter is an environment-variable override.
 
-### Qdrant 1.20 upgrade and memory placement
-
-Before upgrading an existing deployment, take a recoverable snapshot and follow
-Qdrant's supported sequence: latest patch of each intermediate minor version,
-then 1.20.0. The Python clients, Helm dependency, and CI server image all target
-1.20.0. Upgrade the server before starting the new processor, which uses the
-1.20 ID-tracker configuration. The chart supplies a read-write API key as well as
-a read-only key, so retain 1.20's default internal authentication enforcement.
-Do not switch to a read-only-only peer configuration.
-
-The processor applies collection-level memory placement to both new and existing
-compatible collections:
-
-| Component | Memory tier |
-|---|---|
-| Original vectors, all three named fields | `cold` |
-| Mean-vector HNSW graphs | `pinned` |
-| Hierarchical HNSW setting | `cached`, but graph remains disabled with `m=0` |
-| Binary mean-vector copies | `pinned` |
-| Payload storage | `cold` |
-| ID tracker and managed keyword indexes | `pinned` |
-
-These settings live in the processor's collection initialization, not Helm
-server configuration. `cold` avoids startup prewarming but still uses the OS
-page cache; `cached` prewarms it and is also evictable. Neither imposes a hard RAM
-limit. Memory reconciliation preserves vector contents, datatypes, binary
-encodings, and existing HNSW tuning, but can trigger background optimization.
-Mean-vector graphs and binary copies are pinned together so candidate retrieval
-does not depend on disk-backed graph pages. Prefetch float rescoring is disabled;
-the optimized candidate path scores binary data and the final stage scores
-hierarchical floats. Index construction and segments without quantized data can
-still need float mean vectors. All tiers persist on disk; none discards the
-full-precision pooled representations.
-Keep the 24 GiB memory request, 30 GiB limit and 128 GiB volume unchanged until
-representative ingestion and search measurements justify resizing.
-Hierarchical floats are cached on demand rather than proactively warmed, avoiding
-startup I/O for a corpus that may exceed available RAM.
-Budget pinned structures together with demand-cached hierarchical vectors,
-runtime, concurrent queries, and optimizer peaks; file-cache RAM also counts
-toward the container limit. See the [RAM and disk accounting](../../document_processor/README.md#ram-disk-and-query-working-set).
-
-This upgrade does not enable BM25, TurboQuant, inline storage or snapshot
-automation. See the [storage contract](../../document_processor/README.md#storage-contract)
-for initialization behavior. For rollback, retain a pre-upgrade backup and follow
-the [upstream upgrade guidance](https://qdrant.tech/documentation/installation/#upgrade);
-do not assume an older server can open a volume written by 1.20.
-
 ## Architecture Overview
 
 ### Pod Architecture

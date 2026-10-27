@@ -67,86 +67,9 @@ Default collection: `colpali-documents`. The default model is
 These are full-precision **pooled** representations, not an additional unpooled
 patch-vector field. Binary quantization does not replace the stored full-precision
 vectors; this is not a quantized-only index.
-`rescore=False` is a query setting, not a storage-retention setting. Qdrant 1.20
-does not expose a discard-originals option for this binary-quantized multivector
-schema; its optimizer builds quantized data from the retained vector storage.
-Deleting a named vector would remove that searchable representation, not just
-its float copy. Inline storage is not a workaround: it retains originals within
-the graph and does not support multivectors.
-
-Candidate retrieval uses binary mean vectors and pinned HNSW links without
-float mean-vector rescoring. The stored float mean copies remain cold; the final
-reranker reads hierarchical float vectors for the candidate union. The optimized
-candidate path does not need float coordinates for scoring; ingestion, rebuilding
-indexes, and segments without quantized data can still use the stored floats.
-
-Qdrant **1.20.0** uses explicit memory tiers: payload storage is `cold`, the ID
-tracker and the `document_id`/`processing_fingerprint` keyword indexes are
-`pinned`. `cold` and `cached` are memory-mapped and can both enter the OS page
-cache; only `cached` prewarms it at startup. `pinned` allocations cannot be
-evicted. These settings are not a hard memory cap or a query-result cache.
-The hierarchical field also records `cached` HNSW placement, but retains `m=0`.
-Cold floats and pinned binary copies preserve the previous
-`on_disk=True`/`always_ram=True` layout; this is not a new 32-fold RAM reduction
-from the upgrade. The deliberate changes are pinning the mean graphs and
-restoring binary-only prefetch without float rescoring.
-
-### RAM, disk, and query working set
-
-The objective is to keep candidate retrieval resident while letting the larger
-reranking representation exceed RAM. Hierarchical floats remain `cold` to avoid
-proactively warming a corpus that may not fit. Frequently accessed pages still
-enter the OS cache on demand; `cached` would not give them higher eviction
-priority. HNSW links, binary scoring data, and float
-vectors are separate structures. Each mean field's graph connects page points;
-it does not create one graph node per pooled token. Pinning these relatively
-small graphs prevents hierarchical-vector page-cache activity from evicting
-candidate-search links. Keeping graphs `cached` would instead permit eviction
-and trade some latency predictability for reclaimable RAM.
-
-For `N` locally stored page replicas, an average of `R + C` mean-pooled vectors
-per page, and `H` hierarchical vectors per page, the logical coordinate sizes are:
-
-```text
-float coordinate bytes on disk = N * (R + C + H) * 320 * 4
-binary mean coordinate bytes   = N * (R + C) * 320 / 8
-```
-
-`R` and `C` include the retained contextual prefix/suffix vectors, not just
-grid rows and columns. Binary coordinates are 32 times smaller than their float
-counterparts, but the floats remain stored: quantization adds a copy, not a
-32-fold reduction in total disk use. These are coordinate sizes, not allocation
-sizes: alignment, multivector offsets, deletion maps, and segment metadata add
-overhead.
-
-For illustration, **100,000 pages with `R + C = 64` and `H = 300`** need about
-**43.4 GiB of float coordinates on disk** and **244 MiB of binary coordinates in
-RAM and on disk**. The upstream rough estimate for two `m=16` graphs is another
-29 MiB, before extra payload-aware links and implementation overhead. This is
-an example, not a measurement of the indexed corpus. Payloads, keyword indexes,
-ID tracking, WAL, snapshots, and optimizer temporary segments also consume disk.
-Changing memory tiers does not remove any of these disk costs.
-
-At the default prefetch limit, each query can rerank up to 400 distinct candidate
-pages per shard. With `H = 300`, that represents roughly 146 MiB of float
-coordinates per query per shard if all 400 pages are scored, before page-read
-amplification. Warm cache hits reduce physical I/O, not the scoring work.
-Larger `top_k`, more shards, concurrent requests, and query expansion increase
-the aggregate working set.
-
-The pod's 30 GiB limit must accommodate pinned structures **plus** the OS page
-cache, Qdrant runtime, ingestion, concurrent searches, and optimizer peaks.
-`cold` data can still consume RAM through the page cache, and that cache counts
-toward the container limit. Do not size pinned allocations to the full limit or
-treat a small pinned index as evidence that the disk volume is large enough.
-Use representative pooled-vector counts and mixed ingestion/search measurements
-before resizing the existing resource requests or volume.
-
-See Qdrant's [memory tiers](https://qdrant.tech/documentation/ops-configuration/memory-tiers/)
-and [capacity planning](https://qdrant.tech/documentation/capacity-planning/) for
-the placement semantics and approximate non-vector costs.
-
-### Page identity and payloads
+Payloads are `cold`; the ID tracker and managed keyword indexes are `pinned`.
+`cold` data is cached on demand without startup prewarming; `pinned` data cannot
+be evicted. Disabling prefetch rescoring does not discard the stored float copies.
 
 Page identity is UUID5 using `NAMESPACE_URL` and
 `"{document_id}:page:{page_number}"`. Document identity is the source blob URL
@@ -180,14 +103,8 @@ Additional root fields are `page_id`, `text_content`, `indexed_at`, `file_hash`,
 reads this nested contract and deduplicates by document identity plus page number.
 
 Initialization rejects incompatible vector names/dimensions. Compatible
-collections have these memory tiers reconciled without deleting data or
-unrelated payload indexes. Reconciliation preserves vector datatypes, HNSW
-search/build parameters, and existing binary encoding settings; it does not add
-or replace quantization on existing fields. Already-matching collection settings
-are not patched again; omitted collection settings retain Qdrant's equivalent
-defaults of cold payloads and pinned ID tracking.
-Storage changes can trigger background optimization;
-allow it to finish before assessing memory use or newly indexed search results.
+collections have memory placement reconciled without deleting data or unrelated
+payload indexes, preserving vector datatypes, HNSW tuning, and binary encodings.
 Existing document IDs/payloads are also checked before reuse.
 
 Writes are page-level, not an atomic document snapshot. In-process duplicate
@@ -287,9 +204,6 @@ try {
 The server URL must be loopback-only. Each workflow owns a uniquely named
 collection and removes only that collection afterward. CI runs these workflows
 against Qdrant 1.20.0, matching the processor client and Helm server versions.
-Server-backed scenarios also verify persisted memory placement for new and
-populated legacy collections, preservation of pages and search settings, and
-idempotent reinitialization.
 
 For a bounded check against deployed inference, establish an authorized
 loopback port-forward, set `TEST_INFERENCE_URL` to its base URL, and run only
