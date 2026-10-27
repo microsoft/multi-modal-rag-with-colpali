@@ -318,29 +318,46 @@ async def test_qdrant_retries_only_failed_batch_and_persists_every_page(
     assert all(set(point.vector) == set(VECTOR_FIELDS.values()) for point in stored)
 
 
-async def test_existing_vector_storage_is_reconciled_without_recreation(processor):
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_memory_reconciliation_failure_does_not_recreate_collection(
+    processor, accepted
+):
     index = processor.qdrant_index
     vectors = index._get_default_vectors_config()
     for vector in vectors.values():
-        vector.on_disk = False
+        vector.memory = None
     original = index.qdrant_client
     client = SimpleNamespace(
         collection_exists=AsyncMock(return_value=True),
         get_collection=AsyncMock(
             return_value=SimpleNamespace(
-                config=SimpleNamespace(params=SimpleNamespace(vectors=vectors))
+                config=SimpleNamespace(
+                    params=SimpleNamespace(
+                        vectors=vectors,
+                        payload=None,
+                        id_tracker=None,
+                        on_disk_payload=False,
+                    ),
+                    quantization_config=None,
+                ),
+                payload_schema={},
             )
         ),
-        update_collection=AsyncMock(return_value=True),
+        update_collection=AsyncMock(return_value=accepted),
         create_collection=AsyncMock(),
         create_payload_index=AsyncMock(),
     )
     index.qdrant_client = client
     try:
-        assert await index.initialize()
+        if accepted:
+            assert await index.initialize()
+        else:
+            with pytest.raises(RuntimeError, match="memory placement reconciliation"):
+                await index.initialize()
+            client.create_payload_index.assert_not_awaited()
         client.create_collection.assert_not_awaited()
         updates = client.update_collection.call_args.kwargs["vectors_config"]
         assert set(updates) == set(vectors)
-        assert all(vector.on_disk for vector in updates.values())
+        assert all(vector.memory == models.Memory.COLD for vector in updates.values())
     finally:
         index.qdrant_client = original

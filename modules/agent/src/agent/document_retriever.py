@@ -200,6 +200,20 @@ class DocumentRetriever:
                         # For batch text queries, embeddings is [batch x patches x dim]
                         if "embeddings" in result and result["embeddings"]:
                             embeddings = result["embeddings"]
+                            if not isinstance(embeddings, list) or len(
+                                embeddings
+                            ) != len(queries):
+                                raise ValueError(
+                                    "Embedding batch count mismatch: expected "
+                                    f"{len(queries)} query embeddings"
+                                )
+                            if any(
+                                not isinstance(embedding, list) or not embedding
+                                for embedding in embeddings
+                            ):
+                                raise ValueError(
+                                    "Embedding batch contains an empty query"
+                                )
                             logging.info(
                                 "Received embeddings for %d queries", len(embeddings)
                             )
@@ -264,7 +278,7 @@ class DocumentRetriever:
         Handles deduplication and final limiting internally.
 
         Uses the mean_pooling_with_hierarchical_quantized strategy (optimal based on benchmarking):
-        - Prefetch: Binary-quantized mean pooled vectors with 2x oversampling
+        - Prefetch: Binary-quantized mean pooled vectors without float rescoring
         - Rerank: Exact search on hierarchical pooled vectors
 
         Args:
@@ -318,8 +332,7 @@ class DocumentRetriever:
                         indexed_only=True,
                         quantization=QuantizationSearchParams(
                             ignore=False,
-                            rescore=True,
-                            oversampling=2.0,
+                            rescore=False,
                         ),
                     )
                     query_kwargs = {
@@ -453,8 +466,7 @@ class DocumentRetriever:
             )
 
             # Step 3: Merge and deduplicate results
-            all_chunks = []
-            seen_docs = set()
+            best_chunks: Dict[tuple[str, int], DocumentChunk] = {}
 
             for i, search_result in enumerate(all_search_results):
                 if isinstance(search_result, Exception):
@@ -467,11 +479,11 @@ class DocumentRetriever:
                 for chunk in search_result:
                     doc_key = chunk.page_key
 
-                    if doc_key not in seen_docs:
-                        all_chunks.append(chunk)
-                        seen_docs.add(doc_key)
+                    previous = best_chunks.get(doc_key)
+                    if previous is None or chunk.score > previous.score:
+                        best_chunks[doc_key] = chunk
                         logging.debug(
-                            "Added unique chunk: %s (page %d, score=%.3f)",
+                            "Kept best chunk: %s (page %d, score=%.3f)",
                             chunk.source_file,
                             chunk.page_number,
                             chunk.score,
@@ -484,7 +496,9 @@ class DocumentRetriever:
                         )
 
             # Sort by score (highest first) and limit to final top_k
-            all_chunks.sort(key=lambda x: x.score, reverse=True)
+            all_chunks = sorted(
+                best_chunks.values(), key=lambda chunk: chunk.score, reverse=True
+            )
             final_chunks = all_chunks[:top_k]
 
             logging.info(

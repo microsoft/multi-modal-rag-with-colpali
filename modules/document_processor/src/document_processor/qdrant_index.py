@@ -56,16 +56,20 @@ class QdrantIndex:
             config[name] = models.VectorParams(
                 size=self.dimension,
                 distance=models.Distance.COSINE,
-                on_disk=True,
+                memory=models.Memory.COLD,
                 multivector_config=models.MultiVectorConfig(
                     comparator=models.MultiVectorComparator.MAX_SIM
                 ),
-                hnsw_config=models.HnswConfigDiff(m=0)
+                hnsw_config=models.HnswConfigDiff(m=0, memory=models.Memory.CACHED)
                 if name == "hierarchical_pooled"
-                else models.HnswConfigDiff(m=16, ef_construct=100),
+                else models.HnswConfigDiff(
+                    m=16, ef_construct=100, memory=models.Memory.PINNED
+                ),
                 quantization_config=(
                     models.BinaryQuantization(
-                        binary=models.BinaryQuantizationConfig(always_ram=True)
+                        binary=models.BinaryQuantizationConfig(
+                            memory=models.Memory.PINNED
+                        )
                     )
                     if name != "hierarchical_pooled"
                     else None
@@ -80,7 +84,8 @@ class QdrantIndex:
                 await client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=self._get_default_vectors_config(),
-                    on_disk_payload=True,
+                    payload=models.PayloadStorageParams(memory=models.Memory.COLD),
+                    id_tracker=models.IdTrackerParams(memory=models.Memory.PINNED),
                 )
             except Exception:
                 # Another replica may have created it; still validate its schema.
@@ -104,21 +109,68 @@ class QdrantIndex:
                 raise IncompatibleCollectionError(
                     f"Incompatible vector schema for {name}"
                 )
-        updates = {
-            name: models.VectorParamsDiff(on_disk=True)
-            for name in VECTOR_NAMES
-            if vectors[name].on_disk is not True
-        }
-        if updates:
-            if not await client.update_collection(
-                collection_name=self.collection_name, vectors_config=updates
+        updates = {}
+        for name, vector in vectors.items():
+            update = models.VectorParamsDiff()
+            if vector.memory != models.Memory.COLD:
+                update.memory = models.Memory.COLD
+            graph_memory = (
+                models.Memory.CACHED
+                if name == "hierarchical_pooled"
+                else models.Memory.PINNED
+            )
+            if vector.hnsw_config is None or vector.hnsw_config.memory != graph_memory:
+                update.hnsw_config = models.HnswConfigDiff(memory=graph_memory)
+            quantization = vector.quantization_config or info.config.quantization_config
+            if (
+                name != "hierarchical_pooled"
+                and isinstance(quantization, models.BinaryQuantization)
+                and quantization.binary.memory != models.Memory.PINNED
             ):
-                raise RuntimeError("Qdrant refused vector storage reconciliation")
+                # Preserve the encoding and query encoding of existing binary copies.
+                update.quantization_config = models.BinaryQuantization(
+                    binary=quantization.binary.model_copy(
+                        update={"memory": models.Memory.PINNED}
+                    )
+                )
+            if update.model_dump(exclude_none=True):
+                updates[name] = update
+        params = info.config.params
+        collection_updates = models.CollectionParamsDiff()
+        # Omitted collection placement defaults to cold payloads and pinned IDs.
+        payload_memory = params.payload.memory if params.payload is not None else None
+        if payload_memory not in (None, models.Memory.COLD) or (
+            payload_memory is None and params.on_disk_payload is False
+        ):
+            collection_updates.payload = models.PayloadStorageParams(
+                memory=models.Memory.COLD
+            )
+        if params.id_tracker is not None and params.id_tracker.memory not in (
+            None,
+            models.Memory.PINNED,
+        ):
+            collection_updates.id_tracker = models.IdTrackerParams(
+                memory=models.Memory.PINNED
+            )
+        if updates or collection_updates.model_dump(exclude_none=True):
+            if not await client.update_collection(
+                collection_name=self.collection_name,
+                vectors_config=updates or None,
+                collection_params=collection_updates,
+            ):
+                raise RuntimeError("Qdrant refused memory placement reconciliation")
         for field in ("document_id", "processing_fingerprint"):
+            existing_index = info.payload_schema.get(field)
+            schema = (
+                existing_index.params
+                if existing_index is not None
+                and isinstance(existing_index.params, models.KeywordIndexParams)
+                else models.KeywordIndexParams(type=models.KeywordIndexType.KEYWORD)
+            )
             await client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name=field,
-                field_schema=models.PayloadSchemaType.KEYWORD,
+                field_schema=schema.model_copy(update={"memory": models.Memory.PINNED}),
                 wait=True,
             )
         return True

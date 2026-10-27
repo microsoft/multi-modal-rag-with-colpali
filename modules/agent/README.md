@@ -43,7 +43,7 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
-| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, 2x oversampling | Fast approximate candidate retrieval |
+| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, `rescore=false` | Fast approximate candidate retrieval |
 | Rerank | `hierarchical_pooled` | MaxSim over the candidate union, HNSW disabled | Final scoring with pooled token vectors |
 
 ## Agent Flow
@@ -62,15 +62,27 @@ events before its terminal `done` event.
 
 Single-query and query-expanded retrieval return at most **5 unique pages** by
 default. Each query prefetches **200 candidates per mean-pooled vector**, using
-HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch rescoring is
-enabled with **2x oversampling** against the full-precision mean vectors on disk.
-The candidate union is then scored using `hierarchical_pooled` (pooling factor
-3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
+HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch uses
+`rescore=false`: candidates are not rescored against float mean vectors.
+The candidate union (up to 400 pages per query per shard at the default limit)
+is then scored using `hierarchical_pooled` (pooling factor 3, no HNSW index).
+A smaller requested `top_k` does not shrink the candidate
 pool; requests above 200 expand each prefetch to at least `top_k`.
+Across expanded queries, each page retains its highest returned score before
+the final top-k selection. Query embedding batches must match the requested
+query count; mismatches are logged and rejected before any Qdrant search.
 
-The chart pins Qdrant **1.19.1**; newly created mean-vector indexes explicitly use
+The chart pins Qdrant **1.20.0**; newly created mean-vector indexes explicitly use
 HNSW `m=16` and `ef_construct=100`. Full-precision vectors remain on disk, with
-binary mean-vector copies in RAM. `indexed_only` can exclude unoptimized
+binary mean-vector copies and their HNSW graphs pinned in RAM. Original vectors
+and payloads use the `cold` memory tier; the ID tracker and managed keyword
+indexes remain pinned. Float mean-vector copies remain stored, but are not read
+for prefetch rescoring; final reranking uses the float hierarchical vectors.
+This keeps the optimized candidate-scoring path resident, not the whole
+collection: cold data still enters the OS page cache, and ingestion/optimization
+still need float copies. See the [RAM and disk accounting](../document_processor/README.md#ram-disk-and-query-working-set).
+Placement is reconciled by the processor without changing
+the retrieval settings above. `indexed_only` can exclude unoptimized
 segments: allow indexing/optimization to catch up when validating newly
 ingested data, and check server behavior for small collections. This is not
 document-completion filtering or atomic publication; individual pages can

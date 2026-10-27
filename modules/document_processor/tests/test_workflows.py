@@ -5,8 +5,10 @@ import asyncio
 import base64
 import hashlib
 import io
+import math
 import os
 import random
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import fitz
@@ -16,7 +18,121 @@ from conftest import make_pdf, source_url
 from PIL import Image
 from qdrant_client import models
 
-from document_processor.models import DocumentPage, PoolingType
+from document_processor.models import (
+    DocumentMetadata,
+    DocumentPage,
+    DocumentSource,
+    PoolingType,
+    ProcessedPage,
+)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_memory_placement_preserves_pages_and_search_after_reinitialization(
+    stack, monkeypatch, legacy
+):
+    if not os.getenv("TEST_QDRANT_URL"):
+        pytest.skip("Real Qdrant is required to verify persisted memory placement")
+    index = stack.processor.qdrant_index
+    client = index.qdrant_client
+    collection = index.collection_name
+    if legacy:
+        vectors = index._get_default_vectors_config()
+        for name, vector in vectors.items():
+            vector.memory = None
+            vector.on_disk = False
+            vector.hnsw_config.memory = None
+            if name != "hierarchical_pooled":
+                vector.hnsw_config.m = 12
+                vector.hnsw_config.ef_construct = 80
+                vector.quantization_config.binary = models.BinaryQuantizationConfig(
+                    always_ram=True,
+                    query_encoding=models.BinaryQuantizationQueryEncoding.SCALAR8BITS,
+                )
+        await client.create_collection(
+            collection,
+            vectors_config=vectors,
+            on_disk_payload=False,
+            id_tracker=models.IdTrackerParams(memory=models.Memory.CACHED),
+        )
+        await client.create_payload_index(
+            collection,
+            "document_id",
+            models.KeywordIndexParams(
+                type=models.KeywordIndexType.KEYWORD,
+                memory=models.Memory.COLD,
+                is_tenant=True,
+            ),
+            wait=True,
+        )
+        await client.create_payload_index(
+            collection,
+            "metadata.blob.category",
+            models.PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
+        await index.index_embeddings(
+            [
+                ProcessedPage(
+                    source=DocumentSource.from_url(source_url("memory.pdf")),
+                    metadata=DocumentMetadata(document={"filename": "memory.pdf"}),
+                    page_number=1,
+                    page_count=1,
+                    text_content="Memory reference",
+                    processing_fingerprint="legacy",
+                    embeddings={name: [[1.0] + [0.0] * 319] for name in vectors},
+                )
+            ]
+        )
+        legacy_points = await stack.points()
+        assert await index.initialize()
+        assert await stack.points() == legacy_points
+    else:
+        event = stack.add_pdf("memory.pdf", "Memory reference")
+        assert (await stack.deliver(event)).settlements == [("complete", {})]
+    before = await stack.points()
+    info = await client.get_collection(collection)
+    assert info.config.params.payload.memory == models.Memory.COLD
+    assert info.config.params.id_tracker.memory == models.Memory.PINNED
+    for name, vector in info.config.params.vectors.items():
+        assert vector.memory == models.Memory.COLD
+        assert vector.datatype in (None, models.Datatype.FLOAT32)
+        assert (
+            vector.multivector_config.comparator == models.MultiVectorComparator.MAX_SIM
+        )
+        assert vector.hnsw_config.memory == (
+            models.Memory.CACHED
+            if name == "hierarchical_pooled"
+            else models.Memory.PINNED
+        )
+        if name == "hierarchical_pooled":
+            assert vector.hnsw_config.m == 0
+            assert vector.quantization_config is None
+        else:
+            assert vector.hnsw_config.m == (12 if legacy else 16)
+            assert vector.hnsw_config.ef_construct == (80 if legacy else 100)
+            assert vector.quantization_config.binary.memory == models.Memory.PINNED
+            if legacy:
+                assert (
+                    vector.quantization_config.binary.query_encoding
+                    == models.BinaryQuantizationQueryEncoding.SCALAR8BITS
+                )
+    for field in ("document_id", "processing_fingerprint"):
+        assert info.payload_schema[field].params.memory == models.Memory.PINNED
+    if legacy:
+        assert info.payload_schema["document_id"].params.is_tenant is True
+        assert "metadata.blob.category" in info.payload_schema
+    update = AsyncMock(wraps=client.update_collection)
+    monkeypatch.setattr(client, "update_collection", update)
+    assert await index.initialize()
+    update.assert_not_awaited()
+    assert (await client.get_collection(collection)).config == info.config
+    assert await stack.points() == before
+    chunks = await stack.retriever.search_documents("Memory reference")
+    assert len(chunks) == 1
+    assert chunks[0].source_file == "memory.pdf"
+    assert chunks[0].page_number == 1
+    assert "Memory reference" in chunks[0].text_content
 
 
 @pytest.mark.parametrize(
@@ -47,15 +163,17 @@ async def test_default_a4_ingestion_keeps_500_dpi_citations_and_embeds_at_150_dp
 
 
 @pytest.mark.parametrize("optimized", [False, True])
-async def test_small_top_k_still_reranks_the_full_200_candidate_pool(stack, optimized):
+async def test_small_top_k_still_reranks_the_full_200_candidate_pool(
+    stack, optimized, monkeypatch
+):
     if optimized and not os.getenv("TEST_QDRANT_URL"):
         pytest.skip("Real Qdrant is required to exercise index optimization")
     await stack.processor.qdrant_index.initialize()
     client = stack.processor.qdrant_index.qdrant_client
+    query_points = AsyncMock(wraps=client.query_points)
+    monkeypatch.setattr(client, "query_points", query_points)
     rng = random.Random(0)
-    query = (
-        [rng.uniform(-1, 1) for _ in range(320)] if optimized else [1.0] + [0.0] * 319
-    )
+    query = [rng.uniform(-1, 1) for _ in range(320)]
 
     async def query_embedding(_):
         return web.json_response({"embeddings": [[query]]})
@@ -63,25 +181,16 @@ async def test_small_top_k_still_reranks_the_full_200_candidate_pool(stack, opti
     stack.inference.reply = query_embedding
     points = []
     for index in range(201):
-        mean = [[1.0, index / 200] + [0.0] * 318]
-        hierarchical = [[0.0, 1.0] + [0.0] * 318]
+        mean = [list(query)]
+        hierarchical = [[-v for v in query]]
         if index == 199:
-            hierarchical = [[1.0, 0.1] + [0.0] * 318]
+            hierarchical = [list(query)]
+            hierarchical[0][0] += 0.1
         elif index == 200:
-            hierarchical = [[1.0, 0.0] + [0.0] * 318]
-        if optimized:
-            # Binary-identical sparse vectors cannot establish ANN recall.
-            # The unoptimized case above tests the exact candidate boundary.
-            mean = [
-                query
-                if index == 199
-                else [-v for v in query]
-                if index == 200
-                else [rng.uniform(-1, 1) for _ in range(320)]
-            ]
-            hierarchical = [list(query) if index == 199 else [-v for v in query]]
-            if index == 199:
-                hierarchical[0][0] += 0.1
+            mean = [[-v for v in query]]
+            hierarchical = [list(query)]
+        if optimized and index not in (199, 200):
+            mean = [[rng.uniform(-1, 1) for _ in range(320)]]
         points.append(
             models.PointStruct(
                 id=str(uuid4()),
@@ -119,10 +228,86 @@ async def test_small_top_k_still_reranks_the_full_200_candidate_pool(stack, opti
                 await asyncio.sleep(0.25)
     for options, count in (({}, 5), ({"top_k": None}, 5), ({"top_k": 1}, 1)):
         chunks = await stack.retriever.search_documents_batch(["reference"], **options)
+        request = query_points.call_args.kwargs
+        assert request["using"] == "hierarchical_pooled"
+        assert {prefetch.using for prefetch in request["prefetch"]} == {
+            "mean_row_pooled",
+            "mean_column_pooled",
+        }
+        for prefetch in request["prefetch"]:
+            assert prefetch.limit == 200
+            assert prefetch.params.quantization.ignore is False
+            assert prefetch.params.quantization.rescore is False
+            assert prefetch.params.quantization.oversampling is None
         assert len(chunks) == count
         assert chunks[0].source_file == "candidate-199.pdf"
-        if not optimized:
-            assert all(chunk.source_file != "candidate-200.pdf" for chunk in chunks)
+        assert all(chunk.source_file != "candidate-200.pdf" for chunk in chunks)
+
+
+@pytest.mark.parametrize("queries", [["first", "second"], ["second", "first"]])
+async def test_expanded_queries_keep_each_pages_highest_score(stack, queries):
+    await stack.processor.qdrant_index.initialize()
+    embeddings = {
+        "first": [0.6, 0.8] + [0.0] * 318,
+        "second": [1.0, 0.0] + [0.0] * 318,
+    }
+
+    async def query_embeddings(payload):
+        return web.json_response(
+            {"embeddings": [[embeddings[query]] for query in payload["texts"]]}
+        )
+
+    stack.inference.reply = query_embeddings
+    points = []
+    for label, coordinates in (
+        ("A", [1.0, 0.0]),
+        ("B", [0.0, 1.0]),
+        ("C", [0.95, -math.sqrt(1 - 0.95**2)]),
+    ):
+        vector = [coordinates + [0.0] * 318]
+        points.append(
+            models.PointStruct(
+                id=str(uuid4()),
+                vector={
+                    name: vector
+                    for name in (
+                        "mean_row_pooled",
+                        "mean_column_pooled",
+                        "hierarchical_pooled",
+                    )
+                },
+                payload={
+                    "document_id": source_url(f"{label}.pdf"),
+                    "page_number": 1,
+                    "metadata": {"document": {"filename": f"{label}.pdf"}},
+                },
+            )
+        )
+    index = stack.processor.qdrant_index
+    await index.qdrant_client.upsert(index.collection_name, points, wait=True)
+    chunks = await stack.retriever.search_documents_batch(queries, top_k=2)
+    assert [chunk.source_file for chunk in chunks] == ["A.pdf", "C.pdf"]
+    assert [chunk.score for chunk in chunks] == pytest.approx([1.0, 0.95])
+
+
+@pytest.mark.parametrize("response_count", [1, 3])
+async def test_incomplete_or_extra_query_embeddings_do_not_search_partial_batch(
+    stack, monkeypatch, caplog, response_count
+):
+    await stack.processor.qdrant_index.initialize()
+
+    async def query_embeddings(_):
+        return web.json_response(
+            {"embeddings": [[[1.0] + [0.0] * 319]] * response_count}
+        )
+
+    stack.inference.reply = query_embeddings
+    client = stack.processor.qdrant_index.qdrant_client
+    query_points = AsyncMock(wraps=client.query_points)
+    monkeypatch.setattr(client, "query_points", query_points)
+    assert await stack.retriever.search_documents_batch(["first", "second"]) == []
+    query_points.assert_not_awaited()
+    assert "Embedding batch count mismatch" in caplog.text
 
 
 async def test_indexed_documents_are_searchable_with_distinct_citations_and_images(
