@@ -277,8 +277,8 @@ class DocumentRetriever:
         Search for relevant documents using multiple queries processed in parallel through GPU.
         Handles deduplication and final limiting internally.
 
-        Uses the mean_pooling_with_hierarchical_quantized strategy (optimal based on benchmarking):
-        - Prefetch: Binary-quantized mean pooled vectors without float rescoring
+        Uses the mean_pooling_with_hierarchical_quantized strategy:
+        - Prefetch: Binary-quantized mean pooled vectors with 2x oversampling and float rescoring
         - Rerank: Exact search on hierarchical pooled vectors
 
         Args:
@@ -332,7 +332,8 @@ class DocumentRetriever:
                         indexed_only=True,
                         quantization=QuantizationSearchParams(
                             ignore=False,
-                            rescore=False,
+                            rescore=True,
+                            oversampling=2.0,
                         ),
                     )
                     query_kwargs = {

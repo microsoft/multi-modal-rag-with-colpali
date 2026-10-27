@@ -43,7 +43,7 @@ Uses the **mean_pooling_with_hierarchical_quantized_prefetch_only** strategy:
 
 | Stage | Vector | Params | Purpose |
 |-------|--------|--------|--------|
-| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, `rescore=false` | Fast approximate candidate retrieval |
+| Prefetch | `mean_column_pooled`, `mean_row_pooled` | Binary quantization, `rescore=true`, `oversampling=2.0` | Approximate retrieval with float mean rescoring |
 | Rerank | `hierarchical_pooled` | MaxSim over the candidate union, HNSW disabled | Final scoring with pooled token vectors |
 
 ## Agent Flow
@@ -63,7 +63,8 @@ events before its terminal `done` event.
 Single-query and query-expanded retrieval return at most **5 unique pages** by
 default. Each query prefetches **200 candidates per mean-pooled vector**, using
 HNSW `ef=64`, `exact=false`, and `indexed_only=true`. Binary prefetch uses
-`rescore=false`: candidates are not rescored against float mean vectors.
+`rescore=true` with `oversampling=2.0`: extra binary candidates are rescored
+against float mean vectors before selecting each prefetch shortlist.
 The candidate union is then scored using `hierarchical_pooled` (pooling factor
 3, no HNSW index). A smaller requested `top_k` does not shrink the candidate
 pool; requests above 200 expand each prefetch to at least `top_k`.

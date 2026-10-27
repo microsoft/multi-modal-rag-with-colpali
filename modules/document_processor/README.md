@@ -69,7 +69,7 @@ patch-vector field. Binary quantization does not replace the stored full-precisi
 vectors; this is not a quantized-only index.
 Payloads are `cold`; the ID tracker and managed keyword indexes are `pinned`.
 `cold` data is cached on demand without startup prewarming; `pinned` data cannot
-be evicted. Disabling prefetch rescoring does not discard the stored float copies.
+be evicted. Cold float mean copies are read on demand for prefetch rescoring.
 
 Page identity is UUID5 using `NAMESPACE_URL` and
 `"{document_id}:page:{page_number}"`. Document identity is the source blob URL

@@ -237,11 +237,90 @@ async def test_small_top_k_still_reranks_the_full_200_candidate_pool(
         for prefetch in request["prefetch"]:
             assert prefetch.limit == 200
             assert prefetch.params.quantization.ignore is False
-            assert prefetch.params.quantization.rescore is False
-            assert prefetch.params.quantization.oversampling is None
+            assert prefetch.params.quantization.rescore is True
+            assert prefetch.params.quantization.oversampling == 2.0
         assert len(chunks) == count
         assert chunks[0].source_file == "candidate-199.pdf"
         assert all(chunk.source_file != "candidate-200.pdf" for chunk in chunks)
+
+
+async def test_prefetch_rescoring_recovers_page_outside_binary_shortlist(stack):
+    if not os.getenv("TEST_QDRANT_URL"):
+        pytest.skip("Real Qdrant is required to exercise binary quantization")
+    await stack.processor.qdrant_index.initialize()
+    client = stack.processor.qdrant_index.qdrant_client
+    collection = stack.processor.qdrant_index.collection_name
+    query = [[1.0] * 320]
+
+    async def query_embedding(_):
+        return web.json_response({"embeddings": [query]})
+
+    stack.inference.reply = query_embedding
+    points = []
+    target_id = str(uuid4())
+    rng = random.Random(0)
+    for index in range(301):
+        is_target = index == 300
+        # Distractors win on signs alone, but their float direction is much worse.
+        mean = [[-0.01] * 10 + [1.0] * 310]
+        if not is_target:
+            mean = [[rng.uniform(0.01, 0.02) for _ in range(320)]]
+            for dimension in rng.sample(range(320), 30):
+                mean[0][dimension] = rng.uniform(2.0, 4.0)
+            for dimension in rng.sample(range(320), 5):
+                mean[0][dimension] *= -1
+        points.append(
+            models.PointStruct(
+                id=target_id if is_target else str(uuid4()),
+                vector={
+                    "mean_row_pooled": mean,
+                    "mean_column_pooled": mean,
+                    "hierarchical_pooled": query if is_target else [[-1.0] * 320],
+                },
+                payload={
+                    "document_id": source_url(f"rescore-{index}.pdf"),
+                    "page_number": 1,
+                    "metadata": {"document": {"filename": f"rescore-{index}.pdf"}},
+                },
+            )
+        )
+    await client.upsert(collection, points, wait=True)
+    await client.update_collection(
+        collection,
+        optimizers_config=models.OptimizersConfigDiff(indexing_threshold=1),
+        vectors_config={
+            name: models.VectorParamsDiff(
+                hnsw_config=models.HnswConfigDiff(full_scan_threshold=10)
+            )
+            for name in ("mean_row_pooled", "mean_column_pooled")
+        },
+    )
+    async with asyncio.timeout(60):
+        while (await client.get_collection(collection)).indexed_vectors_count < len(
+            points
+        ):
+            await asyncio.sleep(0.25)
+
+    for name in ("mean_row_pooled", "mean_column_pooled"):
+        binary_only = await client.query_points(
+            collection,
+            query=query,
+            using=name,
+            limit=200,
+            search_params=models.SearchParams(
+                hnsw_ef=64,
+                indexed_only=True,
+                quantization=models.QuantizationSearchParams(
+                    ignore=False, rescore=False, oversampling=2.0
+                ),
+            ),
+        )
+        assert len(binary_only.points) == 200
+        assert target_id not in {point.id for point in binary_only.points}
+
+    chunks = await stack.retriever.search_documents_batch(["reference"], top_k=1)
+    assert len(chunks) == 1
+    assert chunks[0].source_file == "rescore-300.pdf"
 
 
 @pytest.mark.parametrize("queries", [["first", "second"], ["second", "first"]])
